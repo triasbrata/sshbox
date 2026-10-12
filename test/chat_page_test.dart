@@ -18,6 +18,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownB
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
+import 'package:sshbox/src/chat/outbox.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/ui/tabs_shell.dart';
@@ -162,6 +163,9 @@ class _Shell
   final uploaded = <String>[];
   var failUploads = 0;
 
+  /// Held until completed, for an upload that takes its time.
+  Completer<void>? uploadGate;
+
   /// Makes the next upload end as one cancelled from Transfers does.
   var cancelUploads = false;
 
@@ -173,6 +177,8 @@ class _Shell
     Future<void>? cancel,
   }) async {
     uploaded.add(fileName);
+    final gate = uploadGate;
+    if (gate != null) await gate.future;
     if (cancelUploads) throw FileBrowserException.cancelled;
     if (failUploads > 0) {
       failUploads--;
@@ -5499,6 +5505,60 @@ void main() {
       return shell;
     }
 
+    // What an earlier run left in the outbox for the session picked below.
+    Future<void> leftBehind(
+      WidgetTester tester,
+      String text, {
+      bool failed = false,
+    }) async {
+      await OutboxStore.shared.save(
+        OutboxStore.keyOf(
+          _host.id,
+          'cf58d27a-0000-4000-8000-000000000000',
+        ),
+        OutboxBox(
+          entries: [
+            OutboxEntry(
+              id: 'left-1',
+              text: text,
+              createdAt: DateTime.now().toUtc(),
+              failed: failed,
+              why: failed ? 'Not delivered: the connection dropped.' : null,
+            ),
+          ],
+        ),
+      );
+    }
+
+    testWidgets('a message an earlier run left failed is drawn failed with '
+        'Retry and Remove, and is not sent by itself', (tester) async {
+      await leftBehind(tester, 'left over', failed: true);
+      final shell = await continued(tester);
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('left over'), findsOneWidget);
+      expect(find.textContaining('the connection dropped'), findsWidgets);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.bySemanticsLabel('Remove'), findsOneWidget);
+      expect(shell.written, isEmpty);
+    });
+
+    testWidgets('a message an earlier run left waiting is drawn as queued '
+        'and sent by itself once the session is picked', (tester) async {
+      await leftBehind(tester, 'left waiting');
+      final shell = await continued(tester);
+      // The host is asked first, then the message goes: real I/O.
+      for (var turn = 0; turn < 8; turn++) {
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+
+      expect(find.text('left waiting'), findsOneWidget);
+      expect(shell.written, hasLength(1));
+      expect(shell.written.single, contains('left waiting'));
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+    });
+
     testWidgets('Ctrl+V with the box unfocused and a picture on the '
         'clipboard focuses the box and makes the card', (tester) async {
       final next = clipboard(tester);
@@ -6613,8 +6673,8 @@ void main() {
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       final folder = Directory('${dir.path}/sub')..createSync();
       await drop(tester, [file.path, folder.path]);
-      expect(shell.uploaded, ['notes.txt']);
-      expect(box(tester), '/tmp/notes.txt ');
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
+      expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
       expect(
         find.textContaining('A folder cannot be uploaded: sub'),
         findsOneWidget,
@@ -6636,8 +6696,8 @@ void main() {
         extentOffset: 18,
       );
       await drop(tester, [file.path]);
-      expect(shell.uploaded, ['my "q" notes.txt']);
-      expect(box(tester), r'keep this sentence "/tmp/my \"q\" notes.txt" ');
+      expect(shell.uploaded.single, endsWith('-my "q" notes.txt'));
+      expect(box(tester), matches(RegExp(r'^keep this sentence "/tmp/\d+-my \\"q\\" notes\.txt" $')));
     }, variant: linux);
 
     for (final (label, host) in [
@@ -6656,8 +6716,8 @@ void main() {
         final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
         final shell = await chatOn(tester, host);
         await drop(tester, [file.path]);
-        expect(shell.uploaded, ['notes.txt']);
-        expect(box(tester), '/tmp/notes.txt ');
+        expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
+        expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
       }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
     }
 
@@ -6762,8 +6822,8 @@ void main() {
       final (shell, session) = await chatOn(tester);
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
-      expect(shell.uploaded, ['notes.txt']);
-      expect(box(tester), '/tmp/notes.txt ');
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
+      expect(box(tester), matches(RegExp(r'^/tmp/\d+-notes\.txt $')));
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 
@@ -6799,7 +6859,7 @@ void main() {
       shell.failUploads = 1;
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
-      expect(shell.uploaded, ['notes.txt']);
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
       expect(box(tester), isEmpty);
       expect(find.textContaining('Upload failed:'), findsOneWidget);
       await tester.pumpAndSettle(const Duration(seconds: 6));
@@ -6811,7 +6871,7 @@ void main() {
       shell.cancelUploads = true;
       final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
       await share(tester, session, [(path: file.path, name: 'notes.txt')]);
-      expect(shell.uploaded, ['notes.txt']);
+      expect(shell.uploaded.single, matches(RegExp(r'^\d+-notes\.txt$')));
       expect(box(tester), isEmpty);
       expect(find.textContaining('Upload failed'), findsNothing);
     });
@@ -6843,6 +6903,112 @@ void main() {
       await share(tester, session, ['https://example.com/a']);
       expect(box(tester), isEmpty);
       expect(find.textContaining('this session is read-only'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('a file shared into a read-only session is refused before it '
+        'is uploaded, with a toast, and the box stays empty', (tester) async {
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
+      );
+      await tester.pump();
+      await _continue(tester, 'dev-e0');
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, isEmpty, reason: 'nothing uploaded for nothing');
+      expect(box(tester), isEmpty);
+      expect(find.textContaining('this session is read-only'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('a file whose upload outlasts the chat being able to take it '
+        'is said not added, with where it went, and the box stays empty', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(1280, 800)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final shell = _Shell()
+        ..history = _nightlyHistory
+        ..listing = jsonEncode([
+          _finished('cf58d27a', 'Zsh config fix'),
+          {
+            'pid': 1259765,
+            'cwd': '/home/me',
+            'kind': 'interactive',
+            'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+            'name': 'dev-e0',
+            'status': 'idle',
+          },
+        ]);
+      final session = LiveSession(host: _host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _NoSecrets());
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      );
+      await _settlePickUp(tester);
+      await tester.tap(find.text('Zsh config fix'));
+      await _settlePickUp(tester);
+
+      // The upload starts while the chat takes files, and waits.
+      shell.uploadGate = Completer<void>();
+      final file = File('${dir.path}/notes.txt')..writeAsStringSync('x');
+      await share(tester, session, [(path: file.path, name: 'notes.txt')]);
+      expect(shell.uploaded, hasLength(1));
+
+      // Meanwhile the chat goes to a session that is read-only from here.
+      await tester.tap(find.text('dev-e0'));
+      await _settlePickUp(tester);
+      await tester.runAsync(() async {
+        shell.uploadGate!.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      await tester.pump();
+
+      expect(box(tester), isEmpty);
+      expect(
+        find.textContaining('turned read-only while notes.txt was uploading'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('/tmp/'), findsWidgets);
+      await tester.pumpAndSettle(const Duration(seconds: 6));
+    });
+
+    testWidgets('two shared files of one name are two files on the host, not '
+        'one overwriting the other', (tester) async {
+      final (shell, session) = await chatOn(tester);
+      Directory('${dir.path}/a').createSync();
+      Directory('${dir.path}/b').createSync();
+      final one = File('${dir.path}/a/notes.txt')..writeAsStringSync('one');
+      final two = File('${dir.path}/b/notes.txt')..writeAsStringSync('two');
+      await share(tester, session, [
+        (path: one.path, name: 'notes.txt'),
+        (path: two.path, name: 'notes.txt'),
+      ]);
+      expect(shell.uploaded, hasLength(2));
+      expect(shell.uploaded[0], isNot(shell.uploaded[1]));
+      final paths = RegExp(r'/tmp/\d+-notes\.txt').allMatches(box(tester));
+      expect(paths, hasLength(2));
+      expect(paths.first.group(0), isNot(paths.last.group(0)));
       await tester.pumpAndSettle(const Duration(seconds: 6));
     });
 
@@ -7451,6 +7617,38 @@ void main() {
       expect(find.byTooltip('Edit this message'), findsNothing);
     });
 
+    testWidgets('Ctrl+Enter while the chat cannot send says why and keeps '
+        'what was typed, instead of doing nothing', (tester) async {
+      final shell = await ownChat(tester, answered: false);
+      final before = shell.written.length;
+      await tester.enterText(find.byType(TextField), 'a second thought');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump();
+      expect(find.textContaining('Claude is still answering'), findsOneWidget);
+      expect(box(tester).controller!.text, 'a second thought');
+      expect(shell.written, hasLength(before));
+      await tester.pump(const Duration(seconds: 6));
+    });
+
+    testWidgets('the Edit button over a draft never writes over it: the draft '
+        'stays and the message it went back to is said', (tester) async {
+      await ownChat(tester);
+      await tester.enterText(find.byType(TextField), 'half a thought');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Edit this message'));
+      await _settlePickUp(tester);
+      expect(box(tester).controller!.text, 'half a thought');
+      expect(find.textContaining('the box has a draft'), findsOneWidget);
+      expect(find.textContaining('check nginx'), findsWidgets);
+      await tester.pumpAndSettle(const Duration(seconds: 9));
+    });
+
     testWidgets('the Edit button is a semantics node of its own, and the '
         "bubble's text stays only the message", (tester) async {
       final semantics = tester.ensureSemantics();
@@ -7546,13 +7744,17 @@ void main() {
       'state': 'done',
     };
 
-    Future<_Shell> page(WidgetTester tester, {double width = 1280}) async {
+    Future<_Shell> page(
+      WidgetTester tester, {
+      double width = 1280,
+      String? listingText,
+    }) async {
       tester.view
         ..physicalSize = Size(width, 800)
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final shell = _Shell()
-        ..listing =
+        ..listing = listingText ??
             '${jsonEncode([row('aaaa1111', 'run one'), row('bbbb2222', 'pin one'), row('cccc3333', 'old one', live: false)])}'
             '\n--- pins\n["bbbb2222"]\n';
       final session = LiveSession(host: _host, transport: (_, _) => shell);
@@ -7709,6 +7911,74 @@ void main() {
       await _settlePickUp(tester);
       expect(find.byTooltip('x one, Done, idle, not opened since'), findsNothing);
       expect(find.byTooltip('x one, Done, idle'), findsOneWidget);
+    });
+
+    testWidgets('a listing that failed is an error in the rail, never an '
+        'empty one, and tapping it asks again', (tester) async {
+      final shell = await page(
+        tester,
+        listingText: 'claude: command not found',
+      );
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('old one, Finished'), findsNothing);
+      final failed = find.byWidgetPredicate(
+        (w) =>
+            w is TuiTooltip && w.message.startsWith('Could not list the sessions'),
+      );
+      expect(failed, findsOneWidget);
+
+      shell.listing =
+          '${jsonEncode([row('cccc3333', 'old one', live: false)])}\n';
+      await tester.tap(failed);
+      await _settlePickUp(tester);
+      expect(failed, findsNothing);
+      expect(find.byTooltip('old one, Finished'), findsOneWidget);
+    });
+
+    testWidgets('when a refresh fails the rows it had are marked out of '
+        'date, and a good refresh clears the mark', (tester) async {
+      final shell = await page(tester);
+      shell.listing = 'claude: command not found';
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
+      await _frames(tester);
+      expect(find.byTooltip('old one, Finished'), findsOneWidget);
+      final stale = find.byWidgetPredicate(
+        (w) => w is TuiTooltip && w.message.startsWith('The list may be out of date'),
+      );
+      expect(stale, findsOneWidget);
+
+      shell.listing =
+          '${jsonEncode([row('cccc3333', 'old one', live: false)])}\n';
+      await tester.tap(stale);
+      await _settlePickUp(tester);
+      expect(stale, findsNothing);
+      expect(find.byTooltip('old one, Finished'), findsOneWidget);
+    });
+
+    testWidgets('the open sidebar says too when a refresh failed and its rows '
+        'are old, and tapping that asks again', (tester) async {
+      final shell = await page(tester);
+      shell.listing = 'claude: command not found';
+      await tester.pump(const Duration(seconds: 6));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await _frames(tester);
+      final line = find.bySemanticsLabel(RegExp('The list may be out of date'));
+      expect(line, findsOneWidget);
+      expect(find.byType(TuiChatSessionList), findsOneWidget);
+      expect(find.text('old one'), findsOneWidget, reason: 'rows kept');
+
+      shell.listing =
+          '${jsonEncode([row('cccc3333', 'old one', live: false)])}\n';
+      await tester.tap(line);
+      await _settlePickUp(tester);
+      expect(
+        find.bySemanticsLabel(RegExp('The list may be out of date')),
+        findsNothing,
+      );
     });
 
     testWidgets('a narrow screen has no rail, only the drawer', (tester) async {
