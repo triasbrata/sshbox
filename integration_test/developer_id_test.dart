@@ -33,7 +33,9 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:xterm2/xterm.dart';
 
-const _phase = String.fromEnvironment('JEANSH_E2E_DEVID');
+// From the environment, not a --dart-define: a define rebuilds the app, and a
+// rebuilt ad-hoc binary is another program to the keychain, which prompts.
+final _phase = Platform.environment['JEANSH_E2E_DEVID'] ?? '';
 const _movedKey = 'sshbox.secrets.movedToDataProtectionKeychain';
 
 final _user = Platform.environment['SSH_USER'] ?? '';

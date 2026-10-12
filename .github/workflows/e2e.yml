@@ -578,7 +578,7 @@ jobs:
           rc=0
           for phase in add relaunch rollback rollback-relaunch none; do
             E2E_TESTS=integration_test/developer_id_test.dart \
-              tools/e2e_desktop.sh macos --dart-define=JEANSH_E2E_DEVID=$phase \
+              JEANSH_E2E_DEVID=$phase tools/e2e_desktop.sh macos \
               || { rc=1; break; }
           done
           exit $rc
