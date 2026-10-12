@@ -163,6 +163,7 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_sayIfFontMissing());
     unawaited(_sayIfOpenCommandMissing());
     lastFault.addListener(_offerToReport);
+    secretNotice.addListener(_saySecretNotice);
     localTmux.addListener(_noTmux.clear);
     if (isDesktop) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
@@ -325,6 +326,22 @@ class _SshboxAppState extends State<SshboxApp> {
   /// The one offer a run makes: something went wrong, and here is a way to
   /// say so. Shown whether or not telemetry is on, because reporting a bug is
   /// the user's own act — see `showBugReport`.
+  /// What the secret store had to say: a secret not moved to a signed
+  /// build's keychain, or one moved where this build cannot reach.
+  void _saySecretNotice() {
+    final notice = secretNotice.value;
+    if (notice == null) return;
+    final context = _navigator.currentContext;
+    if (context == null || !context.mounted) return;
+    showToast(
+      context,
+      notice.message,
+      type: TuiToastType.warning,
+      duration: const Duration(seconds: 8),
+      logAs: 'secret notice',
+    );
+  }
+
   void _offerToReport() {
     final fault = lastFault.value;
     if (fault == null) return;
@@ -663,6 +680,7 @@ class _SshboxAppState extends State<SshboxApp> {
   void dispose() {
     _updateTimer?.cancel();
     lastFault.removeListener(_offerToReport);
+    secretNotice.removeListener(_saySecretNotice);
     localTmux.removeListener(_noTmux.clear);
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
     FocusManager.instance.removeEarlyKeyEventHandler(_zoomKeys.handle);

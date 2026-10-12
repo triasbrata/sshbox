@@ -569,6 +569,46 @@ jobs:
             exit 1
           }
 
+      # #286: an unsigned build and a secret a signed one moved away, every
+      # phase in one flutter test process, so one binary: a relaunch into a
+      # second ad-hoc build is a program the keychain has no ACL entry for,
+      # which asks and waits for ever on CI, and what a Developer ID signature
+      # fixes cannot be driven here. The step makes a keychain of its own with a
+      # known password, unlocked, first in the search list and the default, so
+      # the app's items land there; the old default is put back and the
+      # keychain deleted at the end, whatever happened.
+      - name: Moved secrets on an unsigned build
+        timeout-minutes: 20
+        if: always()
+        run: |
+          kc="$HOME/Library/Keychains/jeansh-e2e.keychain-db"
+          pw=e2e-pass
+          old_default=$(security default-keychain -d user | tr -d ' "')
+          old_list=$(security list-keychains -d user | tr -d ' "' | tr '\n' ' ')
+          restore() {
+            security default-keychain -d user -s "$old_default" || true
+            # shellcheck disable=SC2086
+            security list-keychains -d user -s $old_list || true
+            security delete-keychain "$kc" || true
+          }
+          trap restore EXIT
+          security create-keychain -p "$pw" "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 7200 "$kc"
+          security default-keychain -d user -s "$kc"
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$kc" $old_list
+          echo "default keychain now: $(security default-keychain -d user)"
+          rc=0
+          E2E_TESTS=integration_test/developer_id_test.dart \
+            tools/e2e_desktop.sh macos || rc=1
+          if [ "$rc" -ne 0 ]; then
+            echo "securityd, the last 2 minutes:"
+            log show --last 2m --predicate 'process == "securityd" OR subsystem == "com.apple.securityd"' 2>/dev/null | tail -40 || true
+          fi
+          exit $rc
+
+
       # The native crash and hang scrub (apple/NativeCrashes.swift) against a
       # real sentry-cocoa, which only a Mac can run. Needs the Sentry
       # xcframework a macOS build fetches; built here if the drive above left
