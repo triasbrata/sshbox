@@ -522,6 +522,21 @@ void main() {
       expect(opened, hasLength(1), reason: 'opened after dispose: $opened');
     });
 
+    test('the model is not picked while a new chat\'s first message is '
+        'starting it', () async {
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => gate.future);
+      addTearDown(chat.dispose);
+      final sent = chat.send('first words');
+      await _settle();
+      expect(chat.modelStarting, isTrue);
+      await chat.setModel('haiku');
+      expect(chat.modelAlias, isNull, reason: 'the pick would be lost');
+      gate.completeError(StateError('stopped'));
+      await sent;
+      expect(chat.modelStarting, isFalse);
+    });
+
     test('the model is not picked while Claude is starting', () async {
       final gate = Completer<CommandChannel>();
       final chat = ClaudeChat(open: (_) => gate.future);
@@ -6720,6 +6735,145 @@ void main() {
       return (chat: chat, commands: commands, procs: procs);
     }
 
+    /// A chat over [sid] whose transcript read waits on [gate] while [hold].
+    Future<
+      ({
+        ClaudeChat chat,
+        List<String> commands,
+        List<_FakeClaude> procs,
+        Completer<void> gate,
+        void Function(bool) hold,
+        void Function(bool) failStart,
+      })
+    >
+    gated() async {
+      final procs = <_FakeClaude>[];
+      final commands = <String>[];
+      final gate = Completer<void>();
+      var holding = false;
+      var failing = false;
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains('.jsonl')) {
+            if (holding) await gate.future;
+            return _says(transcript());
+          }
+          if (!command.contains('stream-json')) return _says('');
+          if (failing) throw StateError('no connection');
+          final claude = _FakeClaude();
+          procs.add(claude);
+          return claude.channel;
+        },
+      );
+      addTearDown(chat.dispose);
+      await chat.start();
+      procs.single.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': sid,
+      });
+      await _settle();
+      final sent = chat.send('first idea');
+      await _settle();
+      procs.single.event({'type': 'result', 'subtype': 'success'});
+      await sent;
+      await _settle();
+      return (
+        chat: chat,
+        commands: commands,
+        procs: procs,
+        gate: gate,
+        hold: (v) => holding = v,
+        failStart: (v) => failing = v,
+      );
+    }
+
+    test('while the transcript is being read nothing can be sent and a '
+        'second ↑ does nothing, and the revision still goes through',
+        () async {
+      final t = await gated();
+      t.hold(true);
+      final revising = t.chat.reviseLast();
+      await _settle();
+
+      expect(t.chat.unsendable, contains('Going back'));
+      final writes = t.procs.single.written.length;
+      await t.chat.send('too soon');
+      expect(t.procs.single.written, hasLength(writes), reason: 'not sent');
+      expect(
+        t.chat.entries.whereType<ChatNotice>().last.text,
+        contains('Not sent: Going back'),
+      );
+      expect(await t.chat.reviseLast(), isNull, reason: 'a second ↑');
+
+      t.gate.complete();
+      expect(await revising, 'first idea');
+      expect(t.chat.unsendable, isNull);
+    });
+
+    test('a chat that changed while the transcript was read is not gone '
+        'back in, and says so', () async {
+      final t = await gated();
+      t.hold(true);
+      final revising = t.chat.reviseLast();
+      await _settle();
+      // Claude goes away while the read waits.
+      await t.procs.single.end();
+      await _settle();
+      t.gate.complete();
+
+      expect(await revising, isNull);
+      expect(
+        t.chat.entries.whereType<ChatNotice>().map((n) => n.text),
+        contains(contains('changed while the session was read')),
+      );
+      expect(t.commands.where((c) => c.contains('--fork-session')), isEmpty);
+      expect(t.chat.unsendable, isNot(contains('Going back')));
+    });
+
+    test('a revision whose restart fails does not say it went back, and '
+        'leaves no fork for the next start', () async {
+      final t = await gated();
+      t.failStart(true);
+
+      expect(await t.chat.reviseLast(), isNull);
+      expect(
+        t.chat.entries.whereType<ChatNotice>().map((n) => n.text),
+        isNot(contains(startsWith('Went back'))),
+      );
+      expect(
+        t.chat.entries.whereType<ChatNotice>().map((n) => n.text),
+        contains(contains('Could not go back')),
+      );
+      t.failStart(false);
+      await t.chat.restart();
+      final last = t.commands.lastWhere((c) => c.contains('stream-json'));
+      expect(last, isNot(contains('resume-session-at')));
+      expect(last, isNot(contains('--fork-session')));
+    });
+
+    test('the cut of a revision never leaks into the next session picked',
+        () async {
+      final t = await gated();
+      expect(await t.chat.reviseLast(), 'first idea');
+      // The fork has not reported itself (no init); another session is
+      // picked, a finished one, continued by a start of its own.
+      await t.chat.continueFrom(
+        const ClaudeAgent(
+          sessionId: '55555555-5555-4555-8555-555555555555',
+          name: 'other',
+          cwd: '/srv',
+          kind: 'background',
+          id: 'cafe0001',
+        ),
+      );
+      final last = t.commands.lastWhere((c) => c.contains('stream-json'));
+      expect(last, contains('55555555-5555-4555-8555-555555555555'));
+      expect(last, isNot(contains('resume-session-at')));
+      expect(last, isNot(contains('--fork-session')));
+    });
+
     test('the point to cut at is the row before the prompt, and only for '
         'the prompt that was meant', () {
       expect(ClaudeChat.revisionPoint(transcript(), 'first idea'), before);
@@ -7549,6 +7703,33 @@ void main() {
         readGate: readGate,
       );
     }
+
+    test('a message being saved while the chat starts going back to an '
+        'earlier one is shown not sent, and kept as failed', () async {
+      final t = await ownOverFlaky();
+      t.flaky.saveGate = Completer<void>();
+      final sent = t.chat.send('late one');
+      await _settle();
+      t.hold(true);
+      final revising = t.chat.reviseLast();
+      await _settle();
+      t.flaky.saveGate!.complete();
+      await sent;
+      await wait(50);
+
+      final late = t.chat.entries
+          .whereType<ChatSaid>()
+          .lastWhere((s) => s.text == 'late one');
+      expect(late.delivery, Delivery.failed);
+      expect(late.why, contains('Going back'));
+      final box = await t.flaky.inner.load(
+        OutboxStore.keyOf('h1', '11111111-1111-4111-8111-111111111111'),
+      );
+      expect(box.entries.single.text, 'late one');
+      expect(box.entries.single.failed, isTrue);
+      t.readGate.complete();
+      await revising;
+    });
 
     test('a Retry waiting behind another send, when the chat can no longer '
         'send, fails visibly instead of staying queued', () async {

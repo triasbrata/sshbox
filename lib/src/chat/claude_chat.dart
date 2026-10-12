@@ -1018,7 +1018,8 @@ class ClaudeChat extends ChangeNotifier {
 
   /// Claude is on its way up: a pick now would apply only at the next start,
   /// so the picker waits.
-  bool get modelStarting => _watching == null && !_composing && _starting;
+  bool get modelStarting =>
+      _watching == null && (_composing ? _busy : _starting);
 
   /// Set by [reviseLast] until the forked session reports itself: where in the
   /// old one the next start resumes.
@@ -1073,6 +1074,7 @@ class ClaudeChat extends ChangeNotifier {
   /// Only this chat's own Claude. A session on the host is revised at its own
   /// terminal, which this never types into blind.
   Future<String?> reviseLast() async {
+    if (_revising) return null;
     final said = lastMine;
     if (said == null) return null;
     String? no(String why) {
@@ -1108,38 +1110,74 @@ class ClaudeChat extends ChangeNotifier {
     if (said.pictures.isNotEmpty) {
       return no('A message with pictures cannot be revised from here.');
     }
-    final String point;
+    // Nothing is sent while the transcript is read and the chat restarted:
+    // a message sent then would go to the process about to be replaced.
+    _revising = true;
+    notifyListeners();
     try {
-      final read = utf8.decode(
-        await _readAll(historyCommand(id), const Duration(seconds: 30)),
-        allowMalformed: true,
-      );
-      final found = revisionPoint(read, said.text);
-      if (found == null) {
-        return no('That message is not in the session’s transcript yet.');
+      final target = _target;
+      final String point;
+      try {
+        final read = utf8.decode(
+          await _readAll(historyCommand(id), const Duration(seconds: 30)),
+          allowMalformed: true,
+        );
+        final found = revisionPoint(read, said.text);
+        if (found == null) {
+          return no('That message is not in the session’s transcript yet.');
+        }
+        point = found;
+      } catch (error) {
+        return no('Could not read the session to go back in it: $error');
       }
-      point = found;
-    } catch (error) {
-      return no('Could not read the session to go back in it: $error');
+      // The read was a wait: what it was about may have changed meanwhile.
+      if (_disposed) return null;
+      if (!_current(target) ||
+          _busy ||
+          !_ready ||
+          lastMine != said ||
+          _watching != null) {
+        return no(
+          'The chat changed while the session was read, so nothing was '
+          'undone. Press ↑ again.',
+        );
+      }
+      final at = _entries.indexOf(said);
+      if (at < 0) return null;
+      await _stop();
+      _entries.removeRange(at, _entries.length);
+      _modelAsks.clear();
+      _resumeAt = point;
+      _fork = true;
+      _busy = false;
+      _ended = false;
+      await start();
+      if (!_ready) {
+        // Not a fork that is running: nothing to say it went back, and a
+        // later start must not fork by surprise.
+        _resumeAt = null;
+        _fork = false;
+        return no(
+          'Could not go back: Claude did not start on the earlier point. '
+          'Restart it from the menu beside the box.',
+        );
+      }
+      _say(
+        ChatNotice(
+          'Went back to before that message. The earlier branch stays in the '
+          'sessions list. Files the old turn changed are not put back.',
+        ),
+      );
+      return said.text;
+    } finally {
+      _revising = false;
+      if (!_disposed) notifyListeners();
     }
-    final at = _entries.indexOf(said);
-    if (at < 0) return null;
-    await _stop();
-    _entries.removeRange(at, _entries.length);
-    _modelAsks.clear();
-    _resumeAt = point;
-    _fork = true;
-    _busy = false;
-    _ended = false;
-    await start();
-    _say(
-      ChatNotice(
-        'Went back to before that message. The earlier branch stays in the '
-        'sessions list. Files the old turn changed are not put back.',
-      ),
-    );
-    return said.text;
   }
+
+  /// Set while [reviseLast] reads the transcript and restarts: a second ↑ is
+  /// ignored, and nothing can be sent (see [unsendable]).
+  bool _revising = false;
 
   ChatPermission _permission = ChatPermission.acceptEdits;
 
@@ -2266,6 +2304,7 @@ class ClaudeChat extends ChangeNotifier {
   /// for itself if it did not arrive.
   String? get unsendable {
     if (_disposed) return 'This chat is closed.';
+    if (_revising) return 'Going back to your earlier message.';
     if (_watching != null) return null;
     if (_composing) return _busy ? 'A new chat is starting.' : null;
     if (_starting) return 'Claude is starting on the host.';
@@ -3026,6 +3065,9 @@ class ClaudeChat extends ChangeNotifier {
     // What was waiting to ask about the session being left, and how often it
     // had asked, is of no use to the one that replaces it.
     _askWhenSeen = false;
+    // A revision's cut and fork were for the session left, not the next.
+    _resumeAt = null;
+    _fork = false;
     _subTries.clear();
     _shown++;
     _earlier = 0;
