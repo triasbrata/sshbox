@@ -796,6 +796,7 @@ class LiveSession extends ChangeNotifier {
           // desktop without FCM never has. A tmux tab needs none of this:
           // its script sets `FORCE_HYPERLINK` itself (see [TmuxSession]).
           'LC_SSHBOX_HYPERLINKS': '1',
+          'LC_SSHBOX_KEY': 'e2e-probe',
           if (_onNotify != null) ...await _openNotifyPort(connection),
         };
       }
