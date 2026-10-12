@@ -13,6 +13,7 @@ import 'chat_ask.dart';
 import 'outbox.dart';
 import 'slash_commands.dart';
 import '../telemetry/app_log.dart';
+import '../telemetry/input_log.dart' show sizeBucket;
 
 export 'chat_ask.dart';
 export 'slash_commands.dart';
@@ -333,6 +334,11 @@ class ChatModel {
   /// command line.
   static String? known(String? alias) =>
       choices.any((c) => c.alias == alias) ? alias : null;
+
+  /// What the app log says of a model: the id comes from the host, so only a
+  /// name this app knows is written, `other` for any other.
+  static String logName(String? model) =>
+      model == null ? 'model unknown' : shortName(model) ?? 'other';
 
   /// `claude-opus-5-5` → `Opus 5.5`; `claude-haiku-4-5-20251001` → `Haiku 4.5`;
   /// an alias → its label. Null for an id of a shape this does not know, so
@@ -2204,16 +2210,11 @@ class ClaudeChat extends ChangeNotifier {
     }
     final kept = outboxId == null ? null : (key: outboxKey!, id: outboxId);
     // Its size, never its words.
-    final bucket = message.length < 50
-        ? '<50'
-        : message.length < 500
-        ? '<500'
-        : message.length < 5000
-        ? '<5000'
-        : '5000+';
+    final bucket = sizeBucket(message.length);
+    // The model id comes from the host: only a name this app knows is logged.
     appLog.add(
       'chat: send $bucket chars, ${pictures.length} pictures, '
-      '${_permission.name}, ${_context?.model ?? 'model unknown'}',
+      '${_permission.name}, ${ChatModel.logName(_context?.model)}',
     );
     _pictures = math.max(
       _pictures,
