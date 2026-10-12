@@ -6,7 +6,9 @@ import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/telemetry/input_log.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
-import 'package:xterm2/xterm.dart' show TerminalView;
+import 'package:sshbox/src/chat/claude_chat.dart' show ChatModel;
+import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:xterm2/xterm.dart' show Terminal, TerminalView;
 import 'log_messages.dart';
 
 /// A fresh log and key handler per test, so what one prints never leaks in.
@@ -185,7 +187,7 @@ void main() {
       ClipboardTerminal().paste('secret-clipboard');
       final line = appLog.current.split('\n').last;
       expect(appLog.length, before + 1);
-      expect(line, contains('paste text 16 (terminal)'));
+      expect(line, contains('paste text <50 (terminal)'));
       expect(logMessages(line), isNot(contains('secret')));
     });
 
@@ -298,5 +300,64 @@ void main() {
     await CopyOnSelectSetting().choose(false);
     final added = appLog.current.split('\n').skip(before).join('\n');
     expect(added, contains('setting copy on select false'));
+  });
+
+  testWidgets("tapping the key bar's symbol keys logs no character", (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          bottomNavigationBar: TerminalKeyBar(
+            controller: KeyBarController(),
+            terminal: Terminal(),
+            onEmit: (_) {},
+            keys: const ['esc', '-', '/', '|', '~', ':', '*'],
+          ),
+        ),
+      ),
+    );
+    final before = appLog.length;
+    for (final symbol in ['-', '/', '|', '~', ':', '*']) {
+      await tester.tap(find.text(symbol));
+    }
+    await tester.tap(find.text('ESC'));
+    final added = appLog.current.split('\n').skip(before).toList();
+    expect(added.where((l) => l.contains('tap symbol key')), hasLength(6));
+    final messages = logMessages(added.join('\n'));
+    for (final symbol in ['-', '/', '|', '~', ':', '*']) {
+      expect(
+        messages.replaceAll('symbol key', '').replaceAll('tap ', ''),
+        isNot(contains(symbol)),
+        reason: 'the log holds "$symbol"',
+      );
+    }
+    expect(messages, contains('tap ESC'), reason: 'a named key still logs');
+  });
+
+  test('a terminal paste logs a size bucket, never the exact length', () {
+    for (final (length, bucket) in [
+      (16, '<50'),
+      (49, '<50'),
+      (50, '<500'),
+      (499, '<500'),
+      (500, '<5000'),
+      (4999, '<5000'),
+      (5000, '5000+'),
+    ]) {
+      final before = appLog.length;
+      ClipboardTerminal().paste('x' * length);
+      final line = appLog.current.split('\n').last;
+      expect(appLog.length, before + 1);
+      expect(line, contains('paste text $bucket (terminal)'), reason: '$length');
+      expect(line, isNot(contains(' $length ')), reason: 'the length leaks');
+    }
+  });
+
+  test('the chat send log names a model it knows, and never a host id', () {
+    expect(ChatModel.logName(null), 'model unknown');
+    expect(ChatModel.logName('claude-opus-5-5'), 'Opus 5.5');
+    expect(ChatModel.logName('corp-model-xyz-internal'), 'other');
+    expect(ChatModel.logName('claude-opus-5-5-hostname'), 'other');
   });
 }

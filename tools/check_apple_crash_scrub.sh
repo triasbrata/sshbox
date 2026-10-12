@@ -35,7 +35,9 @@ DSN="http://public@127.0.0.1:$PORT/1"
 python3 "$ROOT/tools/apple_crash_scrub/sink.py" serve "$PORT" "$WORK/sent" &
 SINK=$!
 trap 'kill $SINK 2>/dev/null' EXIT
-sleep 1
+# Not a guess at how long the sink takes: no app starts until a connect to it
+# has succeeded, and the check fails saying so if none ever does.
+python3 "$ROOT/tools/apple_crash_scrub/sink.py" wait "$PORT" || { echo "sink never listened on $PORT" >&2; exit 1; }
 
 status=0
 "$WORK/check" hang "$DSN" "$WORK/cache-hang" || status=1
@@ -44,7 +46,12 @@ for mode in raw scrubbed; do
   cache="$WORK/cache-$mode"
   # Dies of EXC_BAD_ACCESS, as it should.
   "$WORK/check" crash "$DSN" "$cache" $mode 2>"$WORK/crash-$mode.log" || true
-  "$WORK/check" send "$DSN" "$cache" $mode >"$WORK/send-$mode.log" 2>&1
-  python3 "$ROOT/tools/apple_crash_scrub/sink.py" check "$WORK/sent" $mode || status=1
+  SENTRY_DEBUG=1 "$WORK/check" send "$DSN" "$cache" $mode >"$WORK/send-$mode.log" 2>&1
+  python3 "$ROOT/tools/apple_crash_scrub/sink.py" check "$WORK/sent" $mode || {
+    status=1
+    # What the SDK itself said, for a run that sent nothing.
+    echo "--- the SDK's log, $mode send ---"; tail -n 60 "$WORK/send-$mode.log"
+    echo "--- the crash run's stderr, $mode ---"; tail -n 20 "$WORK/crash-$mode.log"
+  }
 done
 exit $status
