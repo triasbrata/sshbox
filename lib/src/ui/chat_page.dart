@@ -317,7 +317,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (metrics.pixels - delta > metrics.maxScrollExtent + 0.5) {
       _runBack = true;
     }
-    final byReader = delta < 0 && !_pinning && !_runBack;
+    const byReader = false;
     if (byReader) _sentFirst = false;
     final follow = byReader
         ? false
