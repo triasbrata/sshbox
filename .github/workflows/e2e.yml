@@ -606,10 +606,16 @@ jobs:
             E2E_TESTS=integration_test/developer_id_test.dart \
               JEANSH_E2E_DEVID=$phase tools/e2e_desktop.sh macos \
               || { rc=1; break; }
-            security set-key-partition-list -S apple-tool:,apple:,unsigned: \
-              -s -k "$pw" "$kc" >/dev/null 2>&1 \
-              && echo "keychain opened to any program after $phase" \
-              || echo "set-key-partition-list failed after $phase"
+            # What flutter_secure_storage keeps are generic passwords, not keys.
+            # Its answer is printed: a failure is a reason to read, not hide.
+            if err=$(security set-generic-password-partition-list \
+              -S apple-tool:,apple:,unsigned: -k "$pw" "$kc" 2>&1); then
+              echo "keychain opened to any program after $phase"
+            else
+              echo "set-generic-password-partition-list failed after $phase: $err"
+            fi
+            security dump-keychain "$kc" 2>/dev/null | grep -c 'class: "genp"' \
+              | sed "s/^/generic passwords in the test keychain after $phase: /" || true
           done
           if [ "$rc" -ne 0 ]; then
             echo "securityd, the last 2 minutes:"
