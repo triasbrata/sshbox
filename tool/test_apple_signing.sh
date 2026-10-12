@@ -33,11 +33,15 @@ pass() { printf 'ok: %s\n' "$*"; }
 bin="$work/bin"
 mkdir -p "$bin"
 
-# Each stand-in records its argv, a line per call.
+# Each stand-in records its argv, a line per call. FAKE_EXTRA_FOR=<name>
+# makes that one record an argument it was never given, for the self-checks
+# at the end.
 stub() {
   cat >"$bin/$1" <<EOF
 #!/bin/bash
-printf '%s\n' "$1 \$*" >>"\$LOG"
+extra=""
+[ "\${FAKE_EXTRA_FOR:-}" != "$1" ] || extra=" --extra"
+printf '%s\n' "$1 \$*\$extra" >>"\$LOG"
 $2
 EOF
   chmod +x "$bin/$1"
@@ -123,10 +127,13 @@ shasum -a 256 -- *
 EOF
 }
 
+# Whether the last run's calls are exactly expected_off's, the diff kept.
+off_matches() { diff -u <(expected_off) "$work/log" >"$work/diff"; }
+
 check_off() {
   local what="$1"
   [ "$status" = 0 ] || { fail "$what: exited $status"; cat "$work/out"; return; }
-  if diff -u <(expected_off) "$work/log" >"$work/diff"; then
+  if off_matches; then
     pass "$what: the same commands as the ad-hoc build"
   else
     fail "$what: the commands changed"
@@ -249,26 +256,45 @@ else
   pass "on with every secret: built"
 fi
 kc='<work>/signing/jeansh-signing.keychain-db'
-expect() {
-  grep -qF -- "$1" "$work/log" && pass "on: $2" || {
-    fail "on: $2 ($1)"
-    cat "$work/log"
-  }
+id=2222222222222222222222222222222222222222
+app=build/macos/Build/Products/Release/Jeansh.app
+dmg='<t>/repo/dist/1.2.3+45/Jeansh-1.2.3+45-macos.dmg'
+# What the flag-on build must have run, each a whole line of the log, a tab,
+# and what it is.
+on_expected() {
+  cat <<EOF
+security create-keychain -p 0123456789abcdef $kc	a keychain of the build's own
+security import <work>/signing/certificate.p12 -k $kc -P pw -f pkcs12 -T /usr/bin/codesign	the certificate into it
+security list-keychains -d user -s $kc /Users/someone/Library/Keychains/login.keychain-db	searched beside the user's
+flutter build macos --release --build-name 1.2.3 --build-number 45 --dart-define JEANSH_VERSION=1.2.3+45 --dart-define MACOS_KEYCHAIN_GROUP=$group	the access group into the app
+codesign --force --options runtime --timestamp --sign $id --keychain $kc $app/Contents/Frameworks/App.framework	frameworks first
+codesign --force --options runtime --timestamp --entitlements <work>/signing/Release.entitlements --sign $id --keychain $kc $app	then the app, with the hardened runtime
+codesign --verify --deep --strict --verbose=2 $app	verified
+xcrun notarytool submit <work>/signing/notarize.zip --key <work>/signing/AuthKey.p8 --key-id KEY123 --issuer issuer-1 --wait --timeout 30m --output-format json	the app notarized
+xcrun stapler staple $app	the app stapled
+spctl --assess --type execute --verbose=2 $app	Gatekeeper asked
+codesign --force --timestamp --sign $id --keychain $kc $dmg	the disk image signed
+xcrun stapler staple $dmg	the disk image stapled
+security list-keychains -d user -s /Users/someone/Library/Keychains/login.keychain-db	the search list put back
+security delete-keychain $kc	the keychain deleted
+EOF
 }
-expect "security create-keychain -p 0123456789abcdef $kc" "a keychain of the build's own"
-expect "security import <work>/signing/certificate.p12 -k $kc -P pw -f pkcs12 -T /usr/bin/codesign" "the certificate into it"
-expect "security list-keychains -d user -s $kc /Users/someone/Library/Keychains/login.keychain-db" "searched beside the user's"
-expect "--dart-define MACOS_KEYCHAIN_GROUP=$group" "the access group into the app"
-expect "codesign --force --options runtime --timestamp --sign 2222222222222222222222222222222222222222 --keychain $kc build/macos/Build/Products/Release/Jeansh.app/Contents/Frameworks/App.framework" "frameworks first"
-expect "codesign --force --options runtime --timestamp --entitlements <work>/signing/Release.entitlements --sign 2222222222222222222222222222222222222222 --keychain $kc build/macos/Build/Products/Release/Jeansh.app" "then the app, with the hardened runtime"
-expect "codesign --verify --deep --strict --verbose=2 build/macos/Build/Products/Release/Jeansh.app" "verified"
-expect "xcrun notarytool submit <work>/signing/notarize.zip --key <work>/signing/AuthKey.p8 --key-id KEY123 --issuer issuer-1 --wait --timeout 30m --output-format json" "the app notarized"
-expect "xcrun stapler staple build/macos/Build/Products/Release/Jeansh.app" "the app stapled"
-expect "spctl --assess --type execute --verbose=2 build/macos/Build/Products/Release/Jeansh.app" "Gatekeeper asked"
-expect "codesign --force --timestamp --sign 2222222222222222222222222222222222222222 --keychain $kc <t>/repo/dist/1.2.3+45/Jeansh-1.2.3+45-macos.dmg" "the disk image signed"
-expect "xcrun stapler staple <t>/repo/dist/1.2.3+45/Jeansh-1.2.3+45-macos.dmg" "the disk image stapled"
-expect "security list-keychains -d user -s /Users/someone/Library/Keychains/login.keychain-db" "the search list put back"
-expect "security delete-keychain $kc" "the keychain deleted"
+# How many of on_expected's calls the last run's log lacks.
+on_misses() {
+  local n=0 line what
+  while IFS=$'\t' read -r line what; do
+    grep -qxF -- "$line" "$work/log" || n=$((n + 1))
+  done < <(on_expected)
+  printf '%s\n' "$n"
+}
+while IFS=$'\t' read -r line what; do
+  if grep -qxF -- "$line" "$work/log"; then
+    pass "on: $what"
+  else
+    fail "on: $what ($line)"
+  fi
+done < <(on_expected)
+[ "$(on_misses)" = 0 ] || cat "$work/log"
 # Stapled before it is packaged: the zip and the disk image carry the ticket.
 staple=$(grep -n 'stapler staple build/' "$work/log" | head -1 | cut -d: -f1)
 zip=$(grep -n 'ditto -c -k --keepParent build/macos/Build/Products/Release/Jeansh.app <t>/repo/dist' "$work/log" | cut -d: -f1)
@@ -322,6 +348,37 @@ for name in MACOS_CERT_P12_BASE64 MACOS_CERT_PASSWORD MACOS_TEAM_ID \
   grep -qF "$name: \${{ matrix.target == 'macos' && secrets.$name || '' }}" "$flow" ||
     fail "release.yml does not hand $name to the macOS build alone"
 done
+
+# ------------------------------------------------------------- self-checks
+
+# The checks above must bite. Each is shown failing on a change made here, in
+# a scratch copy or a stand-in, never in the script any branch carries.
+
+# Off: two independent lines of the script swapped, the toolchain's version
+# lines, which nothing reads, and the baseline must see it.
+swapped="$work/swapped.sh"
+awk '/^printf .Flutter: / { held = $0; next }
+  { print }
+  /^printf .Xcode: / && held != "" { print held }' "$script" >"$swapped"
+if cmp -s "$script" "$swapped"; then
+  fail "self-check: the version lines to swap were not found"
+else
+  run "$swapped"
+  if [ "$status" = 0 ] && ! off_matches; then
+    pass "self-check: the off baseline sees two commands swapped"
+  else
+    fail "self-check: the off baseline missed two commands swapped"
+  fi
+fi
+
+# On: codesign recording one argument more, and the sequence must miss it.
+run "$script" MACOS_DEVELOPER_ID=true "${secrets[@]}" FAKE_EXTRA_FOR=codesign
+misses=$(on_misses)
+if [ "$status" = 0 ] && [ "$misses" -gt 0 ]; then
+  pass "self-check: the on sequence sees codesign's extra argument ($misses calls)"
+else
+  fail "self-check: the on sequence missed codesign's extra argument"
+fi
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d failed\n' "$failures"
