@@ -141,9 +141,14 @@ class KeystoreSecretStore implements SecretStore {
         await _storage.write(key: key, value: wanted);
       }
     } finally {
-      // Read afresh next time: what the keychain holds is its to say.
+      // A delete, or a write that failed, is read afresh next time: what
+      // the keychain holds is its to say. A read started meanwhile is
+      // dropped too, so it cannot put back what was there before.
       _forget(key);
     }
+    // Written, so kept: it cannot be stale, and the open secret made on a
+    // first connect is not read back at the next.
+    if (_keepReads && wanted != null) _kept[key] = wanted;
   }
 
   @override

@@ -4,7 +4,7 @@
 // sshd (e2e.yml), through KeystoreSecretStore's own counters.
 //
 // 2x2: the kept read (macOS) shows 0 reads on a reconnect and the unkept
-// (Linux) shows more; a changed password is read once and used, so the stale
+// (Linux) shows more; a changed password is kept as written and used, so the stale
 // one is never sent, and the same password again is not written.
 //
 // The job's user is throwaway: its password is changed here, on the machine,
@@ -204,43 +204,15 @@ void main() {
       );
       await shellUp('first connect');
       final r1 = KeystoreSecretStore.keychainReads;
-      var r1Cold = r1;
       expect(r1, greaterThan(0), reason: 'the first connect read the password');
-
-      // Which keys the first connect left unkept, by name (names only, never
-      // a value): a key whose read reaches the keychain now was not held.
-      // Reading it here keeps it, so what the reconnect still reads is
-      // outside this list.
-      final cold = <String>[];
-      for (final candidate in [
-        ...SecretKeys.allFor(id),
-        'sshbox.notify.keys',
-        'sshbox.notify.revoke',
-        'sshbox.notify.key',
-      ]) {
-        final before = KeystoreSecretStore.keychainReads;
-        await secrets.read(candidate);
-        if (KeystoreSecretStore.keychainReads != before) cold.add(candidate);
-      }
-      debugPrint('KEYS unkept after the first connect: $cold');
-      r1Cold = KeystoreSecretStore.keychainReads;
 
       await drop();
       await reconnect();
       await shellUp('reconnect');
-      final delta = KeystoreSecretStore.keychainReads - r1Cold;
-      debugPrint(
-        'KEYS read: first connect $r1, probing ${r1Cold - r1}, reconnect '
-        '$delta',
-      );
+      final delta = KeystoreSecretStore.keychainReads - r1;
+      debugPrint('KEYS read: first connect $r1, reconnect $delta');
       if (keeps) {
-        expect(
-          delta,
-          0,
-          reason:
-              'macOS: a reconnect reads nothing, though $cold were unkept '
-              'after the first connect and are kept now',
-        );
+        expect(delta, 0, reason: 'macOS: a reconnect reads nothing');
       } else {
         expect(
           delta,
@@ -269,8 +241,8 @@ void main() {
       if (keeps) {
         expect(
           KeystoreSecretStore.keychainReads - reads2,
-          1,
-          reason: 'the changed key is read once, afresh',
+          0,
+          reason: 'the password just written is kept: no read to reach it',
         );
       }
       debugPrint(

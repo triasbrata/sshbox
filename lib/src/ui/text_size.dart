@@ -160,6 +160,11 @@ class UiZoomKeys {
     }
     final direction = _direction(key);
     if (direction == null) return KeyEventResult.ignored;
+    // Holding the chord is one step, not one per repeat; a repeat of a press
+    // this took is still this one's.
+    if (event is KeyRepeatEvent && _down.contains(key)) {
+      return KeyEventResult.handled;
+    }
     final keys = HardwareKeyboard.instance;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
     final chord = mac ? keys.isMetaPressed : keys.isControlPressed;
@@ -243,7 +248,10 @@ class _UiZoomWheelState extends State<UiZoomWheel> {
 /// scroll as Ctrl or ⌘ with the wheel zooms. A scrollable claims a wheel turn
 /// before the zoom's root Listener can, but reads it along the other axis
 /// when one of [pointerAxisModifiers] is held, as Shift does, and a vertical
-/// list finds nothing there to claim. A terminal opts out.
+/// list finds nothing there to claim. A horizontal one finds the wheel's
+/// vertical turn there and would scroll sideways, so while either key is held
+/// no scrollable using this behaviour's physics accepts a user offset either.
+/// A terminal opts out of the zoom itself.
 class ZoomScrollBehavior extends MaterialScrollBehavior {
   const ZoomScrollBehavior();
 
@@ -257,4 +265,23 @@ class ZoomScrollBehavior extends MaterialScrollBehavior {
     LogicalKeyboardKey.metaLeft,
     LogicalKeyboardKey.metaRight,
   };
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) =>
+      _NoScrollWhileZooming(parent: super.getScrollPhysics(context));
+}
+
+class _NoScrollWhileZooming extends ScrollPhysics {
+  const _NoScrollWhileZooming({super.parent});
+
+  @override
+  _NoScrollWhileZooming applyTo(ScrollPhysics? ancestor) =>
+      _NoScrollWhileZooming(parent: buildParent(ancestor));
+
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) {
+    final keys = HardwareKeyboard.instance;
+    if (keys.isControlPressed || keys.isMetaPressed) return false;
+    return super.shouldAcceptUserOffset(position);
+  }
 }
