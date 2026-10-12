@@ -578,12 +578,12 @@ void main() {
         'never the FCM token, nor the bearer key of old', () async {
       final notifyKeys = await withToken(FakeRelay());
       final environment = await sent(SessionManager(notifyKeys: notifyKeys));
-      expect(environment, {
-        'LC_SSHBOX_HYPERLINKS': '1',
-        'LC_SSHBOX_KEY': await notifyKeys.valueFor('host-1'),
-        'LC_SSHBOX_HOST_ID': 'host-1',
-      });
-      expect(environment!['LC_SSHBOX_KEY'], startsWith('jnk_'));
+      // The key is registered, and goes to a file on the host: never a
+      // variable, which an ssh started from the shell would hand on.
+      expect(await notifyKeys.valueFor('host-1'), startsWith('jnk_'));
+      expect(environment, {'LC_SSHBOX_HYPERLINKS': '1'});
+      expect(environment!.keys, isNot(contains('LC_SSHBOX_KEY')));
+      expect(environment.keys, isNot(contains('LC_SSHBOX_HOST_ID')));
       expect(environment.keys, isNot(contains('LC_SSHBOX_TOKEN')));
       expect(environment.values, isNot(contains('fcm-token')));
     });
@@ -595,11 +595,7 @@ void main() {
 
       expect(await sent(manager), _hyperlinksOnly);
       relay.down = false;
-      expect((await sent(manager))!.keys, {
-        'LC_SSHBOX_HYPERLINKS',
-        'LC_SSHBOX_KEY',
-        'LC_SSHBOX_HOST_ID',
-      });
+      expect((await sent(manager))!.keys, {'LC_SSHBOX_HYPERLINKS'});
     });
 
     test('a Local or WSL shell gets no key: there is no host to send '
@@ -696,8 +692,6 @@ void main() {
         );
         expect((await sent(both))!.keys, {
           'LC_SSHBOX_HYPERLINKS',
-          'LC_SSHBOX_KEY',
-          'LC_SSHBOX_HOST_ID',
           'LC_SSHBOX_NOTIFY_URL',
           'LC_SSHBOX_NOTIFY_SECRET',
         });

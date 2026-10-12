@@ -33,8 +33,12 @@ class _Box
         SessionTransport,
         TerminalSession,
         CommandCapable,
-        ChannelCapable {
+        ChannelCapable,
+        ForwardCapable {
   _Box(this.answer);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 
   final String answer;
   final out = StreamController<String>.broadcast();
@@ -49,7 +53,10 @@ class _Box
     bool shell = true,
     Map<String, String> environment = const {},
     Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
-  }) async => this;
+  }) async {
+    await beforeShell?.call(this);
+    return this;
+  }
 
   @override
   Stream<String> run(String command, {bool pty = false}) =>
@@ -61,7 +68,7 @@ class _Box
     return (
       output: reply.stream,
       write: (data) {
-        secrets.add(utf8.decode(data).trim());
+        secrets.add(utf8.decode(data).split('\n').first);
         reply.add(Uint8List.fromList(utf8.encode('$answer\n')));
         reply.close();
       },
@@ -192,6 +199,9 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('e2e@127.0.0.1:1'));
     await _settle(tester);
+    for (var i = 0; i < 100 && box.secrets.isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
     await tester.pump(const Duration(milliseconds: 300));
     // Nothing is said of a clean install.
     expect(find.textContaining('jeansh'), findsNothing);
