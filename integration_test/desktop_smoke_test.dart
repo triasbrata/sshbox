@@ -36,6 +36,10 @@ import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:sshbox/src/ui/file_browser_page.dart' show FileBrowserPage;
+import 'package:sshbox/src/files/html_site.dart' show HtmlSite;
+import 'package:sshbox/src/ui/web_page.dart' show WebPage;
 import 'package:sshbox/src/session/session_manager.dart' show LiveSession;
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/key_bar.dart'
@@ -1376,6 +1380,214 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// This machine's `jeansh-zip.*` folders, which the archive script makes
+/// under $TMPDIR and removes however it ends.
+List<String> _zipTemps() => Directory.systemTemp
+    .listSync()
+    .map((e) => e.path.split('/').last)
+    .where((n) => n.startsWith('jeansh-zip.'))
+    .toList();
+
+/// The desktop's folder picker answered by the test, and its save dialog
+/// passed on to the real one, counting both. Installed until the test ends.
+class _PickFolder extends FileSelectorPlatform {
+  _PickFolder(this._real);
+
+  final FileSelectorPlatform _real;
+
+  /// What the folder picker answers.
+  String? directory;
+  int asked = 0;
+  int saveAsked = 0;
+
+  static _PickFolder install() {
+    final real = FileSelectorPlatform.instance;
+    final picker = _PickFolder(real);
+    FileSelectorPlatform.instance = picker;
+    addTearDown(() => FileSelectorPlatform.instance = real);
+    return picker;
+  }
+
+  @override
+  Future<String?> getDirectoryPathWithOptions(FileDialogOptions options) async {
+    asked++;
+    return directory;
+  }
+
+  @override
+  Future<FileSaveLocation?> getSaveLocation({
+    List<XTypeGroup>? acceptedTypeGroups,
+    SaveDialogOptions options = const SaveDialogOptions(),
+  }) {
+    saveAsked++;
+    return _real.getSaveLocation(
+      acceptedTypeGroups: acceptedTypeGroups,
+      options: options,
+    );
+  }
+}
+
+/// One HTTP request to 127.0.0.1:[port] on a raw socket, so nothing
+/// normalises the path (`..` stays `..`) and the Host can be any text.
+Future<({int status, String body})> _rawRequest(
+  int port,
+  String path, {
+  String method = 'GET',
+  String? host,
+}) async {
+  final socket = await Socket.connect('127.0.0.1', port);
+  socket.write(
+    '$method $path HTTP/1.1\r\nHost: ${host ?? '127.0.0.1:$port'}\r\n'
+    'Connection: close\r\n\r\n',
+  );
+  final bytes = <int>[];
+  await socket.forEach(bytes.addAll).timeout(const Duration(seconds: 15));
+  socket.destroy();
+  final text = latin1.decode(bytes);
+  final split = text.indexOf('\r\n\r\n');
+  return (
+    status: int.parse(text.split(' ')[1]),
+    body: split < 0 ? '' : text.substring(split + 4),
+  );
+}
+
+/// What a served HTML file's address must and must not give, over real
+/// sockets: the page and its css and js to a request that is right, and a
+/// refusal, never the page or the secret, to every request that is not.
+Future<void> _assertSiteConfined(
+  Uri url, {
+  required String secret,
+  required bool link,
+}) async {
+  final port = url.port;
+  final token = url.pathSegments.first;
+  // A real HTTP client's GET, then the files the page loads.
+  final client = HttpClient();
+  try {
+    final response = await (await client.getUrl(url)).close();
+    final body = await utf8.decodeStream(response);
+    expect(response.statusCode, 200);
+    expect(body, contains('app.js'));
+  } finally {
+    client.close(force: true);
+  }
+  final css = await _rawRequest(port, '/$token/style.css');
+  expect(css.status, 200);
+  expect(css.body, contains('e2e-css'));
+  final js = await _rawRequest(port, '/$token/app.js');
+  expect(js.status, 200);
+  expect(js.body, contains('Jeansh e2e js ran'));
+
+  // Refused, each one: a status of 403 or 404, with neither the page nor
+  // what is outside the folder in what comes back.
+  Future<void> refused(
+    String what,
+    Future<({int status, String body})> request, {
+    List<int> statuses = const [403, 404],
+  }) async {
+    final r = await request;
+    expect(statuses, contains(r.status), reason: '$what gave ${r.status}');
+    expect(r.body, isNot(contains(secret)), reason: '$what leaked the secret');
+    expect(r.body, isNot(contains('app.js')), reason: '$what gave the page');
+  }
+
+  await refused('a ..', _rawRequest(port, '/$token/../secret.txt'));
+  await refused(
+    'an escaped ..',
+    _rawRequest(port, '/$token/%2e%2e/secret.txt'),
+  );
+  await refused(
+    'a separator in an escape',
+    _rawRequest(port, '/$token/%2e%2e%2fsecret.txt'),
+  );
+  await refused(
+    'a wrong token',
+    _rawRequest(port, '/${'0' * 32}/page.html'),
+    statuses: const [404],
+  );
+  await refused(
+    'no token',
+    _rawRequest(port, '/page.html'),
+    statuses: const [404],
+  );
+  await refused(
+    'a Host that is not this machine (DNS rebinding)',
+    _rawRequest(port, '/$token/page.html', host: 'rebind.example:$port'),
+    statuses: const [403],
+  );
+  await refused(
+    'a POST',
+    _rawRequest(port, '/$token/page.html', method: 'POST'),
+    statuses: const [405],
+  );
+  if (link) {
+    await refused(
+      'a link out of the folder',
+      _rawRequest(port, '/$token/link.txt'),
+      statuses: const [403],
+    );
+  }
+}
+
+/// The files a served page loads, in a folder of the test's own, with a
+/// secret beside it that nothing may serve. Returns the page's path.
+({String page, String secret}) _htmlSite(Directory dir, {required bool link}) {
+  final site = Directory('${dir.path}/site')..createSync();
+  final secret = 'SECRET-${dir.path.hashCode}';
+  File('${dir.path}/secret.txt').writeAsStringSync(secret);
+  File('${site.path}/page.html').writeAsStringSync(
+    '<!doctype html><title>js did not run</title>'
+    '<link rel="stylesheet" href="style.css">'
+    '<p id="out">hello</p><script src="app.js"></script>\n',
+  );
+  File('${site.path}/style.css').writeAsStringSync('/* e2e-css */ p{}\n');
+  File('${site.path}/app.js')
+      .writeAsStringSync("document.title = 'Jeansh e2e js ran';\n");
+  File('${site.path}/note.txt').writeAsStringSync('not html\n');
+  if (link) Link('${site.path}/link.txt').createSync('../secret.txt');
+  return (page: '${site.path}/page.html', secret: secret);
+}
+
+/// The drawer of a Local shell, opened and walked down to [dir]'s `site`
+/// folder, which it lists.
+Future<void> _drawerAtSite(WidgetTester tester, Directory dir) async {
+  await _localShell(tester);
+  await tester.tap(find.byTooltip('Browse files'));
+  final folder = find.text(dir.path.split('/').last);
+  await _until(
+    tester,
+    () => folder.evaluate().isNotEmpty,
+    "the drawer to list the test's folder in the home",
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  await tester.tap(folder);
+  final site = find.text('site');
+  await _until(
+    tester,
+    () => site.evaluate().isNotEmpty,
+    'the drawer to list the site folder',
+  );
+  await tester.tap(site);
+  await _until(
+    tester,
+    () => find.text('page.html').evaluate().isNotEmpty,
+    'the drawer to list the page',
+  );
+}
+
+/// Selects [name] in the drawer with a right-click, and shuts the menu that
+/// opens, so the header's Open in browser tab is for it.
+Future<void> _selectInDrawer(WidgetTester tester, String name) async {
+  await tester.tapAt(
+    tester.getCenter(find.text(name)),
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryMouseButton,
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  await _escape(tester);
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
 /// A host whose connect waits on [gate], then comes up or refuses, and keeps
 /// what the app wrote to it: a stand-in for a shell that is slow to start.
 class _EarlyHost implements SessionTransport, TerminalSession {
@@ -2696,6 +2908,597 @@ touch '${done.path}'
     },
   );
 
+  // #271: Download as zip and Download folder on a folder in the files
+  // drawer, over the real Local shell's own browser. The zip is made by the
+  // machine's real `zip`, so its flags (-y, -nw) are run, which the unit
+  // tests' stand-ins could not. The folder picker is the one thing put in
+  // place of the OS: the zip's save dialog is answered by xdotool as in the
+  // download test, the folder dialog is answered by a stand-in here.
+  _test(
+    'a folder downloads as a zip and as its tree, a link is never followed '
+    'and nothing is left behind',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true'
+        ? 'real zip, the save dialog and the temp folder are Linux CI only'
+        : null,
+    (tester) async {
+      final tools = await Process.run('sh', [
+        '-c',
+        'command -v zip && command -v unzip',
+      ]);
+      expect(tools.exitCode, 0, reason: 'this runner has no zip or unzip');
+      final picker = _PickFolder.install();
+      final home = Platform.environment['HOME']!;
+      final dir = Directory(home).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final src = Directory('${dir.path}/dev')..createSync();
+      const spaced = "a b's.txt";
+      final spacedBytes = List<int>.generate(5000, (i) => i % 251);
+      File('${src.path}/$spaced').writeAsBytesSync(spacedBytes);
+      File('${src.path}/plain.txt').writeAsStringSync('plain\n');
+      // What a link in the folder points at, outside it.
+      final secret = 'SECRET-${dir.path.hashCode}';
+      final outside = File('${dir.path}/outside-secret.txt')
+        ..writeAsStringSync(secret);
+      final outsideDir = Directory('${dir.path}/outside-dir')..createSync();
+      File('${outsideDir.path}/inner-secret.txt').writeAsStringSync(secret);
+      Link('${src.path}/escape.txt').createSync(outside.path);
+      Link('${src.path}/escape-dir').createSync(outsideDir.path);
+
+      expect(_zipTemps(), isEmpty, reason: 'a leftover from before this test');
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder in the home",
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(folder);
+      final dev = find.text('dev');
+      await _until(
+        tester,
+        () => dev.evaluate().isNotEmpty,
+        'the drawer to show the folder to download',
+      );
+      Future<void> menu(String item) async {
+        await tester.tapAt(
+          tester.getCenter(dev),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, item);
+      }
+
+      Future<Transfer> ended(String name, Set<Transfer> before) async {
+        Transfer? mine() => transfers.items
+            .where((t) => t.name == name && !before.contains(t))
+            .firstOrNull;
+        await _until(
+          tester,
+          () => mine() != null && mine()!.state != TransferState.running,
+          'the transfer $name to end',
+          timeout: const Duration(seconds: 90),
+        );
+        return mine()!;
+      }
+
+      // 1. Zip. The archive lands where the dialog was told, and is the
+      // folder's, links kept as links.
+      final out = _scratch();
+      final zipTarget = '${out.path}/dev.zip';
+      var before = transfers.items.toSet();
+      ProcessResult? answer;
+      await menu('Download as zip');
+      unawaited(_answerSaveDialog(zipTarget).then((r) => answer = r));
+      final zipped = await ended('dev.zip', before);
+      if (zipped.state == TransferState.failed) {
+        fail('the zip failed: ${zipped.error}');
+      }
+      await _until(tester, () => answer != null, 'the dialog answered');
+      expect(answer!.exitCode, 0, reason: '${answer!.stdout}${answer!.stderr}');
+      expect(zipped.state, TransferState.done);
+      expect(
+        FileSystemEntity.identicalSync(
+          Uri.parse(zipped.saved!).toFilePath(),
+          zipTarget,
+        ),
+        isTrue,
+      );
+      final listing = await Process.run('unzip', ['-Z1', zipTarget]);
+      expect(listing.exitCode, 0, reason: '${listing.stderr}');
+      final entries = '${listing.stdout}'
+          .split('\n')
+          .where((l) => l.isNotEmpty)
+          .map((l) => l.endsWith('/') ? l.substring(0, l.length - 1) : l)
+          .toSet();
+      expect(entries, {
+        'dev',
+        'dev/$spaced',
+        'dev/plain.txt',
+        'dev/escape.txt',
+        'dev/escape-dir',
+      });
+      // Absent: what the links point at, which -y keeps from the archive.
+      expect(
+        entries.where((e) => e.contains('inner-secret')),
+        isEmpty,
+        reason: 'the zip walked into a linked folder',
+      );
+      final everything = await Process.run('unzip', [
+        '-p',
+        zipTarget,
+      ], stdoutEncoding: null);
+      expect(
+        latin1.decode(everything.stdout as List<int>),
+        isNot(contains(secret)),
+        reason: 'the zip carries the content of what a link points at',
+      );
+      final unpacked = _scratch();
+      final unzip = await Process.run('unzip', [
+        '-q',
+        zipTarget,
+        '-d',
+        unpacked.path,
+      ]);
+      expect(unzip.exitCode, 0, reason: '${unzip.stderr}');
+      expect(
+        File('${unpacked.path}/dev/$spaced').readAsBytesSync(),
+        spacedBytes,
+      );
+      expect(
+        File('${unpacked.path}/dev/plain.txt').readAsStringSync(),
+        'plain\n',
+      );
+      expect(
+        FileSystemEntity.typeSync(
+          '${unpacked.path}/dev/escape.txt',
+          followLinks: false,
+        ),
+        FileSystemEntityType.link,
+        reason: 'a link comes out as a link, not as the file it names',
+      );
+      expect(_zipTemps(), isEmpty, reason: 'the zip left its folder behind');
+      expect(out.listSync().map((e) => e.path.split('/').last), [
+        'dev.zip',
+      ], reason: 'the save folder holds more than the archive');
+
+      // 2. Plain: the tree, byte for byte, with the links skipped and said.
+      final target = _scratch();
+      picker.directory = target.path;
+      before = transfers.items.toSet();
+      await menu('Download folder');
+      final plain = await ended('dev', before);
+      expect(picker.asked, 1, reason: 'the folder picker was not asked');
+      expect(plain.state, TransferState.done, reason: '${plain.error}');
+      expect(plain.note, '2 files, 0 failed, 2 skipped');
+      expect(File('${target.path}/dev/$spaced').readAsBytesSync(), spacedBytes);
+      expect(
+        File('${target.path}/dev/plain.txt').readAsStringSync(),
+        'plain\n',
+      );
+      expect(
+        Directory('${target.path}/dev')
+            .listSync()
+            .map((e) => e.path.split('/').last)
+            .toSet(),
+        {spaced, 'plain.txt'},
+        reason: 'the tree holds something besides its two files',
+      );
+      for (final name in ['escape.txt', 'escape-dir']) {
+        expect(
+          FileSystemEntity.typeSync(
+            '${target.path}/dev/$name',
+            followLinks: false,
+          ),
+          FileSystemEntityType.notFound,
+          reason: '$name, a link, was downloaded',
+        );
+      }
+      for (final e in target.listSync(recursive: true).whereType<File>()) {
+        expect(
+          e.readAsStringSync(encoding: latin1),
+          isNot(contains(secret)),
+          reason: '${e.path} holds what a link points at',
+        );
+      }
+      expect(target.listSync().map((e) => e.path.split('/').last), [
+        'dev',
+      ], reason: 'a .jeansh-part-* was left in the target');
+      // The end dialog names what was skipped, and no failure.
+      await _until(
+        tester,
+        () => find
+            .textContaining('Skipped, never followed')
+            .evaluate()
+            .isNotEmpty,
+        'the end dialog to list what was skipped',
+      );
+      expect(find.textContaining('escape.txt'), findsWidgets);
+      expect(find.textContaining('Failed:'), findsNothing);
+      await tester.tap(_label('OK'));
+      await tester.pump(const Duration(seconds: 1));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #271, the negatives: a host with no archiver offers the plain download
+  // and makes no zip, and a cancel while compressing leaves nothing on the
+  // host. The drawer is the real FileBrowserPage over a real
+  // LocalFileBrowser, started with the environment the test chooses.
+  _test(
+    'a host with no zip tool offers Plain download, and a cancel while '
+    'compressing leaves no folder and no process',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true'
+        ? 'real zip, and the temp folder, are Linux CI only'
+        : null,
+    (tester) async {
+      final picker = _PickFolder.install();
+      final home = Platform.environment['HOME']!;
+      final dir = Directory(home).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final small = Directory('${dir.path}/dev')..createSync();
+      File('${small.path}/one.txt').writeAsStringSync('one\n');
+      File('${small.path}/two words.txt').writeAsStringSync('two\n');
+      // A PATH with nothing in it, so no zip, 7z, bsdtar or tar is found;
+      // sh's own builtins still run the probe.
+      final empty = _scratch();
+      Future<Process> noTools(String c) => Process.start(
+        '/bin/sh',
+        ['-c', c],
+        environment: {'PATH': empty.path, 'HOME': empty.path},
+        includeParentEnvironment: false,
+      );
+      Future<Process> real(String c) =>
+          Process.start('/bin/sh', ['-c', c], workingDirectory: home);
+
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      Future<void> openDrawer(
+        Future<Process> Function(String) process,
+        String title,
+        String root,
+      ) async {
+        unawaited(
+          navigator.push(
+            PageRouteBuilder<void>(
+              pageBuilder: (_, _, _) => FileBrowserPage(
+                browser: LocalFileBrowser(
+                  process: process,
+                  home: () async => home,
+                ),
+                title: title,
+                initialRoot: root,
+              ),
+            ),
+          ),
+        );
+        await _until(
+          tester,
+          () => find.textContaining(title).evaluate().isNotEmpty,
+          'the files page of $title',
+        );
+      }
+
+      Future<void> menu(String row, String item) async {
+        final target = find.text(row);
+        await _until(
+          tester,
+          () => target.evaluate().isNotEmpty,
+          'the page to list $row',
+        );
+        await tester.tapAt(
+          tester.getCenter(target),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, item);
+      }
+
+      // 3a. No tool: the dialog, no zip row and no save dialog, and Plain
+      // download goes to the folder picker and brings the tree.
+      final out = _scratch();
+      picker.directory = out.path;
+      var before = transfers.items.toSet();
+      await openDrawer(noTools, 'no-tool host', dir.path);
+      await menu('dev', 'Download as zip');
+      await _until(
+        tester,
+        () => find.textContaining('No zip tool on no-tool host').evaluate().isNotEmpty,
+        'the dialog that says the host has no zip tool',
+      );
+      expect(
+        transfers.items.where((t) => !before.contains(t)),
+        isEmpty,
+        reason: 'a zip row exists for a host with no tool',
+      );
+      expect(picker.asked, 0, reason: 'the folder picker opened too soon');
+      expect(picker.saveAsked, 0, reason: 'a save dialog opened with no zip');
+      await tester.tap(_label('Plain download'));
+      Transfer? plain() => transfers.items
+          .where((t) => !before.contains(t) && t.name == 'dev')
+          .firstOrNull;
+      await _until(
+        tester,
+        () => plain() != null && plain()!.state != TransferState.running,
+        'the plain download to end',
+        timeout: const Duration(seconds: 60),
+      );
+      expect(picker.asked, 1);
+      expect(plain()!.state, TransferState.done, reason: '${plain()!.error}');
+      expect(File('${out.path}/dev/one.txt').readAsStringSync(), 'one\n');
+      expect(File('${out.path}/dev/two words.txt').readAsStringSync(), 'two\n');
+      expect(
+        transfers.items.where(
+          (t) => !before.contains(t) && t.name == 'dev.zip',
+        ),
+        isEmpty,
+        reason: 'a zip row appeared for a host with no zip tool',
+      );
+      expect(picker.saveAsked, 0);
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+
+      // 3b. Cancel while compressing a big folder.
+      final big = Directory('${dir.path}/big')..createSync();
+      for (var i = 0; i < 3; i++) {
+        final made = await Process.run('dd', [
+          'if=/dev/urandom',
+          'of=${big.path}/chunk$i.bin',
+          'bs=1M',
+          'count=100',
+        ]);
+        expect(made.exitCode, 0, reason: '${made.stderr}');
+      }
+      Future<bool> zipRunning() async =>
+          (await Process.run('pgrep', ['-f', r'jeansh-zip\.'])).exitCode == 0;
+      expect(_zipTemps(), isEmpty);
+      expect(await zipRunning(), isFalse);
+      before = transfers.items.toSet();
+      await openDrawer(real, 'real host', dir.path);
+      await menu('big', 'Download as zip');
+      Transfer? zipping() => transfers.items
+          .where((t) => !before.contains(t) && t.name == 'big.zip')
+          .firstOrNull;
+      await _until(
+        tester,
+        () => zipping()?.phase?.startsWith('Compressing') ?? false,
+        'the row to say Compressing',
+      );
+      // The precondition that makes the rest mean something: the host has
+      // its folder and its zip running before the cancel.
+      await _until(
+        tester,
+        () async => _zipTemps().isNotEmpty && await zipRunning(),
+        'the host to have its archive folder and a zip process',
+      );
+      expect(zipping()!.state, TransferState.running);
+      transfers.cancel(zipping()!);
+      await _until(
+        tester,
+        () => zipping()!.state != TransferState.running,
+        'the cancelled transfer to end',
+        timeout: const Duration(seconds: 30),
+      );
+      expect(zipping()!.state, TransferState.cancelled);
+      // The host is clean, given a moment for the shell's trap to run.
+      await _until(
+        tester,
+        () async => _zipTemps().isEmpty && !await zipRunning(),
+        'the host to hold no jeansh-zip folder and no zip process',
+      );
+      expect(_zipTemps(), isEmpty, reason: 'the cancel left a folder');
+      expect(await zipRunning(), isFalse, reason: 'a zip process outlived it');
+      expect(picker.saveAsked, 0, reason: 'a cancel reached the save dialog');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #272, every desktop: the site an HTML file is served from. Over real
+  // sockets: its folder's files to a request that is right, and a refusal to
+  // `..`, a wrong token, another Host and a link, and nothing listening once
+  // it is closed. The same class a tab and the outside dialog serve with.
+  _test('an HTML file is served to its own folder, to this machine, and only '
+      'while it is open', (tester) async {
+    final dir = Directory(
+      Platform.environment['HOME'] ?? Platform.environment['USERPROFILE']!,
+    ).createTempSync('0-jeansh-e2e-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    // Creating a link on Windows needs a privilege a runner may not have.
+    final made = _htmlSite(dir, link: !Platform.isWindows);
+    final browser = Platform.isWindows
+        ? LocalFileBrowser(
+            process: (command) => Process.start('cmd', ['/c', command]),
+            windows: true,
+          )
+        : LocalFileBrowser(
+            process: (command) => Process.start('/bin/sh', ['-c', command]),
+            home: () async => dir.path,
+          );
+    final site = await HtmlSite.start(
+      browser: browser,
+      htmlPath: made.page.replaceAll(r'\', '/'),
+    );
+    var closed = false;
+    addTearDown(() async {
+      if (!closed) await site.close();
+    });
+    await _assertSiteConfined(
+      site.url,
+      secret: made.secret,
+      link: !Platform.isWindows,
+    );
+    final port = site.url.port;
+    await site.close();
+    closed = true;
+    await expectLater(
+      Socket.connect('127.0.0.1', port, timeout: const Duration(seconds: 5)),
+      throwsA(isA<SocketException>()),
+      reason: 'the port still answers after the site was closed',
+    );
+  });
+
+  // #272, Linux: no web view, so Open in browser tab hands the page to the
+  // machine's browser, with the dialog, and no tab opens. The browser is the
+  // run's own stand-in, a handler for http that notes the address it is
+  // given (CI only: elsewhere the machine's own browser would open).
+  _test(
+    'Open in browser tab on Linux opens outside Jeansh, serves the page to '
+    'its folder alone, and stops serving at Done',
+    skip: !Platform.isLinux
+        ? 'a Mac has a web tab, and a Windows Local shell has no drawer'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI the machine's own browser would open"
+        : null,
+    (tester) async {
+      final data = Platform.environment['XDG_DATA_HOME']!;
+      final opened = File('$data/e2e-opened-html')
+        ..writeAsStringSync('', flush: true);
+      final browser = File('$data/e2e-html-browser')
+        ..writeAsStringSync(
+          '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${opened.path}\'\n',
+        );
+      Process.runSync('chmod', ['755', browser.path]);
+      Directory('$data/applications').createSync(recursive: true);
+      File('$data/applications/e2e-html-browser.desktop').writeAsStringSync(
+        '[Desktop Entry]\nType=Application\nName=e2e html browser\n'
+        'NoDisplay=true\nExec=${browser.path} %u\n'
+        'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n',
+      );
+      File('$data/applications/mimeapps.list').writeAsStringSync(
+        '[Default Applications]\n'
+        'x-scheme-handler/http=e2e-html-browser.desktop\n'
+        'x-scheme-handler/https=e2e-html-browser.desktop\n',
+      );
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final made = _htmlSite(dir, link: true);
+
+      await _launch(tester);
+      await _drawerAtSite(tester, dir);
+      await _selectInDrawer(tester, 'page.html');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      final dialog = find.byWidgetPredicate(
+        (w) =>
+            w is Text &&
+            (w.data ?? '').toLowerCase().contains('opens outside jeansh'),
+      );
+      await _until(
+        tester,
+        () => dialog.evaluate().isNotEmpty,
+        'the dialog that says the page opens outside Jeansh',
+      );
+      // The launcher was handed this site's address, and only it.
+      final address = RegExp(
+        r'^http://127\.0\.0\.1:(\d+)/([0-9a-f]{32})/page\.html$',
+      );
+      await _until(
+        tester,
+        () => opened.readAsStringSync().trim().isNotEmpty,
+        'the browser to be handed the page',
+      );
+      final given = opened.readAsStringSync().trim().split('\n');
+      expect(given, hasLength(1));
+      expect(
+        address.hasMatch(given.single),
+        isTrue,
+        reason: 'the launcher got ${given.single}',
+      );
+      // Absent: a tab of Jeansh's own.
+      expect(find.byType(WebPage), findsNothing, reason: 'a web tab opened');
+      await _assertSiteConfined(
+        Uri.parse(given.single),
+        secret: made.secret,
+        link: true,
+      );
+      final port = Uri.parse(given.single).port;
+      await tester.tap(_label('Done'));
+      await _until(tester, () async {
+        try {
+          final s = await Socket.connect(
+            '127.0.0.1',
+            port,
+            timeout: const Duration(seconds: 2),
+          );
+          s.destroy();
+          return false;
+        } on SocketException {
+          return true;
+        }
+      }, 'the port to refuse connections after Done');
+      // Popped by Done (the port refused above only once it had been); the
+      // route is gone once its closing animation has run.
+      await _until(
+        tester,
+        () => dialog.evaluate().isEmpty,
+        "the dialog to close after Done",
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #272, macOS: a web tab, drawn by WKWebView, runs the page's script from
+  // the file beside it (it sets the page's title, which names the tab), and a
+  // text file has no such button's effect: no tab.
+  _test(
+    'Open in browser tab on a Mac opens a tab that runs the page, and a text '
+    'file gets none',
+    skip: !Platform.isMacOS
+        ? 'only the Mac draws a web tab here: Linux has none, and a Windows '
+              'Local shell has no drawer'
+        : null,
+    (tester) async {
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      _htmlSite(dir, link: true);
+      await _launch(tester);
+      await _drawerAtSite(tester, dir);
+
+      // A text file: the button does nothing.
+      await _selectInDrawer(tester, 'note.txt');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.byType(WebPage), findsNothing, reason: 'a .txt got a tab');
+
+      // The page: a tab, and its script ran.
+      await _selectInDrawer(tester, 'page.html');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      await _until(
+        tester,
+        () => find.byType(WebPage).evaluate().isNotEmpty,
+        'a web tab for the page',
+      );
+      // Two steps, so a failure says which: the web view finishing the load
+      // (its Stop button, drawn while it loads, goes), and then the title.
+      await _until(
+        tester,
+        () => find.byTooltip('Stop').evaluate().isEmpty,
+        'the web view to finish loading the page (Stop is drawn while it loads)',
+        timeout: const Duration(seconds: 60),
+      );
+      await _until(
+        tester,
+        () => find.textContaining('Jeansh e2e js ran').evaluate().isNotEmpty,
+        "the tab to carry the title the page's script set",
+        timeout: const Duration(seconds: 60),
+      );
+      expect(
+        find.textContaining('js did not run'),
+        findsNothing,
+        reason: "the page's script did not run",
+      );
+      await _closeTabs(tester);
+    },
+  );
   // #276: keys typed before a tab's shell is connected are held and sent, not
   // dropped. A Local shell is duplicated and the new tab typed into the moment
   // it is on the strip: a typed line and a pasted one, both of which must

@@ -163,6 +163,31 @@ void main() {
     expect(await _saved(), {'sessions': [], 'databases': []});
   });
 
+  test('an HTML file tab is not saved: its address dies with the tab', () async {
+    final manager = SessionManager();
+    await manager.restoreTabs(hosts: [_box], databases: []);
+    final session = manager.open(_box);
+    manager.openHtml(session.id, '/home/me/site/index.html');
+    // The tab's page moves to its loopback address, which holds a token that
+    // means nothing after the app is closed.
+    session.updateWeb(
+      session.webTabs.single,
+      url: Uri.parse('http://127.0.0.1:41234/abcdef/index.html'),
+    );
+    await pumpEventQueue();
+    expect(await _saved(), {
+      'sessions': [
+        {
+          'hostId': 'box',
+          'tmux': session.tmuxName,
+          'files': <String>[],
+          'web': <String>[],
+        },
+      ],
+      'databases': <String>[],
+    });
+  });
+
   test('a chat tab is saved and comes back, without a word of what was '
       'said in it', () async {
     final manager = SessionManager();

@@ -86,6 +86,8 @@ class _TransferRow extends StatelessWidget {
       progress: transfer.fraction,
       error: transfer.error,
       cancelling: transfer.cancelling,
+      phase: transfer.phase,
+      note: transfer.note,
       onCancel: running && !transfer.cancelling
           ? () => transfers.cancel(transfer)
           : null,
@@ -127,4 +129,6 @@ String status(Transfer transfer) => tuiTransferStatusLine(
   speedBytesPerSec: transfer.speed,
   error: transfer.error,
   cancelling: transfer.cancelling,
+  phase: transfer.phase,
+  note: transfer.note,
 );

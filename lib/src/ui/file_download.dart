@@ -26,7 +26,7 @@ bool _saving = false;
 
 /// Where a download is saved through file_selector's dialog and copied by the
 /// OS, rather than through Android's channel or file_picker's.
-bool get _desktop => switch (defaultTargetPlatform) {
+bool get desktopDownloads => switch (defaultTargetPlatform) {
   TargetPlatform.linux || TargetPlatform.macOS || TargetPlatform.windows =>
     true,
   _ => false,
@@ -58,6 +58,9 @@ Future<void> downloadFile(
   required String host,
   required void Function(Transfer? transfer) onTransfer,
   String? denied,
+  String? name,
+  Future<String> Function(Transfer transfer)? prepare,
+  Future<void> Function()? cleanup,
 }) async {
   final app = Navigator.of(context, rootNavigator: true).context;
   void say(String message, TuiToastType type) {
@@ -76,7 +79,8 @@ Future<void> downloadFile(
     );
   }
 
-  final name = RemotePath.basename(path);
+  name ??= RemotePath.basename(path);
+  final saveName = name;
   try {
     await transfers.run(
       name: name,
@@ -88,8 +92,11 @@ Future<void> downloadFile(
         final copy = '${temp.path}/file';
         try {
           onTransfer(transfer);
+          // [prepare] makes what is downloaded, such as an archive of a
+          // folder on the host, and says where it is.
+          final source = prepare == null ? path : await prepare(transfer);
           await browser.download(
-            path,
+            source,
             copy,
             onProgress: transfer.report,
             cancel: transfer.cancelled,
@@ -97,11 +104,12 @@ Future<void> downloadFile(
           onTransfer(null);
           // Not saved is the dialog dismissed, as good as Cancel.
           transfer.saved =
-              await _saveAs(copy, name, replace) ??
+              await saveDownloadedFile(copy, saveName, replace) ??
               (throw FileBrowserException.cancelled);
         } finally {
           onTransfer(null);
           temp.deleteSync(recursive: true);
+          await cleanup?.call();
         }
       },
     );
@@ -133,7 +141,7 @@ Future<void> downloadFile(
 /// Hands the app's [copy] to the save dialog as [name], in its turn: what it
 /// was saved as, which [openDownload] opens, or null when the dialog was
 /// dismissed.
-Future<String?> _saveAs(
+Future<String?> saveDownloadedFile(
   String copy,
   String name,
   Future<bool> Function(String path) replace,
@@ -149,7 +157,7 @@ Future<String?> _saveAs(
         'name': name,
       });
     }
-    if (_desktop) {
+    if (desktopDownloads) {
       // The dialog only names a path; the copy is the OS's, file to file, so
       // no download is ever held in memory.
       final location = await FileSelectorPlatform.instance.getSaveLocation(
@@ -232,7 +240,7 @@ Future<void> copyImageToClipboard(String path, String name) =>
 /// Opens a finished download, [saved] as [name], in whatever app the phone
 /// has for its kind. False when none will.
 Future<bool> openDownload(String saved, String name) async {
-  if (_desktop) {
+  if (desktopDownloads) {
     try {
       final uri = Uri.parse(saved);
       // A file Windows could not mark as from the internet would run

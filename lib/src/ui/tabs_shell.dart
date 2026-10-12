@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../data/host_repository.dart';
 import '../data/secret_store.dart';
 import '../db/db_session.dart';
+import '../files/html_site.dart';
 import '../files/transfers.dart';
 import '../models/host_profile.dart';
 import '../platform.dart';
@@ -24,6 +25,7 @@ import 'file_editor_page.dart';
 import 'git_diff_page.dart';
 import 'git_page.dart';
 import 'host_edit_page.dart';
+import 'html_outside.dart';
 import 'hosts_page.dart';
 import 'pane_record_page.dart';
 import 'right_click.dart';
@@ -315,11 +317,14 @@ class _TabsShellState extends State<TabsShell> {
     );
   }
 
-  /// Opens an HTML file in a web tab. Null on a desktop, where web tabs are
-  /// never opened and links go to the machine's own browser.
-  void Function(String path)? _onOpenHtml(TabRef tab) => isDesktop
-      ? null
-      : (path) => widget.sessions.openHtml(tab.session.id, path);
+  /// Opens an HTML file: in a web tab where the system has a web view
+  /// (Android, iOS and macOS), and in the machine's own browser, with a
+  /// notice, where it has none (Linux and Windows).
+  void Function(String path)? _onOpenHtml(TabRef tab) => hasWebView
+      ? (path) => widget.sessions.openHtml(tab.session.id, path)
+      : (path) => unawaited(
+          openHtmlOutside(context, tab.session.fileBrowser, path),
+        );
 
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
@@ -378,12 +383,12 @@ class _TabsShellState extends State<TabsShell> {
     TabKind.web => WebPage(
       key: _pageKeys.putIfAbsent(_idOf(tab), GlobalKey.new),
       initialUrl: tab.web!.url,
-      html: tab.web!.htmlPath == null
+      site: tab.web!.htmlPath == null
           ? null
-          : () async => (await tab.session.fileBrowser.readText(
-              tab.web!.htmlPath!,
-              maxBytes: htmlLimit,
-            )).text,
+          : () => HtmlSite.start(
+              browser: tab.session.fileBrowser,
+              htmlPath: tab.web!.htmlPath!,
+            ),
       onChanged: (url, title) =>
           tab.session.updateWeb(tab.web!, url: url, title: title),
     ),

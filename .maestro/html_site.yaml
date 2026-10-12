@@ -1,0 +1,336 @@
+# An HTML file opens with the files beside it (#272): its stylesheet, script
+# and pictures load, from a server on the phone that answers for the page's own
+# folder and nothing else. The runner (tools/e2e_android.sh html_site) puts the
+# site in the login home, in jeansh-e2e-site/, and a secret file BESIDE that
+# folder, which no page of it may reach.
+#
+# The toolbar's glyph, Open in browser tab, acts on the selected row; a long
+# press selects one, and Back takes its menu away.
+#
+#   page       page.html: its script ran, and nothing is said not to be loaded
+#   plaintext  the glyph is enabled for an HTML file and disabled for plain.txt,
+#              which opens no tab
+#   evil       a page that asks for ../jeansh-e2e-secret.txt, as a script and as
+#              a fetch, gets neither: the tab says it is outside
+#   big        a 6 MB script is too big
+#   link       a link to /etc/hostname is not followed, and its text is nowhere
+#   gate       a page that sends itself to a mailto: with no touch stays where it
+#              is, with no mail app
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+
+- runFlow:
+    when:
+      true: ${STEP == 'page'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      # The site's folder, in the login home the tree opens at.
+      - tapOn: "(?s)\\W*jeansh-e2e-site.*"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*page\\.html"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*page\\.html"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - tapOn: "Open in browser tab"
+      - extendedWaitUntil:
+          visible: "Jeansh e2e js ran"
+          timeout: 30000
+      - assertVisible: "Reload"
+      # The script replaced the heading's own text, and every file came.
+      - assertNotVisible: "plain"
+      - assertNotVisible: "(?s).*not loaded.*"
+      - assertNotVisible: "Save to host"
+      - takeScreenshot: html-site-page
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
+
+- runFlow:
+    when:
+      true: ${STEP == 'plaintext'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      # The site's folder, in the login home the tree opens at.
+      - tapOn: "(?s)\\W*jeansh-e2e-site.*"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*page\\.html"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*page\\.html"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      # An HTML file: the glyph can be tapped.
+      - assertVisible:
+          text: "Open in browser tab"
+          enabled: true
+      - extendedWaitUntil:
+          visible: "(?s)\\W*plain\\.txt"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*plain\\.txt"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      # A text file: it cannot, and tapping it opens nothing.
+      - assertVisible:
+          text: "Open in browser tab"
+          enabled: false
+      - tapOn: "Open in browser tab"
+      - assertNotVisible: "Reload"
+      - assertVisible: "Filter by name"
+      - takeScreenshot: html-site-plaintext
+      - tapOn:
+          text: "Close files"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
+
+- runFlow:
+    when:
+      true: ${STEP == 'evil'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      # The site's folder, in the login home the tree opens at.
+      - tapOn: "(?s)\\W*jeansh-e2e-site.*"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*evil\\.html"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*evil\\.html"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - tapOn: "Open in browser tab"
+      - extendedWaitUntil:
+          visible: "(?s).*evil.*"
+          timeout: 30000
+      # Said, with the file named and why.
+      - extendedWaitUntil:
+          visible: "(?s).*not loaded.*jeansh-e2e-secret.*outside.*"
+          timeout: 20000
+      - waitForAnimationToEnd:
+          timeout: 3000
+      # Neither the script nor the fetch got it.
+      - assertNotVisible: "(?s).*SECRET-TOKEN.*"
+      - takeScreenshot: html-site-evil
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
+
+- runFlow:
+    when:
+      true: ${STEP == 'big'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      # The site's folder, in the login home the tree opens at.
+      - tapOn: "(?s)\\W*jeansh-e2e-site.*"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*big\\.html"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*big\\.html"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - tapOn: "Open in browser tab"
+      - extendedWaitUntil:
+          visible: "(?s).*big\\.js.*too big.*"
+          timeout: 40000
+      - assertNotVisible: "Save to host"
+      - takeScreenshot: html-site-big
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
+
+- runFlow:
+    when:
+      true: ${STEP == 'link'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      # The site's folder, in the login home the tree opens at.
+      - tapOn: "(?s)\\W*jeansh-e2e-site.*"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*link\\.html"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*link\\.html"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - tapOn: "Open in browser tab"
+      - extendedWaitUntil:
+          visible: "(?s).*leak\\.png.*a link, not followed.*"
+          timeout: 30000
+      - waitForAnimationToEnd:
+          timeout: 3000
+      # The page asks for the link's text too; what /etc/hostname holds is not
+      # on screen.
+      - assertNotVisible: "(?s).*${LEAK}.*"
+      - takeScreenshot: html-site-link
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
+
+- runFlow:
+    when:
+      true: ${STEP == 'gate'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      # The site's folder, in the login home the tree opens at.
+      - tapOn: "(?s)\\W*jeansh-e2e-site.*"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*gate\\.html"
+          timeout: 20000
+      - longPressOn: "(?s)\\W*gate\\.html"
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - pressKey: Back
+      - waitForAnimationToEnd:
+          timeout: 2000
+      - tapOn: "Open in browser tab"
+      - extendedWaitUntil:
+          visible: "gate page"
+          timeout: 30000
+      # Its meta refresh to a mailto: fired with no touch: nothing left, and
+      # the web tab is still in front.
+      - assertVisible: "Reload"
+      - takeScreenshot: html-site-gate
+      - assertVisible: "gate page"
+      - assertVisible: "Reload"
+      # Whatever of the tabs is left: each step starts with the app stopped, so
+      # a close that finds nothing is not a failure.
+      - tapOn:
+          text: "(?s)Close .*"
+          optional: true
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true

@@ -93,8 +93,6 @@ final _htmlNames = RegExp(r'\.html?$', caseSensitive: false);
 
 bool isHtmlFile(String path) => _htmlNames.hasMatch(path);
 
-/// The most of an HTML file a web tab takes: the editor's own ceiling.
-const htmlLimit = FileBrowser.defaultReadLimit;
 
 /// The most of any one picture the app will bring down and decode, whether it
 /// is a tab of its own or one image in a Markdown preview.
@@ -961,6 +959,14 @@ class _TextFileTabState extends State<_TextFileTab> {
                   : () => _inSource(_find.findMode),
               icon: const Icon(Icons.search),
             ),
+            // Beside Reload and Save, where it is seen, rather than only in
+            // the menu behind More.
+            if (widget.onOpenHtml != null && isHtmlFile(widget.path))
+              IconButton(
+                tooltip: 'Open in browser tab',
+                onPressed: () => widget.onOpenHtml!(widget.path),
+                icon: const Icon(Icons.open_in_browser),
+              ),
             IconButton(
               tooltip: 'Reload from host',
               onPressed: _loading || _saving ? null : _reload,

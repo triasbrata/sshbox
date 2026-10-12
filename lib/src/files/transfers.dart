@@ -61,6 +61,17 @@ class Transfer {
   /// Why it failed, in a line fit to show.
   String? get error => _error;
 
+  /// What the work is doing while it has no byte count to show, such as
+  /// "Compressing on the host": the row says it in place of a speed.
+  String? get phase => _phase;
+  String? _phase;
+
+  /// Says what the work is doing now; null goes back to the byte count.
+  void setPhase(String? phase) => _owner._setPhase(this, phase);
+
+  /// A line to keep on the row once it is done, such as files that failed.
+  String? note;
+
   /// The document a finished download was saved as, which Open opens.
   String? saved;
 
@@ -137,6 +148,11 @@ class Transfers extends ChangeNotifier {
   /// Takes every transfer that has ended off the list.
   void clearFinished() {
     _items.removeWhere((transfer) => transfer._state != TransferState.running);
+    notifyListeners();
+  }
+
+  void _setPhase(Transfer transfer, String? phase) {
+    transfer._phase = phase;
     notifyListeners();
   }
 

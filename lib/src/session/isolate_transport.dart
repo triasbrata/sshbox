@@ -7,6 +7,7 @@ import '../data/host_repository.dart';
 import '../data/known_host_store.dart';
 import '../data/secret_store.dart';
 import '../files/file_browser.dart';
+import '../files/folder_archive.dart';
 import '../models/host_profile.dart';
 import 'dartssh2_transport.dart';
 import 'isolate_wire.dart';
@@ -439,6 +440,12 @@ class _Server {
           password: a[2] as String?,
           expected: a[3] as FileStamp?,
         );
+      case 'findArchiveTool':
+        final tool = await (browser as FolderArchiveCapable).findArchiveTool();
+        return tool == null ? null : [tool.kind.index, tool.binary];
+      case 'removeArchive':
+        await (browser as FolderArchiveCapable).removeArchive(a[0]! as String);
+        return null;
       case 'close':
         _browsers.remove(key);
         await browser.close();
@@ -476,6 +483,15 @@ class _Server {
             cancel: cancel,
           ),
         );
+      case 'archiveFolder':
+        return _progressed((onProgress, cancel) async {
+          final made = await (browser as FolderArchiveCapable).archiveFolder(
+            a[0]! as String,
+            ArchiveTool(ArchiveKind.values[a[1]! as int], a[2]! as String),
+            cancel: cancel,
+          );
+          return [made.path, made.size];
+        });
       case 'search':
         return (browser as FileSearchCapable).search(
           root: a[0]! as String,
@@ -964,9 +980,45 @@ class _ChannelSink implements StreamSink<List<int>> {
   Future<void> get done => _done.future;
 }
 
-class _ProxyBrowser implements FileBrowser, FileSearchCapable, SudoCapable {
+class _ProxyBrowser
+    implements
+        FileBrowser,
+        FileSearchCapable,
+        SudoCapable,
+        FolderArchiveCapable {
   _ProxyBrowser(this._wire, this._key) {
     _opened = _wire.call('browser', [_key]);
+  }
+
+  @override
+  Future<ArchiveTool?> findArchiveTool() async {
+    final found = await _call('findArchiveTool') as List?;
+    if (found == null) return null;
+    return ArchiveTool(ArchiveKind.values[found[0] as int], found[1] as String);
+  }
+
+  @override
+  Future<({String path, int size})> archiveFolder(
+    String folder,
+    ArchiveTool tool, {
+    Future<void>? cancel,
+  }) async {
+    final made = await _moved(
+      _moving('archiveFolder', [folder, tool.kind.index, tool.binary]),
+      null,
+      cancel,
+    );
+    final answer = made! as List;
+    return (path: answer[0] as String, size: answer[1] as int);
+  }
+
+  @override
+  Future<void> removeArchive(String archivePath) async {
+    try {
+      await _call('removeArchive', [archivePath]);
+    } on Object {
+      // Best effort, as on the other side: the next probe sweeps.
+    }
   }
 
   final IsolateWire _wire;
