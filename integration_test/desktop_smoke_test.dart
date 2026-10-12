@@ -36,6 +36,8 @@ import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:sshbox/src/ui/file_browser_page.dart' show FileBrowserPage;
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
@@ -1353,6 +1355,53 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// This machine's `jeansh-zip.*` folders, which the archive script makes
+/// under $TMPDIR and removes however it ends.
+List<String> _zipTemps() => Directory.systemTemp
+    .listSync()
+    .map((e) => e.path.split('/').last)
+    .where((n) => n.startsWith('jeansh-zip.'))
+    .toList();
+
+/// The desktop's folder picker answered by the test, and its save dialog
+/// passed on to the real one, counting both. Installed until the test ends.
+class _PickFolder extends FileSelectorPlatform {
+  _PickFolder(this._real);
+
+  final FileSelectorPlatform _real;
+
+  /// What the folder picker answers.
+  String? directory;
+  int asked = 0;
+  int saveAsked = 0;
+
+  static _PickFolder install() {
+    final real = FileSelectorPlatform.instance;
+    final picker = _PickFolder(real);
+    FileSelectorPlatform.instance = picker;
+    addTearDown(() => FileSelectorPlatform.instance = real);
+    return picker;
+  }
+
+  @override
+  Future<String?> getDirectoryPathWithOptions(FileDialogOptions options) async {
+    asked++;
+    return directory;
+  }
+
+  @override
+  Future<FileSaveLocation?> getSaveLocation({
+    List<XTypeGroup>? acceptedTypeGroups,
+    SaveDialogOptions options = const SaveDialogOptions(),
+  }) {
+    saveAsked++;
+    return _real.getSaveLocation(
+      acceptedTypeGroups: acceptedTypeGroups,
+      options: options,
+    );
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2428,6 +2477,399 @@ touch '${done.path}'
       expect(cancelled.state, TransferState.cancelled);
       expect(kept.existsSync(), isFalse, reason: 'a cancel saved the file');
       await tester.pump(const Duration(seconds: 2));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #271: Download as zip and Download folder on a folder in the files
+  // drawer, over the real Local shell's own browser. The zip is made by the
+  // machine's real `zip`, so its flags (-y, -nw) are run, which the unit
+  // tests' stand-ins could not. The folder picker is the one thing put in
+  // place of the OS: the zip's save dialog is answered by xdotool as in the
+  // download test, the folder dialog is answered by a stand-in here.
+  _test(
+    'a folder downloads as a zip and as its tree, a link is never followed '
+    'and nothing is left behind',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true'
+        ? 'real zip, the save dialog and the temp folder are Linux CI only'
+        : null,
+    (tester) async {
+      final tools = await Process.run('sh', [
+        '-c',
+        'command -v zip && command -v unzip',
+      ]);
+      expect(tools.exitCode, 0, reason: 'this runner has no zip or unzip');
+      final picker = _PickFolder.install();
+      final home = Platform.environment['HOME']!;
+      final dir = Directory(home).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final src = Directory('${dir.path}/dev')..createSync();
+      const spaced = "a b's.txt";
+      final spacedBytes = List<int>.generate(5000, (i) => i % 251);
+      File('${src.path}/$spaced').writeAsBytesSync(spacedBytes);
+      File('${src.path}/plain.txt').writeAsStringSync('plain\n');
+      // What a link in the folder points at, outside it.
+      final secret = 'SECRET-${dir.path.hashCode}';
+      final outside = File('${dir.path}/outside-secret.txt')
+        ..writeAsStringSync(secret);
+      final outsideDir = Directory('${dir.path}/outside-dir')..createSync();
+      File('${outsideDir.path}/inner-secret.txt').writeAsStringSync(secret);
+      Link('${src.path}/escape.txt').createSync(outside.path);
+      Link('${src.path}/escape-dir').createSync(outsideDir.path);
+
+      expect(_zipTemps(), isEmpty, reason: 'a leftover from before this test');
+
+      await _launch(tester);
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder in the home",
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(folder);
+      final dev = find.text('dev');
+      await _until(
+        tester,
+        () => dev.evaluate().isNotEmpty,
+        'the drawer to show the folder to download',
+      );
+      Future<void> menu(String item) async {
+        await tester.tapAt(
+          tester.getCenter(dev),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, item);
+      }
+
+      Future<Transfer> ended(String name, Set<Transfer> before) async {
+        Transfer? mine() => transfers.items
+            .where((t) => t.name == name && !before.contains(t))
+            .firstOrNull;
+        await _until(
+          tester,
+          () => mine() != null && mine()!.state != TransferState.running,
+          'the transfer $name to end',
+          timeout: const Duration(seconds: 90),
+        );
+        return mine()!;
+      }
+
+      // 1. Zip. The archive lands where the dialog was told, and is the
+      // folder's, links kept as links.
+      final out = _scratch();
+      final zipTarget = '${out.path}/dev.zip';
+      var before = transfers.items.toSet();
+      ProcessResult? answer;
+      await menu('Download as zip');
+      unawaited(_answerSaveDialog(zipTarget).then((r) => answer = r));
+      final zipped = await ended('dev.zip', before);
+      if (zipped.state == TransferState.failed) {
+        fail('the zip failed: ${zipped.error}');
+      }
+      await _until(tester, () => answer != null, 'the dialog answered');
+      expect(answer!.exitCode, 0, reason: '${answer!.stdout}${answer!.stderr}');
+      expect(zipped.state, TransferState.done);
+      expect(
+        FileSystemEntity.identicalSync(
+          Uri.parse(zipped.saved!).toFilePath(),
+          zipTarget,
+        ),
+        isTrue,
+      );
+      final listing = await Process.run('unzip', ['-Z1', zipTarget]);
+      expect(listing.exitCode, 0, reason: '${listing.stderr}');
+      final entries = '${listing.stdout}'
+          .split('\n')
+          .where((l) => l.isNotEmpty)
+          .map((l) => l.endsWith('/') ? l.substring(0, l.length - 1) : l)
+          .toSet();
+      expect(entries, {
+        'dev',
+        'dev/$spaced',
+        'dev/plain.txt',
+        'dev/escape.txt',
+        'dev/escape-dir',
+      });
+      // Absent: what the links point at, which -y keeps from the archive.
+      expect(
+        entries.where((e) => e.contains('inner-secret')),
+        isEmpty,
+        reason: 'the zip walked into a linked folder',
+      );
+      final everything = await Process.run('unzip', [
+        '-p',
+        zipTarget,
+      ], stdoutEncoding: null);
+      expect(
+        latin1.decode(everything.stdout as List<int>),
+        isNot(contains(secret)),
+        reason: 'the zip carries the content of what a link points at',
+      );
+      final unpacked = _scratch();
+      final unzip = await Process.run('unzip', [
+        '-q',
+        zipTarget,
+        '-d',
+        unpacked.path,
+      ]);
+      expect(unzip.exitCode, 0, reason: '${unzip.stderr}');
+      expect(
+        File('${unpacked.path}/dev/$spaced').readAsBytesSync(),
+        spacedBytes,
+      );
+      expect(
+        File('${unpacked.path}/dev/plain.txt').readAsStringSync(),
+        'plain\n',
+      );
+      expect(
+        FileSystemEntity.typeSync(
+          '${unpacked.path}/dev/escape.txt',
+          followLinks: false,
+        ),
+        FileSystemEntityType.link,
+        reason: 'a link comes out as a link, not as the file it names',
+      );
+      expect(_zipTemps(), isEmpty, reason: 'the zip left its folder behind');
+      expect(out.listSync().map((e) => e.path.split('/').last), [
+        'dev.zip',
+      ], reason: 'the save folder holds more than the archive');
+
+      // 2. Plain: the tree, byte for byte, with the links skipped and said.
+      final target = _scratch();
+      picker.directory = target.path;
+      before = transfers.items.toSet();
+      await menu('Download folder');
+      final plain = await ended('dev', before);
+      expect(picker.asked, 1, reason: 'the folder picker was not asked');
+      expect(plain.state, TransferState.done, reason: '${plain.error}');
+      expect(plain.note, '2 files, 0 failed, 2 skipped');
+      expect(File('${target.path}/dev/$spaced').readAsBytesSync(), spacedBytes);
+      expect(
+        File('${target.path}/dev/plain.txt').readAsStringSync(),
+        'plain\n',
+      );
+      expect(
+        Directory('${target.path}/dev')
+            .listSync()
+            .map((e) => e.path.split('/').last)
+            .toSet(),
+        {spaced, 'plain.txt'},
+        reason: 'the tree holds something besides its two files',
+      );
+      for (final name in ['escape.txt', 'escape-dir']) {
+        expect(
+          FileSystemEntity.typeSync(
+            '${target.path}/dev/$name',
+            followLinks: false,
+          ),
+          FileSystemEntityType.notFound,
+          reason: '$name, a link, was downloaded',
+        );
+      }
+      for (final e in target.listSync(recursive: true).whereType<File>()) {
+        expect(
+          e.readAsStringSync(encoding: latin1),
+          isNot(contains(secret)),
+          reason: '${e.path} holds what a link points at',
+        );
+      }
+      expect(target.listSync().map((e) => e.path.split('/').last), [
+        'dev',
+      ], reason: 'a .jeansh-part-* was left in the target');
+      // The end dialog names what was skipped, and no failure.
+      await _until(
+        tester,
+        () => find
+            .textContaining('Skipped, never followed')
+            .evaluate()
+            .isNotEmpty,
+        'the end dialog to list what was skipped',
+      );
+      expect(find.textContaining('escape.txt'), findsWidgets);
+      expect(find.textContaining('Failed:'), findsNothing);
+      await tester.tap(_label('OK'));
+      await tester.pump(const Duration(seconds: 1));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #271, the negatives: a host with no archiver offers the plain download
+  // and makes no zip, and a cancel while compressing leaves nothing on the
+  // host. The drawer is the real FileBrowserPage over a real
+  // LocalFileBrowser, started with the environment the test chooses.
+  _test(
+    'a host with no zip tool offers Plain download, and a cancel while '
+    'compressing leaves no folder and no process',
+    skip: !Platform.isLinux || Platform.environment['CI'] != 'true'
+        ? 'real zip, and the temp folder, are Linux CI only'
+        : null,
+    (tester) async {
+      final picker = _PickFolder.install();
+      final home = Platform.environment['HOME']!;
+      final dir = Directory(home).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final small = Directory('${dir.path}/dev')..createSync();
+      File('${small.path}/one.txt').writeAsStringSync('one\n');
+      File('${small.path}/two words.txt').writeAsStringSync('two\n');
+      // A PATH with nothing in it, so no zip, 7z, bsdtar or tar is found;
+      // sh's own builtins still run the probe.
+      final empty = _scratch();
+      Future<Process> noTools(String c) => Process.start(
+        '/bin/sh',
+        ['-c', c],
+        environment: {'PATH': empty.path, 'HOME': empty.path},
+        includeParentEnvironment: false,
+      );
+      Future<Process> real(String c) =>
+          Process.start('/bin/sh', ['-c', c], workingDirectory: home);
+
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      Future<void> openDrawer(
+        Future<Process> Function(String) process,
+        String title,
+        String root,
+      ) async {
+        unawaited(
+          navigator.push(
+            PageRouteBuilder<void>(
+              pageBuilder: (_, _, _) => FileBrowserPage(
+                browser: LocalFileBrowser(
+                  process: process,
+                  home: () async => home,
+                ),
+                title: title,
+                initialRoot: root,
+              ),
+            ),
+          ),
+        );
+        await _until(
+          tester,
+          () => find.textContaining(title).evaluate().isNotEmpty,
+          'the files page of $title',
+        );
+      }
+
+      Future<void> menu(String row, String item) async {
+        final target = find.text(row);
+        await _until(
+          tester,
+          () => target.evaluate().isNotEmpty,
+          'the page to list $row',
+        );
+        await tester.tapAt(
+          tester.getCenter(target),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, item);
+      }
+
+      // 3a. No tool: the dialog, no zip row and no save dialog, and Plain
+      // download goes to the folder picker and brings the tree.
+      final out = _scratch();
+      picker.directory = out.path;
+      var before = transfers.items.toSet();
+      await openDrawer(noTools, 'no-tool host', dir.path);
+      await menu('dev', 'Download as zip');
+      await _until(
+        tester,
+        () => find.textContaining('No zip tool on no-tool host').evaluate().isNotEmpty,
+        'the dialog that says the host has no zip tool',
+      );
+      expect(
+        transfers.items.where((t) => !before.contains(t)),
+        isEmpty,
+        reason: 'a zip row exists for a host with no tool',
+      );
+      expect(picker.asked, 0, reason: 'the folder picker opened too soon');
+      expect(picker.saveAsked, 0, reason: 'a save dialog opened with no zip');
+      await tester.tap(_label('Plain download'));
+      Transfer? plain() => transfers.items
+          .where((t) => !before.contains(t) && t.name == 'dev')
+          .firstOrNull;
+      await _until(
+        tester,
+        () => plain() != null && plain()!.state != TransferState.running,
+        'the plain download to end',
+        timeout: const Duration(seconds: 60),
+      );
+      expect(picker.asked, 1);
+      expect(plain()!.state, TransferState.done, reason: '${plain()!.error}');
+      expect(File('${out.path}/dev/one.txt').readAsStringSync(), 'one\n');
+      expect(File('${out.path}/dev/two words.txt').readAsStringSync(), 'two\n');
+      expect(
+        transfers.items.where(
+          (t) => !before.contains(t) && t.name == 'dev.zip',
+        ),
+        isEmpty,
+        reason: 'a zip row appeared for a host with no zip tool',
+      );
+      expect(picker.saveAsked, 0);
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+
+      // 3b. Cancel while compressing a big folder.
+      final big = Directory('${dir.path}/big')..createSync();
+      for (var i = 0; i < 3; i++) {
+        final made = await Process.run('dd', [
+          'if=/dev/urandom',
+          'of=${big.path}/chunk$i.bin',
+          'bs=1M',
+          'count=100',
+        ]);
+        expect(made.exitCode, 0, reason: '${made.stderr}');
+      }
+      Future<bool> zipRunning() async =>
+          (await Process.run('pgrep', ['-f', r'jeansh-zip\.'])).exitCode == 0;
+      expect(_zipTemps(), isEmpty);
+      expect(await zipRunning(), isFalse);
+      before = transfers.items.toSet();
+      await openDrawer(real, 'real host', dir.path);
+      await menu('big', 'Download as zip');
+      Transfer? zipping() => transfers.items
+          .where((t) => !before.contains(t) && t.name == 'big.zip')
+          .firstOrNull;
+      await _until(
+        tester,
+        () => zipping()?.phase?.startsWith('Compressing') ?? false,
+        'the row to say Compressing',
+      );
+      // The precondition that makes the rest mean something: the host has
+      // its folder and its zip running before the cancel.
+      await _until(
+        tester,
+        () async => _zipTemps().isNotEmpty && await zipRunning(),
+        'the host to have its archive folder and a zip process',
+      );
+      expect(zipping()!.state, TransferState.running);
+      transfers.cancel(zipping()!);
+      await _until(
+        tester,
+        () => zipping()!.state != TransferState.running,
+        'the cancelled transfer to end',
+        timeout: const Duration(seconds: 30),
+      );
+      expect(zipping()!.state, TransferState.cancelled);
+      // The host is clean, given a moment for the shell's trap to run.
+      await _until(
+        tester,
+        () async => _zipTemps().isEmpty && !await zipRunning(),
+        'the host to hold no jeansh-zip folder and no zip process',
+      );
+      expect(_zipTemps(), isEmpty, reason: 'the cancel left a folder');
+      expect(await zipRunning(), isFalse, reason: 'a zip process outlived it');
+      expect(picker.saveAsked, 0, reason: 'a cancel reached the save dialog');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
       await _closeTabs(tester);
     },
   );
