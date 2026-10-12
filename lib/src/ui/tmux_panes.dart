@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -101,7 +102,13 @@ class TmuxPaneLayout extends StatelessWidget {
                       key: ObjectKey(each),
                       rect: rect(each.cells),
                       child: Listener(
-                        onPointerDown: (_) => tmux.focus(each),
+                        onPointerDown: (_) {
+                          tmux.focus(each);
+                          // A tap is when a pane that will not scroll gets
+                          // noticed: its mouse modes are checked against
+                          // tmux's, and put right if they differ.
+                          unawaited(tmux.resyncModes(each));
+                        },
                         child: pane(each, each == focused),
                       ),
                     ),
