@@ -46,9 +46,20 @@ String? get _skip => _phase.isEmpty
     ? 'the unsigned macOS build'
     : macosKeychainGroup.isNotEmpty
     ? 'this build is signed with a keychain group'
-    : Platform.environment['CI'] != 'true' || _user.isEmpty || _password.isEmpty
+    : Platform.environment['CI'] != 'true'
     ? "needs the job's own sshd and its throwaway user"
     : null;
+
+/// On CI a missing sshd is a failure, not a skip: a skip hid a job whose setup
+/// never ran.
+String? get _noSshd {
+  final missing = [
+    if (_user.isEmpty) 'SSH_USER',
+    if (_password.isEmpty) 'SSH_PASSWORD',
+    if (_port == 22) 'SSH_PORT',
+  ];
+  return missing.isEmpty ? null : missing.join(', ');
+}
 
 const _movedText =
     "This secret was moved to the signed build's keychain; enter it again, "
@@ -102,6 +113,10 @@ void main() {
     'a secret moved away, on an unsigned build ($_phase)',
     skip: _skip != null,
     (tester) async {
+      final missing = _noSshd;
+      if (missing != null) {
+        fail("the job's sshd step did not run: no $missing in the environment");
+      }
       final secrets = KeystoreSecretStore();
       final hosts = HostRepository(secrets);
       final id = {
