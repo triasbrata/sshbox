@@ -36,6 +36,11 @@ import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/session/session_manager.dart' show LiveSession;
+import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/ui/key_bar.dart'
+    show KeyBarController, TerminalKeyBar;
+import 'package:sshbox/src/ui/terminal_page.dart' show TerminalPage;
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
@@ -630,6 +635,24 @@ Future<void> _realPointer(Future<void> Function() body) async {
   } finally {
     binding.shouldPropagateDevicePointerEvents = false;
   }
+}
+
+/// Prints every key event the app is handed, tagged [where], until the
+/// returned function is called: what X made of a chord, in the job log.
+void Function() _logKeys(String where) {
+  bool log(KeyEvent event) {
+    debugPrint(
+      'key[$where] ${event.runtimeType} logical=${event.logicalKey.debugName} '
+      '(${event.logicalKey.keyId.toRadixString(16)}) '
+      'physical=${event.physicalKey.debugName} char=${event.character} '
+      'ctrl=${HardwareKeyboard.instance.isControlPressed} '
+      'meta=${HardwareKeyboard.instance.isMetaPressed}',
+    );
+    return false;
+  }
+
+  HardwareKeyboard.instance.addHandler(log);
+  return () => HardwareKeyboard.instance.removeHandler(log);
 }
 
 /// [body], and on a failure what reached the app of the keys and the
@@ -1353,6 +1376,239 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// A host whose connect waits on [gate], then comes up or refuses, and keeps
+/// what the app wrote to it: a stand-in for a shell that is slow to start.
+class _EarlyHost implements SessionTransport, TerminalSession {
+  _EarlyHost(this.gate, {this.refuse = false});
+
+  final Completer<void> gate;
+  final bool refuse;
+  final sent = <String>[];
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async {
+    await gate.future;
+    if (refuse) throw const SshSessionException('Connection refused.');
+    status.value = SessionStatus.connected;
+    return this;
+  }
+
+  @override
+  final ValueNotifier<SessionStatus> status = ValueNotifier(
+    SessionStatus.connecting,
+  );
+
+  @override
+  Stream<String> get output => const Stream.empty();
+
+  @override
+  String? get failure => null;
+
+  @override
+  void send(String data) => sent.add(data);
+
+  @override
+  void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+/// Duplicates the shown tab from its chip's right-click menu, and, the moment
+/// the new tab is on the strip and before anything is waited for, types into
+/// it: a line, Enter, a pasted line, Enter. Each line appends its text to
+/// [out], so what reached the shell, in what order and how often, is read
+/// off the file. Returns the new tab's terminal.
+Future<TerminalView> _duplicateAndTypeAtOnce(
+  WidgetTester tester,
+  File out,
+  String early,
+  String pasted,
+) async {
+  final tabs = find.byWidgetPredicate(
+    (w) =>
+        w is Tooltip &&
+        ((w.message ?? '').startsWith('Close ') || w.message == 'Reconnect'),
+  );
+  final before = tabs.evaluate().length;
+  final first = find
+      .ancestor(of: tabs.first, matching: find.byType(InkWell))
+      .first;
+  await tester.tapAt(
+    tester.getCenter(first),
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryMouseButton,
+  );
+  await _pick(tester, 'Duplicate session');
+  TerminalView? typed;
+  await _until(tester, () {
+    if (tabs.evaluate().length != before + 1) return false;
+    final views = find.byType(TerminalView).evaluate();
+    if (views.isEmpty) return false;
+    final view = views.first.widget as TerminalView;
+    view.terminal.textInput('echo $early >> ${out.path}');
+    view.terminal.keyInput(TerminalKey.enter);
+    view.terminal.paste('echo $pasted >> ${out.path}');
+    view.terminal.keyInput(TerminalKey.enter);
+    typed = view;
+    return true;
+  }, 'the duplicated tab, typed into the moment it exists');
+  return typed!;
+}
+
+/// Reads [out] until it holds [lines] lines, then waits a moment and reads it
+/// again: that it holds exactly these, once each, in this order.
+Future<void> _expectLines(
+  WidgetTester tester,
+  File out,
+  List<String> lines,
+) async {
+  List<String> read() => out.existsSync()
+      ? out.readAsLinesSync().where((l) => l.isNotEmpty).toList()
+      : <String>[];
+  await _until(
+    tester,
+    () => read().length >= lines.length,
+    'the shell to have run what was typed (it has run ${read()})',
+    timeout: const Duration(seconds: 30),
+  );
+  await tester.pump(const Duration(seconds: 2));
+  expect(
+    read(),
+    lines,
+    reason: 'what reached the shell, in order and once each',
+  );
+}
+
+/// Ends this run's sshbox- sessions on its private tmux server: a test that
+/// failed before closing its tab left one, which the next tmux test, that
+/// begins by expecting none, then failed on.
+Future<void> _killSshboxTmux() async {
+  final listed = await Process.run('tmux', [
+    'list-sessions',
+    '-F',
+    '#{session_name}',
+  ]);
+  for (final name in '${listed.stdout}'.split('\n')) {
+    if (name.startsWith('sshbox-')) {
+      await Process.run('tmux', ['kill-session', '-t', name]);
+    }
+  }
+}
+
+/// What the one pane of this run's private tmux server is running in the
+/// foreground, as tmux names it: `bash`, `cat`.
+Future<String> _paneCommand() async {
+  final listed = await Process.run('tmux', [
+    'list-panes',
+    '-a',
+    '-F',
+    '#{pane_current_command}',
+  ]);
+  return '${listed.stdout}'.trim().split('\n').first;
+}
+
+/// A program in [view]'s tmux pane that asks for bracketed paste, or turns it
+/// off, and keeps every byte it reads in the returned file until [stop] is
+/// created: what a paste really sends, which the prompt's drawing hides.
+/// Its foreground command is `sh`.
+Future<({File got, File stop})> _paneRecorder(
+  WidgetTester tester,
+  TerminalView view, {
+  required bool bracketed,
+}) async {
+  final dir = _scratch();
+  final got = File('${dir.path}/got');
+  final ready = File('${dir.path}/ready');
+  final stop = File('${dir.path}/stop');
+  File('${dir.path}/record.sh').writeAsStringSync(
+    "printf '\\033[?2004${bracketed ? 'h' : 'l'}'\n"
+    'stty raw -echo\n'
+    'touch ${ready.path}\n'
+    'dd bs=1 of=${got.path} </dev/tty 2>/dev/null &\n'
+    'while [ ! -e ${stop.path} ]; do sleep 0.2; done\n'
+    'kill \$! 2>/dev/null\n'
+    'stty sane\n'
+    "printf '\\033[?2004l'\n",
+  );
+  _run(view, 'sh ${dir.path}/record.sh');
+  await _until(tester, ready.existsSync, 'the program to start reading');
+  await tester.pump(const Duration(milliseconds: 300));
+  return (got: got, stop: stop);
+}
+
+/// The tab's tmux client is cut, as a dropped connection takes it, and the
+/// tab reconnected: a new terminal drawn from tmux's capture, which holds
+/// text and no modes. Returns that terminal's view, focused.
+Future<TerminalView> _reattach(WidgetTester tester, TerminalView before) async {
+  final clients = await Process.run('tmux', [
+    'list-clients',
+    '-F',
+    '#{client_pid}',
+  ]);
+  for (final pid in '${clients.stdout}'.trim().split('\n')) {
+    Process.killPid(int.parse(pid));
+  }
+  final reconnect = find.byWidgetPredicate(
+    (w) => w is Tooltip && w.message == 'Reconnect',
+  );
+  await _until(
+    tester,
+    () => reconnect.evaluate().isNotEmpty,
+    'the tab to offer Reconnect',
+  );
+  await tester.tap(reconnect.first);
+  await _until(tester, () {
+    final shown = find.byType(TerminalView).evaluate();
+    if (shown.isEmpty) return false;
+    final now = shown.first.widget as TerminalView;
+    return !identical(now.terminal, before.terminal) && _text(now).isNotEmpty;
+  }, 'the tab to be rebuilt from the capture');
+  await tester.pump(const Duration(seconds: 1));
+  // A tap gives the new terminal the keyboard, for Ctrl+V.
+  await tester.tap(find.byType(TerminalView).first);
+  await tester.pump(const Duration(milliseconds: 500));
+  return find.byType(TerminalView).evaluate().first.widget as TerminalView;
+}
+
+/// One minimal PNG, a transparent pixel.
+final _onePixelPng = base64.decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAj'
+  'CB0C8AAAAASUVORK5CYII=',
+);
+
+/// A Mac's window made 1000 wide through System Events, as a hand would drag
+/// it, and put back to its own size when the test ends. The window opens 800
+/// wide, which is narrower than a layout that wants 840 dp.
+Future<void> _macWidenWindow(WidgetTester tester) async {
+  Future<String> mac(String command) async {
+    final done = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh" to $command',
+    ]);
+    expect(done.exitCode, 0, reason: 'System Events: ${done.stderr}');
+    return '${done.stdout}'.trim();
+  }
+
+  final was = (await mac('get size of window 1')).split(RegExp(r',\s*'));
+  addTearDown(() => mac('set size of window 1 to {${was[0]}, ${was[1]}}'));
+  await mac('set size of window 1 to {1000, 760}');
+  await _until(
+    tester,
+    () => tester.view.physicalSize.width / tester.view.devicePixelRatio >= 900,
+    'the window to be wider than 900 dp',
+  );
+  await tester.pump(const Duration(milliseconds: 500));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -1909,6 +2165,14 @@ touch '${done.path}'
         () => tabs.evaluate().length == before + 1,
         'a second Local shell',
       );
+      // Its shell up and its prompt drawn before anything is typed: the tab
+      // exists as soon as it is duplicated, but its pty is wired a moment
+      // later, and a command typed in between is dropped without a trace
+      // (the Mac run's terminal held a bare prompt and no command).
+      await _until(tester, () {
+        final now = shown().where((e) => e.focusNode?.hasFocus ?? false);
+        return now.isNotEmpty && _text(now.first).isNotEmpty;
+      }, 'the second shell to draw its prompt');
 
       // A program reading the mouse: a plain right-click still opens the
       // menu and the program hears nothing of it; Shift+right-click is the
@@ -2432,6 +2696,581 @@ touch '${done.path}'
     },
   );
 
+  // #276: keys typed before a tab's shell is connected are held and sent, not
+  // dropped. A Local shell is duplicated and the new tab typed into the moment
+  // it is on the strip: a typed line and a pasted one, both of which must
+  // reach the shell, in order, once each. The race is real on a Mac, whose
+  // login shell is slow to start; Linux may be quick enough not to show it.
+  _test(
+    'what is typed into a tab the moment it opens reaches its shell, in '
+    'order and once',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _launch(tester);
+      await _localShell(tester);
+      final out = File('${_scratch().path}/out');
+      final r = DateTime.now().millisecondsSinceEpoch;
+      await _duplicateAndTypeAtOnce(tester, out, 'early-$r', 'pasted-$r');
+      await _expectLines(tester, out, ['early-$r', 'pasted-$r']);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #276, the same in a Local tmux tab: attached is not yet knowing the
+  // panes, and what arrives between is held for the focused pane.
+  _test(
+    'what is typed into a tmux tab the moment it opens lands in its pane once',
+    skip: Platform.isWindows
+        ? _powershell
+        : Platform.isMacOS && Platform.environment['CI'] != 'true'
+        ? "off CI a Mac's tmux server is its user's own"
+        : null,
+    (tester) async {
+      addTearDown(_killSshboxTmux);
+      await _launch(tester);
+      await _localShell(tester, tmux: true);
+      final out = File('${_scratch().path}/out');
+      final r = DateTime.now().millisecondsSinceEpoch;
+      await _duplicateAndTypeAtOnce(tester, out, 'early-$r', 'pasted-$r');
+      await _expectLines(tester, out, ['early-$r', 'pasted-$r']);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #276, the other way: a shell that never starts. What was typed while it
+  // connected is said not to have been sent, once, and a later successful
+  // connect types none of it. A real TerminalPage over a session whose
+  // transport is a stand-in that refuses, since a real tab of an SSH host
+  // does not exist until it is connected.
+  _test(
+    'what is typed while a shell fails to start is said lost, and never '
+    'typed into a later connect',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      final secrets = KeystoreSecretStore();
+      final gate = Completer<void>();
+      final failing = _EarlyHost(gate, refuse: true);
+      final working = _EarlyHost(Completer<void>()..complete());
+      var next = failing;
+      final session = LiveSession(
+        host: const HostProfile(
+          id: 'e2e-early-input',
+          label: 'early',
+          host: '127.0.0.1',
+          username: 'e2e',
+        ),
+        transport: (_, _) => next,
+      );
+      addTearDown(session.dispose);
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      unawaited(
+        navigator.push(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, _, _) => TerminalPage(
+              session: session,
+              secrets: secrets,
+              onOpenFile: (path, {line}) {},
+              onOpenWeb: (_) {},
+              onOpenChat: () {},
+              onOpenGit: () {},
+              onOpenDiff: (_) {},
+              onSaveFileRoot: (_) async {},
+            ),
+          ),
+        ),
+      );
+      await _until(
+        tester,
+        () => find.byType(TerminalPage).evaluate().isNotEmpty,
+        'the terminal page',
+      );
+      final connecting = session.connect(secrets: secrets);
+      await tester.pump(const Duration(milliseconds: 300));
+      final r = DateTime.now().millisecondsSinceEpoch;
+      session.terminal.textInput('lost-$r');
+      session.terminal.keyInput(TerminalKey.enter);
+      expect(failing.sent, isEmpty, reason: 'written before there was a shell');
+      gate.complete();
+      await connecting;
+      expect(session.isConnected, isFalse);
+
+      // The toast is up about a second: watched every frame.
+      var toasted = false;
+      for (var i = 0; i < 100 && !toasted; i++) {
+        await tester.pump(const Duration(milliseconds: 30));
+        toasted = find
+            .textContaining('What you typed was not sent')
+            .evaluate()
+            .isNotEmpty;
+      }
+      expect(toasted, isTrue, reason: 'no toast said the typing was lost');
+      expect(failing.sent, isEmpty);
+
+      // A later connect that works types none of it; typing now goes in.
+      next = working;
+      await session.connect(secrets: secrets);
+      expect(session.isConnected, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+      expect(working.sent, isEmpty, reason: 'the old typing was replayed');
+      session.terminal.textInput('after-$r');
+      expect(working.sent.join(), 'after-$r');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+  // #274, 1: a picture pasted into a tmux tab after a reconnect. The tab's
+  // terminal is rebuilt from a capture, which holds no modes, so its own
+  // bracketed-paste flag is false however the program in the pane is set; the
+  // path must be pasted through tmux, which brackets it from the pane's real
+  // mode. 2x2 over the pane's mode, both after a reattach: a pane that asked
+  // for bracketed paste reads the path bracketed (positive), and one that did
+  // not reads it as typed, with no escape at all (negative).
+  // Mutation: remove `tmux ||` in pastePath, which fails the bracketed case.
+  for (final bracketed in [true, false]) {
+    _test(
+      'a picture pasted into a reattached tmux tab reaches a pane '
+      '${bracketed ? 'that asked for bracketed paste, bracketed' : 'with no bracketed mode, as typed'}',
+      skip: Platform.isLinux
+          ? null
+          : 'tmux on the run\'s private server and xclip are the Linux run\'s',
+      (tester) async {
+        final picture = File('${_scratch().path}/picture.png')
+          ..writeAsBytesSync(_onePixelPng);
+        await _putPicture(picture.path);
+        addTearDown(_killSshboxTmux);
+        await _launch(tester);
+        var view = await _localShell(tester, tmux: true);
+        final recorder = await _paneRecorder(
+          tester,
+          view,
+          bracketed: bracketed,
+        );
+        view = await _reattach(tester, view);
+        await _paste(tester);
+        await _until(
+          tester,
+          () => recorder.got.existsSync() && recorder.got.lengthSync() > 0,
+          'the pane to be sent the picture\'s path',
+        );
+        await tester.pump(const Duration(milliseconds: 1500));
+        recorder.stop.createSync();
+        final bytes = utf8.decode(
+          recorder.got.readAsBytesSync(),
+          allowMalformed: true,
+        );
+        final path = RegExp(r'/\S*/pasted-\d{8}-\d{6}[^ \x1b]*\.png')
+            .firstMatch(bytes)
+            ?.group(0);
+        expect(path, isNotNull, reason: 'no path in ${jsonEncode(bytes)}');
+        expect(
+          bytes,
+          bracketed ? '\x1b[200~$path \x1b[201~' : '$path ',
+          reason: bracketed
+              ? 'a pane that asked for bracketed paste was not sent one'
+              : 'a pane with no bracketed mode was sent escapes',
+        );
+        if (!bracketed) {
+          expect(bytes, isNot(contains('\x1b')));
+        }
+        expect(File(path!).readAsBytesSync(), _onePixelPng);
+        await _closeTabs(tester);
+      },
+    );
+  }
+
+  // #274, 2: a multi-line text shared into a tmux tab. The terminal's own
+  // flag says nothing there, so tmux is asked what runs in the pane: at a
+  // shell the text is refused and put on the clipboard with a toast, and
+  // nothing is typed (negative); into a program that is no shell it is
+  // pasted whole and the clipboard is left alone (positive). The share is
+  // queued where the Android share sheet queues it, and the page takes it
+  // from there.
+  _test(
+    'a multi-line share into a tmux pane is refused at a shell and pasted '
+    'whole into a program',
+    skip: Platform.isLinux
+        ? null
+        : 'tmux on the run\'s private server and xclip are the Linux run\'s',
+    (tester) async {
+      addTearDown(_killSshboxTmux);
+      await _launch(tester);
+      final view = await _localShell(tester, tmux: true);
+      final id = DateTime.now().millisecondsSinceEpoch;
+      final text = 'echo SHARE_ONE_$id\necho SHARE_TWO_$id';
+      final session = tester
+          .widget<TerminalPage>(find.byType(TerminalPage))
+          .session;
+      Future<String> pane() async =>
+          '${(await Process.run('tmux', ['capture-pane', '-p', '-J', '-S', '-100'])).stdout}';
+
+      // At a shell.
+      await _until(tester, () async {
+        const shells = {'sh', 'bash', 'zsh', 'dash', 'fish'};
+        return shells.contains((await _paneCommand()).replaceFirst('-', ''));
+      }, 'the pane to be at a shell');
+      await Clipboard.setData(const ClipboardData(text: 'sentinel-before'));
+      session.queueUploads([text]);
+      // A warning toast is up for about a second, which a slow runner's
+      // polling can miss: watched every frame until the clipboard, which
+      // stays, says the share was refused.
+      var toasted = false;
+      final end = DateTime.now().add(const Duration(seconds: 20));
+      while (await _clipboard() != text) {
+        if (DateTime.now().isAfter(end)) fail('the share was not refused');
+        await tester.pump(const Duration(milliseconds: 30));
+        toasted |= find.textContaining('Not pasted').evaluate().isNotEmpty;
+      }
+      for (var i = 0; i < 60 && !toasted; i++) {
+        await tester.pump(const Duration(milliseconds: 30));
+        toasted = find.textContaining('Not pasted').evaluate().isNotEmpty;
+      }
+      expect(toasted, isTrue, reason: 'no refusal toast was shown');
+      expect(
+        (await _clipboard()),
+        text,
+        reason: 'the text is not on the clipboard',
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        await pane(),
+        isNot(contains('SHARE_ONE')),
+        reason: 'a refused share was typed',
+      );
+      expect(_text(view).join('\n'), isNot(contains('SHARE_ONE')));
+      await _until(
+        tester,
+        () => find.byType(TuiToastCard).evaluate().isEmpty,
+        'the toast to go',
+        timeout: const Duration(seconds: 30),
+      );
+
+      // Into a program that is not a shell: cat, with bracketed paste on.
+      final got = File('${_scratch().path}/got');
+      _run(view, "printf '\\033[?2004h'; stty raw -echo; cat > ${got.path}");
+      await _until(
+        tester,
+        () async => await _paneCommand() == 'cat',
+        'the pane to run cat',
+      );
+      await Clipboard.setData(const ClipboardData(text: 'sentinel-after'));
+      session.queueUploads([text]);
+      await _until(
+        tester,
+        () => got.existsSync() && got.lengthSync() > 0,
+        'cat to be sent the text',
+      );
+      await tester.pump(const Duration(milliseconds: 1500));
+      final bytes = utf8.decode(got.readAsBytesSync(), allowMalformed: true);
+      expect(
+        RegExp(
+          '^\\x1b\\[200~echo SHARE_ONE_$id[\\r\\n]+echo SHARE_TWO_$id\\x1b\\[201~\$',
+        ).hasMatch(bytes),
+        isTrue,
+        reason: 'not pasted whole: ${jsonEncode(bytes)}',
+      );
+      expect(find.textContaining('Not pasted'), findsNothing);
+      expect(
+        await _clipboard(),
+        'sentinel-after',
+        reason: 'the clipboard was written',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #274, 3: the app log names a symbol key and buckets a paste's size.
+  // The key bar is not drawn with keys on a desktop, so the real bar is
+  // shown over the app and tapped. 2x2: the keys type their characters and
+  // the log holds "symbol key" (positive), and none of those characters is
+  // in the log's lines; a 12-character pasted "password" is in the log as a
+  // bucket, and its length, 12, and its text are not.
+  _test(
+    'the app log names symbol keys and buckets a paste, with no character '
+    'and no exact length in it',
+    skip: Platform.isLinux ? null : 'xdotool and xclip drive the Linux build',
+    (tester) async {
+      const marker = 'e2e: start #274';
+      List<String> lines() {
+        inputLog.flush();
+        final all = appLog.current
+            .split('\n')
+            .map((l) => l.split(' ').skip(2).join(' '))
+            .toList();
+        return all.sublist(all.lastIndexOf(marker) + 1);
+      }
+
+      await _launch(tester);
+      await _localShell(tester);
+      appLog.add(marker);
+
+      // The key bar, with every key under test.
+      final emitted = <String>[];
+      final controller = KeyBarController();
+      final barKey = GlobalKey(debugLabel: '#274 key bar');
+      final navigator = Navigator.of(
+        tester.element(find.byType(TerminalView).first),
+        rootNavigator: true,
+      );
+      unawaited(
+        navigator.push(
+          PageRouteBuilder<void>(
+            opaque: true,
+            pageBuilder: (_, _, _) => ColoredBox(
+              color: const Color(0xff000000),
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: TerminalKeyBar(
+                  key: barKey,
+                  controller: controller,
+                  terminal: Terminal(),
+                  onEmit: emitted.add,
+                  keys: const ['esc', 'ctrl', '-', '/', '|', '~', ':', '*'],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      // This test's own bar, by key: any other TerminalKeyBar the app has
+      // up (a terminal's own, under this page) is not the one tapped.
+      final bar = find.byKey(barKey);
+      Finder keyOf(String label) =>
+          find.descendant(of: bar, matching: find.text(label));
+      // Every label of every key bar, said when one never shows.
+      String bars() =>
+          '${find.byType(TerminalKeyBar).evaluate().length} bars, ours '
+          '${bar.evaluate().length}: '
+          '${find.descendant(of: find.byType(TerminalKeyBar), matching: find.byType(Text)).evaluate().map((e) => (e.widget as Text).data ?? (e.widget as Text).textSpan?.toPlainText()).join(' | ')}';
+      // The route has to have finished arriving, and every key been built:
+      // a bar is a ListView, which builds the keys it can see.
+      for (final label in ['ESC', 'CTRL', '-', '/', '|', '~', ':', '*']) {
+        try {
+          await _until(tester, () async {
+            await tester.pump(const Duration(milliseconds: 100));
+            return keyOf(label).evaluate().length == 1;
+          }, 'the key bar to show $label');
+        } catch (_) {
+          debugPrint('Key bars at the failure: ${bars()}');
+          rethrow;
+        }
+      }
+      await tester.pump(const Duration(milliseconds: 600));
+      for (final key in ['ESC', 'CTRL', '-', '/', '|', '~', ':', '*']) {
+        await tester.tap(keyOf(key));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      await tester.tap(keyOf('CTRL'));
+      await tester.pump(const Duration(milliseconds: 100));
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+
+      const symbols = ['-', '/', '|', '~', ':', '*'];
+      // Positive: the keys sent their characters, and the log names them.
+      expect(emitted, ['\x1b', ...symbols]);
+      final taps = lines().where((l) => l.startsWith('tap ')).toList();
+      expect(
+        taps.where((l) => l == 'tap symbol key (app)'),
+        hasLength(6),
+        reason: 'taps logged: $taps',
+      );
+      // ESC and CTRL still log by name.
+      expect(taps, contains('tap ESC (app)'));
+      expect(taps.where((l) => l == 'tap CTRL (app)'), hasLength(2));
+      // Negative: none of the characters is in what the taps wrote.
+      for (final line in taps) {
+        for (final c in symbols) {
+          expect(
+            line.contains(c),
+            isFalse,
+            reason: 'a symbol key leaked "$c" into the log: $line',
+          );
+        }
+      }
+
+      // A 12-character "password", then 60 characters.
+      Future<void> pasted(String text, String logged) async {
+        final put = await Process.run('sh', [
+          '-c',
+          r'printf %s "$1" | xclip -selection clipboard -i >/dev/null 2>&1',
+          'sh',
+          text,
+        ]);
+        expect(put.exitCode, 0);
+        await _paste(tester);
+        await _until(
+          tester,
+          () => lines().contains('paste text $logged (terminal)'),
+          'the paste to be logged as $logged',
+        );
+      }
+
+      const password = 'zq7Kd9mWx2Lp';
+      expect(password.length, 12);
+      await pasted(password, '<50');
+      await pasted('x' * 60, '<500');
+      await tester.pump(const Duration(milliseconds: 900));
+      final pastes = lines().where((l) => l.startsWith('paste ')).toList();
+      expect(pastes, contains('paste text <50 (terminal)'));
+      expect(pastes, contains('paste text <500 (terminal)'));
+      for (final line in pastes) {
+        expect(line, isNot(contains('12')), reason: 'the exact length: $line');
+        expect(line, isNot(contains('60')), reason: 'the exact length: $line');
+      }
+      expect(appLog.current, isNot(contains(password)));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #274, 4: holding Ctrl+= is one zoom step, and Ctrl+wheel over the tab
+  // strip zooms and never scrolls it sideways. Real X input. The hold is
+  // proved to have repeated (the app counts key repeats), or it would be a
+  // single press; the strip is proved able to scroll (a Shift+wheel moves
+  // it) and to overflow, or the negative would be vacuous.
+  _test(
+    'holding Ctrl+= zooms one step, and Ctrl+wheel over the tab strip zooms '
+    'without scrolling it',
+    skip: Platform.isLinux ? null : 'the keys and the wheel go through xdotool',
+    (tester) async {
+      addTearDown(() => uiTextSize.choose(1));
+      await uiTextSize.choose(1);
+      await _launch(tester);
+      await tester.pump();
+      await _xdo(['windowfocus', '--sync', await _window()]);
+
+      var repeats = 0;
+      bool count(KeyEvent event) {
+        if (event is KeyRepeatEvent &&
+            event.logicalKey == LogicalKeyboardKey.equal) {
+          repeats++;
+        }
+        return false;
+      }
+
+      ServicesBinding.instance.keyboard.addHandler(count);
+      try {
+        await _xdo([
+          'keydown', 'Control_L', 'keydown', 'equal', 'sleep', '2', //
+          'keyup', 'equal', 'keyup', 'Control_L',
+        ]);
+        await tester.pump(const Duration(milliseconds: 500));
+      } finally {
+        ServicesBinding.instance.keyboard.removeHandler(count);
+      }
+      expect(
+        repeats,
+        greaterThan(2),
+        reason: 'the held key never repeated, so this proves nothing',
+      );
+      expect(
+        (uiTextSize.value * 100).round(),
+        110,
+        reason: 'holding Ctrl+= took more than one step ($repeats repeats)',
+      );
+      await uiTextSize.choose(1.5);
+      await tester.pump();
+
+      // Tabs enough for the strip to overflow at this size.
+      await _localShell(tester);
+      final close = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+      );
+      for (var i = 0; i < 5; i++) {
+        // The last menu gone first: its closing item was still in the tree
+        // when the next right-click opened another, and then vanished.
+        await _until(
+          tester,
+          () => _label('Duplicate session').evaluate().isEmpty,
+          'the last menu to close',
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        final before = close.evaluate().length;
+        await tester.tapAt(
+          tester.getCenter(
+            find
+                .ancestor(of: close.first, matching: find.byType(InkWell))
+                .first,
+          ),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, 'Duplicate session');
+        await _until(
+          tester,
+          () => close.evaluate().length > before,
+          'another tab',
+        );
+      }
+      ScrollableState? strip() => tester
+          .stateList<ScrollableState>(find.byType(Scrollable))
+          .where(
+            (s) =>
+                s.position.axis == Axis.horizontal &&
+                s.position.maxScrollExtent > 0,
+          )
+          .firstOrNull;
+      await _until(tester, () => strip() != null, 'the tab strip to overflow');
+      final window = await _windowRect();
+      final ratio = tester.view.devicePixelRatio;
+      final frame = (window.width - tester.view.physicalSize.width) / 2;
+      Future<void> wheelOverStrip(List<String> holding, String button) async {
+        final box = strip()!.context.findRenderObject()! as RenderBox;
+        final at = box.localToGlobal(box.size.center(Offset.zero));
+        final x = (window.left + frame + at.dx * ratio).round();
+        final y = (window.top + frame + at.dy * ratio).round();
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _realPointer(() async {
+          await _xdo([
+            'mousemove', '$x', '$y', 'sleep', '0.2', //
+            for (final key in holding) ...['keydown', key],
+            'click', button, 'sleep', '0.2', 'click', button, 'sleep', '0.2',
+            for (final key in holding.reversed) ...['keyup', key],
+          ]);
+          await tester.pump(const Duration(milliseconds: 400));
+        });
+      }
+
+      // The strip can scroll sideways: Shift+wheel moves it.
+      strip()!.position.jumpTo(strip()!.position.maxScrollExtent / 2);
+      await tester.pump();
+      var from = strip()!.position.pixels;
+      await wheelOverStrip(['Shift_L'], '5');
+      await _until(
+        tester,
+        () => strip()!.position.pixels != from,
+        'Shift+wheel to scroll the strip (the control for the negative)',
+        timeout: const Duration(seconds: 5),
+      );
+
+      // Ctrl+wheel up zooms: 150% to 160%.
+      await wheelOverStrip(['Control_L'], '4');
+      await _until(
+        tester,
+        () => (uiTextSize.value * 100).round() == 160,
+        'Ctrl+wheel up over the strip to zoom to 160%',
+        timeout: const Duration(seconds: 5),
+      );
+
+      // At the largest size a zoom changes nothing in the layout, so the
+      // strip's offset is the strip's alone: it must not move.
+      await tester.pump(const Duration(seconds: 1));
+      strip()!.position.jumpTo(strip()!.position.maxScrollExtent / 2);
+      await tester.pump();
+      from = strip()!.position.pixels;
+      await wheelOverStrip(['Control_L'], '4');
+      await tester.pump(const Duration(seconds: 1));
+      expect((uiTextSize.value * 100).round(), 160);
+      expect(
+        strip()!.position.pixels,
+        from,
+        reason: 'Ctrl+wheel scrolled the tab strip sideways',
+      );
+      await _closeTabs(tester);
+    },
+  );
   // #127: chat in a Local shell runs Claude beside it as a process, found and
   // quoted as over an exec channel. Never this machine's own Claude: a
   // stand-in is put where the finder looks only where none is installed —
@@ -2505,6 +3344,11 @@ touch '${done.path}'
       final list = find.byType(TuiChatSessionList);
 
       await _launch(tester);
+      // The sessions sit in a sidebar, and fold to a rail, from 840 dp wide.
+      // A Mac's window opens 800 wide (MainMenu.xib), where the chat has the
+      // drawer only; Linux's Xvfb window is 1280. So the Mac's is widened
+      // for the test, as a person would drag it, and put back after.
+      if (Platform.isMacOS) await _macWidenWindow(tester);
       await _localShell(tester);
       await tester.tap(find.byTooltip('Chat with Claude'));
       await _until(
@@ -3605,7 +4449,11 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 600));
       await tester.tapAt(const Offset(4, 4));
       await tester.pump(const Duration(milliseconds: 600));
-      expect(find.text('Downloading Jeansh 9.9.9'), findsNothing);
+      await _until(
+        tester,
+        () => find.text('Downloading Jeansh 9.9.9').evaluate().isEmpty,
+        'the dialog to close after a click outside it',
+      );
       final going = find.text('Jeansh 9.9.9 is downloading');
       if (check.evaluate().isEmpty) await _settings(tester);
       await tester.scrollUntilVisible(
@@ -3959,6 +4807,301 @@ touch '${done.path}'
     },
   );
 
+  // #283, the key reaching the app at all: Settings opened by its button,
+  // then Ctrl+, from Home with no terminal anywhere. The events the app
+  // sees are printed, so a log shows what X made of the chord.
+  _test(
+    'Ctrl+, closes Settings opened by its button, and the app hears the chord',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      final removeLog = _logKeys('Home');
+      addTearDown(removeLog);
+      await _launch(tester);
+      await _settings(tester);
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['key', '--clearmodifiers', 'ctrl+comma']);
+      // A pop takes several frames on a runner: polled, not read once.
+      await _until(
+        tester,
+        () =>
+            find
+                .text(
+                  'LOOK · TERMINAL · KEYBOARD · PRIVACY',
+                  skipOffstage: false,
+                )
+                .evaluate()
+                .isEmpty &&
+            _homeCard('Local shell').evaluate().isNotEmpty,
+        'Ctrl+, to close Settings opened by its button, back on Home',
+        timeout: const Duration(seconds: 8),
+      );
+    },
+  );
+
+  // #283: Ctrl+, toggles Settings, through X as a person presses it. A 2x2:
+  // pressed with Settings closed it opens, with it showing it closes (from
+  // the page, from a sub-page, and with a text field focused); a bare comma
+  // and Super+comma open nothing, and the comma reaches the shell. Each step
+  // reads the opposite outcome as well: Settings gone means the terminal is
+  // there, scrolled as it was; Settings up means the terminal is not.
+  _test(
+    'Ctrl+, opens Settings and a second press closes it, wherever in '
+    'Settings it is pressed; a bare comma and Super+comma open nothing',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      addTearDown(_logKeys('terminal'));
+      await _launch(tester);
+      // A font an earlier test picked is saved, and Settings then names it
+      // where this test looks for "Installed on this computer…".
+      await terminalSettings.choose(family: terminalFonts.first.family);
+      final view = await _localShell(tester);
+      // A program that shows what reached it: ^[ for an escape, no more.
+      _run(view, 'seq 1 300; cat -v');
+      await _until(
+        tester,
+        () => _text(view).any((l) => l.trim() == '300'),
+        'seq to finish',
+      );
+
+      Future<void> keys(String chord) async {
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo(['key', '--clearmodifiers', chord]);
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+
+      const title = 'LOOK · TERMINAL · KEYBOARD · PRIVACY';
+      final header = find.text(title);
+      final anySettings = find.text(title, skipOffstage: false);
+      // This tab's terminal, by its Terminal: Settings draws one of its own
+      // as a font sample.
+      final terminal = find.byWidgetPredicate(
+        (w) => w is TerminalView && identical(w.terminal, view.terminal),
+      );
+      const slow = Duration(seconds: 8);
+      // A push or a pop takes several frames on a runner, so each outcome
+      // is waited for, then asserted with its opposite.
+      Future<void> settingsUp(String when) async {
+        await _until(
+          tester,
+          () => header.evaluate().length == 1 && terminal.evaluate().isEmpty,
+          '$when: Settings up and the terminal covered',
+          timeout: slow,
+        );
+        expect(header, findsOneWidget, reason: '$when: Settings is not up');
+        expect(terminal, findsNothing, reason: '$when: the terminal shows');
+      }
+
+      Future<void> terminalBack(String when) async {
+        await _until(
+          tester,
+          () =>
+              terminal.evaluate().length == 1 && anySettings.evaluate().isEmpty,
+          '$when: the terminal back and Settings gone',
+          timeout: slow,
+        );
+        expect(terminal, findsOneWidget, reason: '$when: no terminal');
+        expect(anySettings, findsNothing, reason: '$when: Settings is there');
+      }
+
+      // A key that must open nothing: Settings is watched for as long as an
+      // opening is waited for, and never appears.
+      Future<void> opensNothing(String chord, String what) async {
+        await keys(chord);
+        final end = DateTime.now().add(slow);
+        while (DateTime.now().isBefore(end)) {
+          expect(anySettings, findsNothing, reason: '$what opened Settings');
+          await tester.pump(const Duration(milliseconds: 100));
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+      }
+
+      // Scrolled up a few lines; the line at the top of the view.
+      ScrollPosition position() => tester
+          .state<ScrollableState>(
+            find
+                .descendant(of: terminal, matching: find.byType(Scrollable))
+                .first,
+          )
+          .position;
+      String top() {
+        final now = (terminal.evaluate().first.widget as TerminalView).terminal;
+        final lines = now.buffer.lines;
+        final p = position();
+        final cell = p.maxScrollExtent / (lines.length - now.viewHeight);
+        return lines[(p.pixels / cell).round()].getText().trim();
+      }
+
+      position().jumpTo(position().maxScrollExtent - 200);
+      await tester.pump(const Duration(milliseconds: 300));
+      final scrolled = position().pixels;
+      expect(scrolled, lessThan(position().maxScrollExtent));
+      final topBefore = top();
+
+      // 1: Ctrl+, opens it, the shell hears nothing of it, and a second
+      // press brings the terminal back as it was.
+      await keys('ctrl+comma');
+      await settingsUp('Ctrl+, from the terminal');
+      await keys('ctrl+comma');
+      await terminalBack('the second Ctrl+,');
+      expect(position().pixels, scrolled, reason: 'scrollback moved');
+      expect(top(), topBefore, reason: 'another line is at the top');
+      final shown = terminal.evaluate().first.widget as TerminalView;
+      expect(
+        _text(shown).any((l) => l.trim() == '1'),
+        isTrue,
+        reason: 'line 1 is gone from the scrollback',
+      );
+      expect(
+        _text(shown).where((l) => l.contains(',') || l.contains('^[[44;')),
+        isEmpty,
+        reason: 'the shell received the chord',
+      );
+      // No second Settings: one press more opens exactly one, and one more
+      // closes it.
+      await keys('ctrl+comma');
+      await settingsUp('a third press');
+      expect(header, findsOneWidget, reason: 'not exactly one Settings');
+      await keys('ctrl+comma');
+      await terminalBack('after a third and fourth press');
+
+      // 2: from a sub-page, one press goes back to the terminal.
+      await keys('ctrl+comma');
+      await settingsUp('before the sub-page');
+      final row = _label('Key bar');
+      // Settings' own list: the Scrollable the header sits in, waited for
+      // and then pinned by its element. Found again by the header, it would
+      // be lost mid-scroll, when the list unbuilds the header it began from.
+      Future<Finder> settingsList() async {
+        await _until(
+          tester,
+          () => find
+              .ancestor(of: header, matching: find.byType(Scrollable))
+              .evaluate()
+              .isNotEmpty,
+          "Settings' list to be in the tree",
+          timeout: slow,
+        );
+        final element = find
+            .ancestor(of: header, matching: find.byType(Scrollable))
+            .evaluate()
+            .first;
+        return find.byElementPredicate((e) => identical(e, element));
+      }
+
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: await settingsList(),
+      );
+      await tester.ensureVisible(row);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(row);
+      await _until(
+        tester,
+        () => _label('Add key').evaluate().isNotEmpty,
+        'the Key bar page',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await keys('ctrl+comma');
+      await terminalBack('Ctrl+, on the Key bar page');
+      await _until(
+        tester,
+        () => _label('Add key').evaluate().isEmpty,
+        'the Key bar page to be gone with Settings',
+        timeout: slow,
+      );
+      expect(
+        _label('Add key'),
+        findsNothing,
+        reason: 'the Key bar page is still up',
+      );
+
+      // 3: with a text field focused, in a dialog over Settings, it closes
+      // both and the comma is typed nowhere.
+      await keys('ctrl+comma');
+      await settingsUp('before the font picker');
+      final fonts = find.textContaining('Installed on this computer');
+      final fontList = await settingsList();
+      // From the top, in case Settings opens where it was left.
+      tester.state<ScrollableState>(fontList).position.jumpTo(0);
+      await tester.pump(const Duration(milliseconds: 300));
+      try {
+        await tester.scrollUntilVisible(fonts, 300, scrollable: fontList);
+      } catch (_) {
+        final texts = find
+            .byType(Text)
+            .evaluate()
+            .map((e) => (e.widget as Text).data)
+            .whereType<String>()
+            .take(80)
+            .join(' | ');
+        debugPrint('Font row not found; Settings shows: $texts');
+        rethrow;
+      }
+      await _until(
+        tester,
+        () => find
+            .textContaining('families, monospaced first')
+            .evaluate()
+            .isNotEmpty,
+        "this computer's fonts to be listed",
+      );
+      await tester.ensureVisible(fonts);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(fonts);
+      await _until(
+        tester,
+        () => _label('Installed fonts').evaluate().isNotEmpty,
+        'the font picker',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      final picker = _kind('AlertDialog', 'TuiDialog');
+      final field = find.descendant(
+        of: picker,
+        matching: find.byType(TextField),
+      );
+      final controller = tester.widget<TextField>(field).controller!;
+      // The opposite: a bare comma goes into the field, so the field is the
+      // one that would have taken the chord's.
+      await keys('comma');
+      expect(controller.text, ',', reason: 'the field was not taking keys');
+      controller.clear();
+      var typedComma = false;
+      controller.addListener(
+        () => typedComma = typedComma || controller.text.contains(','),
+      );
+      await keys('ctrl+comma');
+      await terminalBack('Ctrl+, with the font filter focused');
+      await _until(
+        tester,
+        () => picker.evaluate().isEmpty,
+        'the font picker to close with Settings',
+        timeout: slow,
+      );
+      expect(typedComma, isFalse, reason: 'the chord typed a comma');
+
+      // 4: the negatives, on the terminal: a bare comma reaches the shell
+      // and opens nothing; Super+comma opens nothing.
+      await tester.tap(terminal);
+      await tester.pump(const Duration(milliseconds: 300));
+      await opensNothing('comma', 'a bare comma');
+      final live = terminal.evaluate().first.widget as TerminalView;
+      await _until(
+        tester,
+        () => _text(live).any((l) => l.trim() == ','),
+        'the comma to reach the shell',
+      );
+      await opensNothing('super+comma', 'Super+comma');
+      expect(terminal, findsOneWidget, reason: 'the terminal went');
+      await keys('ctrl+c');
+      await _closeTabs(tester);
+    },
+  );
+
   // #216: the UI text size from the keyboard, the wheel and the in-frame Help
   // menu, as a person would, through X: Ctrl with = − 0 steps it 10% at a
   // time and back to 100%, Ctrl+wheel over the UI grows it and over a
@@ -4198,6 +5341,135 @@ touch '${done.path}'
         reason: 'Ctrl+wheel over the picture zoomed the UI text',
       );
       expect(find.byType(InteractiveViewer), findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #187: Report a bug, after + in the strip. Its icon alone until a first
+  // click slides "Report a bug" out, which folds back by itself after 4 s or
+  // on a click elsewhere; a click on it then opens the report. CI's builds
+  // carry no Sentry DSN, so the dialog says the log can't go, offers no
+  // private route, and "Under my name" hands the browser a GitHub link that
+  // holds what was written and none of the log. The browser is the link-key
+  // test's stand-in, on CI alone for the same reason.
+  _test(
+    'Report a bug folds out on a click, opens on the next, and links no log',
+    skip: !Platform.isLinux
+        ? 'the stand-in browser is registered through XDG mime handlers, '
+              'which only Linux reads'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI the machine's own browser would open"
+        : null,
+    (tester) async {
+      final data = Platform.environment['XDG_DATA_HOME']!;
+      final opened = File('$data/e2e-opened-bug-links');
+      final browser = File('$data/e2e-bug-browser')
+        ..writeAsStringSync(
+          '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${opened.path}\'\n',
+        );
+      Process.runSync('chmod', ['755', browser.path]);
+      Directory('$data/applications').createSync(recursive: true);
+      File('$data/applications/e2e-bug-browser.desktop').writeAsStringSync(
+        '[Desktop Entry]\nType=Application\nName=e2e browser\nNoDisplay=true\n'
+        'Exec=${browser.path} %u\n'
+        'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n',
+      );
+      File('$data/applications/mimeapps.list').writeAsStringSync(
+        '[Default Applications]\n'
+        'x-scheme-handler/http=e2e-bug-browser.desktop\n'
+        'x-scheme-handler/https=e2e-bug-browser.desktop\n',
+      );
+      // A line of the log's own, which no link may carry.
+      const marker = 'e2e-log-marker-7f3a';
+      appLog.add(marker);
+
+      await _launch(tester);
+      final bug = find.byIcon(Icons.bug_report_outlined);
+      final label = find.text('Report a bug');
+      Future<void> settle() => tester.pump(const Duration(milliseconds: 400));
+
+      // 1. Right after +, folded to its icon.
+      expect(bug, findsOneWidget, reason: 'no bug icon in the strip');
+      final plus = tester.getRect(
+        find
+            .byWidgetPredicate(
+              (w) => w is Semantics && w.properties.label == 'New tab',
+            )
+            .first,
+      );
+      final icon = tester.getRect(bug);
+      expect(
+        icon.left >= plus.right - 1 && icon.left - plus.right < 48,
+        isTrue,
+        reason: 'the bug icon at $icon is not right after + at $plus',
+      );
+      expect(label, findsNothing, reason: 'the label showed before a click');
+
+      // 2. One click: the label, and no dialog.
+      await tester.tap(bug);
+      await settle();
+      expect(label, findsOneWidget, reason: 'a click did not show the label');
+      expect(find.byType(TuiDialog), findsNothing, reason: 'a dialog opened');
+
+      // 3. It folds back by itself, and on a click elsewhere.
+      await _until(
+        tester,
+        () => label.evaluate().isEmpty,
+        'the label to fold back by itself',
+        timeout: const Duration(seconds: 8),
+      );
+      await tester.tap(bug);
+      await settle();
+      expect(label, findsOneWidget);
+      final window = tester.view.physicalSize / tester.view.devicePixelRatio;
+      await tester.tapAt(Offset(window.width / 2, window.height - 8));
+      await settle();
+      expect(label, findsNothing, reason: 'a click elsewhere left it out');
+
+      // 4. Out, then on it: the report, with no log to attach in this build.
+      await tester.tap(bug);
+      await settle();
+      await tester.tap(label);
+      await _until(
+        tester,
+        () => find.byType(TuiDialog).evaluate().isNotEmpty,
+        'the report to open',
+      );
+      expect(
+        find.textContaining("can't be attached in this build"),
+        findsOneWidget,
+        reason: 'no word that the log cannot go',
+      );
+      expect(_label('Privately to the developer'), findsNothing);
+      expect(_label('Under my name'), findsOneWidget);
+
+      // 5. Under my name: a GitHub link with what was written, no log.
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(TuiDialog),
+          matching: find.byType(TextField),
+        ),
+        'the e2e bug report',
+      );
+      await settle();
+      await tester.tap(_label('Under my name'));
+      await _until(
+        tester,
+        () =>
+            opened.existsSync() && opened.readAsStringSync().trim().isNotEmpty,
+        'the report link to reach the browser',
+      );
+      final link = Uri.parse(opened.readAsStringSync().trim().split('\n').last);
+      final body = link.queryParameters['body'] ?? '';
+      debugPrint('Report link: $link');
+      expect(link.host, 'github.com');
+      expect(link.path, '/triasbrata/sshbox/issues/new');
+      expect(body, contains('the e2e bug report'));
+      expect(body, contains('Jeansh '), reason: 'no version line');
+      expect(body, isNot(contains(marker)), reason: 'the log is in the link');
+      expect(body, isNot(contains('--- this run ---')));
+      // No DSN in this build, so no event to name.
+      expect(body, isNot(contains('Sentry event')));
       await _closeTabs(tester);
     },
   );
@@ -5953,7 +7225,9 @@ touch '${done.path}'
       await _paste(tester);
       await _until(
         tester,
-        () => lines().contains('paste text ${clip.length} (terminal)'),
+        // A size bucket since #274: the exact length of a paste is part of
+        // what was pasted.
+        () => lines().contains('paste text <50 (terminal)'),
         'the text paste in the log',
       );
       await quiet();

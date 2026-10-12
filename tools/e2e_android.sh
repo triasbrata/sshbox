@@ -141,7 +141,10 @@ case "$1" in
   # session the agents list holds.
   --bg) printf '%s\n' "$*" >"$HOME/.e2e-bg-args"
     echo 'backgrounded · e2e0newc · New chat' ;;
-  -p) if [ "$2" = /usage ]; then cat "$HOME/.e2e-usage.txt" 2>/dev/null; else
+  # chat_ask's stand-in for a `-p` that asks and waits for the answer, where
+  # a flow put one; it answers the `initialize` as well.
+  -p) if [ -f "$HOME/.e2e-ask.py" ]; then exec python3 "$HOME/.e2e-ask.py"
+    elif [ "$2" = /usage ]; then cat "$HOME/.e2e-usage.txt" 2>/dev/null; else
     # Chat's own claude, where a flow asked for a model (~/.e2e-model): the
     # init a real one writes, naming it; a set_model request is kept for the
     # flow to read and answered with success.
@@ -1180,6 +1183,139 @@ JSON
   return "$status"
 }
 
+# Chat answers a question a WATCHED session asks (.maestro/chat_ask_watched.yaml):
+# a claude --bg session through `claude attach`, and Claude in a tmux pane, the
+# picks typed into the session's own dialog. The stand-in is
+# tools/e2e_ask_watched.py, whose dialog takes the keys a real 2.1.287 was
+# measured to take and logs every one to ~/.e2e-ask.log. The flow can see only
+# the card; what reached the dialog is read from that log after each run: the
+# keys, how many attaches were opened, whether the session still waits, and
+# that no shell syntax typed as an answer was run.
+ask_pids=()
+ask_check() { # KIND
+  sudo python3 - "/home/$SSH_USER" "$1" <<'PY'
+import json, os, sys
+home, kind = sys.argv[1:3]
+events = [json.loads(l) for l in open(os.path.join(home, '.e2e-ask.log')) if l.strip()]
+n = {'single': 1, 'multi': 2, 'two': 3, 'other': 4, 'perm': 5, 'pane': 6}[kind]
+sid = 'e2e00000-0000-4000-8000-00000000a%03d' % n
+keys = []
+for e in events:
+    if e['ev'] != 'key' or e['sid'] != sid:
+        continue
+    if e['k'] in ('char', 'space'):
+        if keys and keys[-1].startswith('text:'):
+            keys[-1] += e['c']
+        else:
+            keys.append('text:' + e['c'])
+    else:
+        keys.append(e['k'])
+# A lone space byte is the Space key (a real dialog reads it so); only a run
+# with other characters in it is text.
+keys = ['space' if k == 'text: ' else k for k in keys]
+attaches = [e for e in events if e['ev'] == 'attach-id' and e['id'] == 'e2eask%02d' % n]
+answered = [e['answers'] for e in events if e['ev'] == 'answered' and e['sid'] == sid]
+rows = json.load(open(os.path.join(home, '.e2e-agents.json')))
+waiting = next(r.get('waitingFor') for r in rows if r['sessionId'] == sid)
+# Measured on 2.1.287: Down and Enter for a choice, Space, Down and Tab for
+# several (Enter submits the review), the words typed on "Type something."
+want = {
+    'single': (['down', 'enter'], 1, [{'Which fruit?': 'Banana'}], None),
+    'multi': (['space', 'down', 'down', 'space', 'tab', 'enter'], 1,
+              [{'Which colours?': 'Red, Blue'}], None),
+    'two': (['down', 'enter', 'enter', 'enter'], 1,
+            [{'Which size?': 'Large', 'Which shape?': 'Circle'}], None),
+    'other': (['down', 'down', 'text:Lisbon $(touch x)', 'enter'], 1,
+              [{'Which city?': 'Lisbon $(touch x)'}], None),
+    # Nothing typed, no attach opened, still waiting for the permission.
+    'perm': ([], 0, [], 'permission prompt'),
+    # The pane is not an attach: its keys came through tmux.
+    'pane': (['down', 'enter'], 0, [{'Which drink?': 'Coffee'}], None),
+}[kind]
+problems = []
+if keys != want[0]:
+    problems.append(f'the dialog got keys {keys}, not {want[0]}')
+if len(attaches) != want[1]:
+    problems.append(f'{len(attaches)} attaches opened, not {want[1]}')
+if answered != want[2]:
+    problems.append(f'the transcript recorded {answered}, not {want[2]}')
+if waiting != want[3]:
+    problems.append(f'the session is listed waitingFor {waiting!r}, not {want[3]!r}')
+if kind == 'other':
+    for path in ('x', '/x', '/tmp/x'):
+        full = path if path.startswith('/') else os.path.join(home, path)
+        if os.path.exists(full):
+            problems.append(f'{full} exists: the typed $(touch x) ran')
+for p in problems:
+    print('::error::chat_ask_watched ' + kind + ': ' + p)
+print(f'{kind}: keys {keys}, attaches {len(attaches)}, recorded {answered}, waitingFor {waiting!r}')
+sys.exit(1 if problems else 0)
+PY
+}
+
+chat_ask_watched() {
+  local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) log=/home/$SSH_USER/.e2e-ask.log
+  local kind pid pids='' pane
+  chat_stand_in
+  end_live_session
+  if "${as[@]}" tmux has-session -t e2e-ask 2>/dev/null ||
+    sudo find "$home/.claude/sessions" -name '*.json' 2>/dev/null | grep -q .; then
+    echo "::error::the host already has a live session; not starting another" >&2
+    return 1
+  fi
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_ask_watched.py "$home/.e2e-ask-watched.py"
+  put_stand_in <<'SH'
+p=$HOME/.e2e-ask-watched.py
+case "$1" in
+  --version) echo '2.1.287 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  attach) exec env PYTHONIOENCODING=utf-8 python3 "$p" --attach "$2" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$log"
+  "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-transcripts || return 1
+  # The background sessions' processes: a sleep each, as live ones.
+  ask_pids=()
+  for kind in single multi two other perm; do
+    pid=$("${as[@]}" sh -c 'setsid sleep 3600 </dev/null >/dev/null 2>&1 & echo $!')
+    ask_pids+=("$pid")
+    pids="$pids\"$kind\": $pid, "
+  done
+  # The interactive one, in a tmux pane of its own.
+  "${as[@]}" sh -c 'cd && LANG=C.UTF-8 LC_ALL=C.UTF-8 tmux new-session -d -s e2e-ask \
+    -x 120 -y 30 "exec env PYTHONIOENCODING=utf-8 python3 $HOME/.e2e-ask-watched.py --pane $1"' \
+    sh e2e00000-0000-4000-8000-00000000a006 || return 1
+  sleep 1
+  pane=$("${as[@]}" tmux list-panes -t e2e-ask -F '#{pane_pid}')
+  "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-rows "{${pids}\"pane\": $pane}" || return 1
+  echo "ask host: sleeps ${ask_pids[*]}, pane pid $pane"
+  for kind in single multi two other perm pane; do
+    echo "-- chat_ask_watched: $kind"
+    sudo truncate -s 0 "$log" 2>/dev/null
+    # Whatever a failed run left on top (a system picker) is sent away first,
+    # so one failure cannot take the runs after it down.
+    adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1
+    adb shell input keyevent KEYCODE_HOME >/dev/null 2>&1
+    flow chat_ask_watched -e "KIND=$kind" -e "SESSION=E2E ask $kind" ||
+      { echo "::error::chat_ask_watched failed at its '$kind' run"; status=1; }
+    echo "the stand-in's log for $kind:"
+    sudo cat "$log" 2>/dev/null
+    ask_check "$kind" || status=1
+    keep_shots 'chat-ask-watched-*.png'
+  done
+  # Only what this started: the tmux session, the sleeps, the stand-in, and
+  # these sessions' transcripts and state file.
+  "${as[@]}" tmux kill-session -t e2e-ask 2>/dev/null
+  for pid in "${ask_pids[@]}"; do sudo kill "$pid" 2>/dev/null; done
+  sudo find "$home/.claude/projects" -name 'e2e00000-0000-4000-8000-00000000a0*.jsonl' -delete 2>/dev/null
+  sudo find "$home/.claude/sessions" -name '*.json' \
+    -exec grep -l '"sessionId":"e2e00000-' {} + 2>/dev/null | xargs -r sudo rm -f
+  sudo rm -f "$home/.e2e-ask-watched.py"
+  stand_in ''
+  return "$status"
+}
+
 # #226: ↑ goes back to the last message (.maestro/chat_edit_previous.yaml),
 # against tools/e2e_edit_claude.py as chat's own `claude -p`. What it was
 # started with is read after the flow: exactly one start with
@@ -1304,6 +1440,132 @@ jeansh_open() {
   return "$status"
 }
 
+# jeansh open: secret file, file limit, onward ssh, install result (#218,
+# .maestro/jeansh_open2.yaml), against this runner's sshd with the host's
+# install switch on. Terminal text cannot be read from a flow, so the flow
+# leaves what each command printed and exited with in files in the login home,
+# and the runner reads them, and the host's files, after each STEP. A second
+# account, jeansh2e, is what the onward ssh goes to.
+JO2_STATUS=0
+jo2_host() { sudo -u "$SSH_USER" -H "$@"; }
+jo2_fail() { echo "::error::$1"; JO2_STATUS=1; }
+jo2_expect() { # label got want
+  if [ "$2" = "$3" ]; then echo "ok: $1"; else jo2_fail "$1: got [$2], expected [$3]"; fi
+}
+jo2_cat() { sudo cat "/home/$SSH_USER/$1" 2>/dev/null; }
+
+jeansh_open2() {
+  local home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local f before after rc out
+  JO2_STATUS=0
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home"/jo[0-9]*.*
+  jo2_host sh -s <<'EOS'
+mkdir -p "$HOME/jeansh-e2e-open" && cd "$HOME/jeansh-e2e-open" || exit 1
+for n in a.md f1 f2 f3 f4 f5 f6 f7 g1 g2 g3 g4 g5; do printf 'jeansh e2e %s\n' "$n" >"$n"; done
+EOS
+  # The second account and the key that reaches it.
+  id jeansh2e >/dev/null 2>&1 || sudo useradd -m -s /bin/bash jeansh2e
+  sudo usermod -p '*' jeansh2e
+  sudo rm -f "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  jo2_host ssh-keygen -q -t ed25519 -N '' -f "$home/.e2e-onward-key"
+  sudo chown "$SSH_USER" "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  sudo chmod 600 "$home/.e2e-onward-key"
+  sudo install -d -m 700 -o jeansh2e -g jeansh2e /home/jeansh2e/.ssh
+  sudo cat "$home/.e2e-onward-key.pub" | sudo tee /home/jeansh2e/.ssh/authorized_keys >/dev/null
+  sudo chown jeansh2e:jeansh2e /home/jeansh2e/.ssh/authorized_keys
+  sudo chmod 600 /home/jeansh2e/.ssh/authorized_keys
+
+  echo "::group::jeansh_open2: the switch on"
+  flow jeansh_open2 -e STEP=on || jo2_fail "the switch flow failed"
+  echo "::endgroup::"
+
+  # 4. A file of somebody else's where the command goes: said, and untouched.
+  echo "::group::jeansh_open2: install result, a file that is not the app's"
+  jo2_host sh -c 'mkdir -p "$HOME/.local/bin" && printf "#!/bin/sh\necho foreign\n" >"$HOME/.local/bin/jeansh" && chmod 755 "$HOME/.local/bin/jeansh"'
+  before=$(sudo sha256sum "$bin" | cut -d' ' -f1)
+  # The notice is on screen for about a second, so the flow may look away at
+  # the wrong moment: it is tried up to three times, each from a stopped app and
+  # the same untouched file, and one sighting is the proof.
+  local seen=0 attempt
+  for attempt in 1 2 3; do
+    if flow jeansh_open2 -e STEP=foreign; then seen=1; break; fi
+    echo "the notice was not seen on attempt $attempt"
+    # A trust prompt that came first is answered here, then it is tried again.
+    flow jeansh_open2 -e STEP=trust || true
+    adb shell am force-stop cloud.brata.terminal >/dev/null 2>&1
+  done
+  [ "$seen" = 1 ] || jo2_fail "4: the notice that the file was left alone was not seen in three tries"
+  after=$(sudo sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)
+  jo2_expect "4: the file there is byte for byte as it was" "$after" "$before"
+  jo2_expect "4: and nothing else was left beside it" \
+    "$(jo2_host sh -c 'ls -A "$HOME/.local/bin" | wc -l' | tr -d ' ')" 1
+  echo "::endgroup::"
+
+  # A clean host, then the command itself.
+  echo "::group::jeansh_open2: a clean host, the command"
+  sudo rm -rf "$bin" "$home/.config/jeansh"
+  flow jeansh_open2 -e STEP=clean || jo2_fail "the clean-host flow failed"
+  sleep 3
+  jo2_expect "4: a clean host got the command, mode 755" "$(sudo stat -c %a "$bin" 2>/dev/null)" 755
+  sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" 2>/dev/null ||
+    jo2_fail "4: the command lacks its marker line"
+  jo2_expect "4: and its key file is private" \
+    "$(sudo stat -c %a "$home/.config/jeansh/open-secret" 2>/dev/null)" 600
+
+  jo2_expect "1: the command ran and exited 0" "$(jo2_cat jo1.rc)" 0
+  jo2_expect "1: and printed nothing" "$(jo2_cat jo1.err)" ""
+  jo2_expect "1: without its key file it exited 1" "$(jo2_cat jo1n.rc)" 1
+  case $(jo2_cat jo1n.err) in
+    *"not running in a Jeansh terminal"*) echo "ok: 1: and said it is not in a Jeansh terminal" ;;
+    *) jo2_fail "1: without its key file it did not say it is not in a Jeansh terminal: [$(jo2_cat jo1n.err)]" ;;
+  esac
+  jo2_expect "2: seven files exit 1" "$(jo2_cat jo2.rc)" 1
+  case $(jo2_cat jo2.err) in
+    *"2 of 7 not opened"*) echo "ok: 2: and say 2 of 7 were not opened" ;;
+    *) jo2_fail "2: seven files did not say 2 of 7 not opened: [$(jo2_cat jo2.err)]" ;;
+  esac
+  jo2_expect "2: five files exit 0" "$(jo2_cat jo2b.rc)" 0
+  jo2_expect "2: and print nothing" "$(jo2_cat jo2b.err)" ""
+
+  # 3. Onward ssh: only worth reading when the control shows the account can
+  # be reached and a LC_ variable does get through to it.
+  rc=$(jo2_cat jo3.rc)
+  out=$(jo2_cat jo3.out | tail -n 3 | tr "\n" " ")
+  # The push key is a file, never a variable: none of it in this tab's own
+  # shell either. Only a real relay key makes the file, and the emulator has no
+  # FCM to get one with, so that check is made when there is a file and said to
+  # be skipped when there is none.
+  jo2_expect "3: no push key or host id in the tab's own environment" \
+    "$(jo2_cat jo3.own | tr -d '\n ')" 0
+  if sudo test -f "$home/.config/jeansh/notify-key"; then
+    jo2_expect "3: the push key file is private" \
+      "$(sudo stat -c %a "$home/.config/jeansh/notify-key")" 600
+  else
+    echo "::notice::jeansh_open2 3: this host got no relay key (no FCM on this runner), so the notify-key file check is skipped"
+  fi
+  echo "onward ssh: exit [$rc], saw [$out], control [$(jo2_cat jo3.control | tr '\n' ' ')]"
+  if [ "$rc" != 0 ]; then
+    echo "::warning::jeansh_open2 3: the onward ssh did not connect, so nothing was learned: $out"
+    JO2_STATUS=1
+  else
+    jo2_expect "3: onward, no push key or host id in the environment, no open secret, and no key file" "$out" "0 0 0 "
+    if [ "$(jo2_cat jo3.control | tr -d '\n ')" != 1 ]; then
+      echo "::notice::jeansh_open2 3: this sshd does not take LC_ variables, so the 0 above is not a proof; it is a check that nothing was left behind"
+    fi
+  fi
+  echo "::endgroup::"
+
+  echo "::group::jeansh_open2: the switch off"
+  flow jeansh_open2 -e STEP=off || jo2_fail "the switch-off flow failed"
+  echo "::endgroup::"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'jeansh-open2-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home"/jo[0-9]*.* \
+    "$home/.e2e-onward-key" "$home/.e2e-onward-key.pub"
+  sudo userdel -r jeansh2e >/dev/null 2>&1
+  return "$JO2_STATUS"
+}
+
 # #261: a tmux tab keeps its program's mouse modes across a reattach. The host
 # runs its tabs in tmux for this block (the flows switch it on and off); a
 # stand-in program (tools/e2e_mouse_tui.py) logs what it is typed, which is
@@ -1355,6 +1617,527 @@ text_size_home() {
   return "$status"
 }
 
+# Chat following the latest reply only at the bottom, and its Latest button,
+# against the stand-in's long:, long2:, long3: and late: turns.
+chat_follow_jump() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_follow_jump || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-follow-jump-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# #169: the task checklist under chat's working line, against the stand-in's
+# tasks: turn -- three TaskCreate calls, the first moved to in progress and then
+# completed, the turn ended with two tasks still open.
+chat_tasks() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_tasks || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-tasks-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# #187: the bug button after +, and the report it opens (.maestro/bug_button).
+# Its screenshots, pass or fail, are evidence.
+bug_button() {
+  local status=0
+  flow bug_button || status=1
+  keep_shots 'bug-button-*.png'
+  return "$status"
+}
+
+# Claude's questions in chat: the AskUserQuestion tool, answered from the chat
+# tab. The finished "E2E short session" continued in place runs the stand-in
+# tools/e2e_ask_claude.py as its `claude -p`, which asks which colour for one
+# message and which size for the next, waits for the app's control_response,
+# and says what it was told. The flow reads that off the screen; this reads
+# what the app really sent, which the stand-in kept: an allow whose
+# updatedInput is the call's own input plus the answers and nothing else, and
+# a deny for the question dismissed.
+chat_ask() {
+  local status=0 home=/home/$SSH_USER replies=/home/$SSH_USER/.e2e-ask-replies.jsonl
+  chat_stand_in
+  sudo -u "$SSH_USER" -H tee "$home/.e2e-ask.py" >/dev/null < tools/e2e_ask_claude.py
+  sudo rm -f "$replies"
+  flow chat_ask || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-ask-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  if [ "$status" -eq 0 ]; then
+    sudo cat "$replies" 2>/dev/null | python3 -c '
+import json, sys
+lines = [json.loads(l) for l in sys.stdin if l.strip()]
+def fail(why):
+    print("::error::chat_ask: " + why); sys.exit(1)
+if len(lines) != 2:
+    fail("the app sent %d control_response lines, not 2" % len(lines))
+first = lines[0]["response"]
+decision = first["response"]
+if first["request_id"] != "req-ask-1" or decision.get("behavior") != "allow":
+    fail("the first answer was not an allow for req-ask-1: %r" % (first,))
+updated = decision["updatedInput"]
+if set(updated) != {"questions", "answers"}:
+    fail("updatedInput holds %r, not the questions and answers alone" % sorted(updated))
+if updated["answers"] != {"Which colour?": "Blue"}:
+    fail("the answers were %r" % (updated["answers"],))
+second = lines[1]["response"]
+if second["request_id"] != "req-ask-2" or second["response"].get("behavior") != "deny":
+    fail("the dismissed question was not denied: %r" % (second,))
+print("chat_ask: allow with the answers, deny for the dismissal")
+' || status=1
+  fi
+  sudo rm -f "$home/.e2e-ask.py" "$replies"
+  stand_in ''
+  return "$status"
+}
+
+# The chat outbox (branch chat-outbox, .maestro/chat_outbox.yaml): a message
+# sent in chat is kept in a file on the device until the session's own
+# transcript records it. Against the stand-in session of live_session, in its
+# tmux pane, which the runner works at its own terminal between the flow's
+# STEPs: a turn held busy, a draft typed and not sent, a permission prompt left
+# up. Each step reads three things afterwards and asserts both ways: the
+# transcript's user turns with the message's text (how many times the session
+# recorded it), the lines the pane read (how many times anything was typed
+# into it, tools/e2e_live_claude.py logs every one), and the outbox file on the
+# device. The flow asserts what the user sees.
+OB_PANE_LOG=/home/$SSH_USER/.e2e-pane-lines.log
+OB_RELEASE=/home/$SSH_USER/.e2e-release
+OB_STAMPED=/home/$SSH_USER/.e2e-stamped
+OB_PKG=cloud.brata.terminal
+OB_STATUS=0
+OB_FROM=0
+
+ob_host() { sudo -u "$SSH_USER" -H "$@"; }
+ob_fail() { echo "::error::$1"; OB_STATUS=1; }
+# Typed at the pane as someone at that terminal would.
+ob_type() { ob_host tmux send-keys -t e2e-live -l "$1"; }
+ob_line() { ob_type "$1"; ob_host tmux send-keys -t e2e-live Enter; }
+
+# ob_expect LABEL GOT WANT
+ob_expect() {
+  if [ "$2" = "$3" ]; then
+    echo "ok: $1: $2"
+  else
+    ob_fail "$1: got $2, expected $3"
+  fi
+}
+
+# How many user turns the session's transcript holds with exactly this text.
+ob_turns() {
+  ob_host python3 - "/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl" "$1" <<'PY'
+import json, sys
+n = 0
+try:
+    for line in open(sys.argv[1]):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        m = e.get('message')
+        if e.get('type') == 'user' and isinstance(m, dict) and m.get('content') == sys.argv[2]:
+            n += 1
+except OSError:
+    pass
+print(n)
+PY
+}
+
+# The lines the pane has read since ob_mark.
+ob_lines() { ob_host tail -n +"$((OB_FROM + 1))" "$OB_PANE_LOG" 2>/dev/null; }
+ob_mark() {
+  OB_FROM=$(ob_host sh -c 'cat "$1" 2>/dev/null | wc -l' sh "$OB_PANE_LOG" | tr -d ' ')
+  OB_FROM=${OB_FROM:-0}
+}
+# How many times the pane read exactly this line since ob_mark.
+ob_sent() { ob_lines | grep -cxF -- "$1"; }
+
+# What the listing says of the stand-in session: idle, busy or waiting.
+ob_listed() {
+  ob_host python3 - "/home/$SSH_USER/.e2e-agents.json" "$LIVE_SID" <<'PY'
+import json, sys
+try:
+    for row in json.load(open(sys.argv[1])):
+        if row.get('sessionId') == sys.argv[2]:
+            print(row.get('status', ''))
+except (OSError, ValueError):
+    pass
+PY
+}
+
+# ob_wait_listed STATUS SECONDS
+ob_wait_listed() {
+  local i
+  for i in $(seq "$2"); do
+    [ "$(ob_listed)" = "$1" ] && return 0
+    sleep 1
+  done
+  ob_fail "the stand-in session was not $1 after $2 s (it is '$(ob_listed)')"
+  return 1
+}
+
+# ob_wait_turns TEXT WANT SECONDS
+ob_wait_turns() {
+  local i
+  for i in $(seq "$3"); do
+    [ "$(ob_turns "$1")" = "$2" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# What the app keeps on the device, and nothing of the picture or the rest:
+# the files of the outbox folder, the app's support folder, read as the app.
+ob_device() {
+  adb shell "run-as $OB_PKG sh -c 'cat files/chat_outbox/*.json 2>/dev/null'" 2>/dev/null | tr -d '\r'
+}
+ob_device_clear() {
+  adb shell "run-as $OB_PKG sh -c 'chmod 700 files/chat_outbox 2>/dev/null; rm -f files/chat_outbox/*'" >/dev/null 2>&1
+}
+# How many lines of the outbox files mention this text.
+ob_kept() { ob_device | grep -c -- "$1"; }
+
+# A draft at the terminal taken back, with the cursor on the prompt again.
+ob_clear_draft() {
+  ob_host tmux send-keys -t e2e-live C-u
+  sleep 1
+  if [ "$(ob_host tmux display -p -t e2e-live '#{cursor_x}')" != 2 ]; then
+    ob_host tmux send-keys -t e2e-live Enter
+    sleep 2
+  fi
+}
+
+# Every step starts from the same place: the app stopped, nothing held, asked
+# or half typed at the pane, nothing kept on the device.
+ob_reset() {
+  adb shell am force-stop "$OB_PKG" >/dev/null 2>&1
+  if [ "$(ob_listed)" = busy ]; then
+    ob_host touch "$OB_RELEASE"
+    ob_wait_listed idle 20
+  fi
+  if [ "$(ob_listed)" = waiting ]; then
+    ob_line cleanup
+    ob_wait_listed idle 20
+  fi
+  sudo rm -f "$OB_RELEASE"
+  ob_clear_draft
+  ob_device_clear
+  ob_mark
+}
+
+# 1. Positive, kill and restart: queued mid-turn, force-stopped, relaunched,
+# typed once when the turn ends.
+ob_step1() {
+  echo "::group::chat_outbox 1: queued mid-turn, killed, relaunched"
+  ob_reset
+  ob_line 'hold: first turn'
+  ob_wait_listed busy 20
+  flow chat_outbox -e STEP=queue || ob_fail "1: the queue flow failed"
+  # Where the app keeps it, said once, so a wrong guess at the folder is easy
+  # to see in the log rather than only as a failed count.
+  echo "outbox files on the device: $(adb shell "run-as $OB_PKG sh -c 'find . -path \"*chat_outbox*\" 2>/dev/null'" | tr -d '\r' | tr '\n' ' ')"
+  ob_expect "1: written to the device before it was ever typed" "$(ob_kept 'outbox one')" 1
+  ob_expect "1: mid-turn, nothing typed into the pane" "$(ob_sent 'outbox one')" 0
+  ob_expect "1: mid-turn, the transcript holds none" "$(ob_turns 'outbox one')" 0
+  flow chat_outbox -e STEP=relaunch || ob_fail "1: the relaunch flow failed"
+  sleep 8
+  ob_expect "1: after the restart, still mid-turn, still not typed" "$(ob_sent 'outbox one')" 0
+  ob_host touch "$OB_RELEASE"
+  flow chat_outbox -e STEP=typed1 || ob_fail "1: the typed1 flow failed"
+  # A second send, if one were coming, would have been typed by now.
+  sleep 6
+  ob_expect "1: the transcript holds it exactly once" "$(ob_turns 'outbox one')" 1
+  ob_expect "1: the pane read it exactly once" "$(ob_sent 'outbox one')" 1
+  ob_expect "1: the session recorded it, so the device keeps nothing" "$(ob_kept 'outbox one')" 0
+  echo "::endgroup::"
+}
+
+# 2. Negative: a failure that is the session's own never sends by itself.
+ob_step2() {
+  echo "::group::chat_outbox 2: a draft at the terminal fails it, nothing sends it but Retry"
+  ob_reset
+  ob_type 'half typed'
+  sleep 1
+  flow chat_outbox -e STEP=draft || ob_fail "2: the draft flow failed"
+  ob_expect "2: nothing typed while the draft was there" "$(ob_sent 'outbox two')" 0
+  ob_expect "2: kept on the device as failed" "$(ob_device | grep -c '"failed":true')" 1
+  flow chat_outbox -e STEP=draft_relaunch || ob_fail "2: the draft_relaunch flow failed"
+  # A restart that sent failed messages by itself would have by now.
+  sleep 10
+  ob_expect "2: after the restart nothing was typed" "$(ob_sent 'outbox two')" 0
+  ob_expect "2: after the restart the transcript holds none" "$(ob_turns 'outbox two')" 0
+  ob_clear_draft
+  flow chat_outbox -e STEP=retry || ob_fail "2: the retry flow failed"
+  sleep 5
+  ob_expect "2: Retry typed it once" "$(ob_sent 'outbox two')" 1
+  ob_expect "2: the transcript holds it exactly once" "$(ob_turns 'outbox two')" 1
+  ob_expect "2: delivered, so the device keeps nothing" "$(ob_kept 'outbox two')" 0
+  echo "::endgroup::"
+}
+
+# 3. No double send: typed, recorded after the chat gave up on it. Retry looks
+# in the transcript first and only marks it delivered.
+ob_step3() {
+  echo "::group::chat_outbox 3: recorded late, Retry sends nothing"
+  ob_reset
+  flow chat_outbox -e STEP=late || ob_fail "3: the late flow failed"
+  # A second typing would have been read by now, and recorded at once.
+  sleep 10
+  ob_expect "3: the pane read it exactly once" "$(ob_sent 'late: outbox three')" 1
+  ob_expect "3: the transcript holds it exactly once" "$(ob_turns 'late: outbox three')" 1
+  ob_expect "3: marked delivered, so the device keeps nothing" "$(ob_kept 'outbox three')" 0
+  echo "::endgroup::"
+}
+
+# 4. A prompt: queued, nothing typed (no digit either), typed once after the
+# prompt is answered at the terminal.
+ob_step4() {
+  echo "::group::chat_outbox 4: a permission prompt queues it"
+  ob_reset
+  ob_line 'ask: delete it'
+  ob_wait_listed waiting 20
+  flow chat_outbox -e STEP=prompt || ob_fail "4: the prompt flow failed"
+  # Several of the chat's looks at the session pass.
+  sleep 8
+  ob_expect "4: nothing typed at the prompt" "$(ob_sent 'outbox four')" 0
+  # What the pane read besides the line that began the turn would be the
+  # message, or a digit: the answer to the prompt.
+  ob_expect "4: the pane read nothing but the line that began the turn" \
+    "$(ob_lines | grep -cvx 'ask: delete it')" 0
+  ob_expect "4: the transcript holds none" "$(ob_turns 'outbox four')" 0
+  ob_line 1
+  flow chat_outbox -e STEP=prompt_done || ob_fail "4: the prompt_done flow failed"
+  sleep 6
+  ob_expect "4: typed once after the answer" "$(ob_sent 'outbox four')" 1
+  ob_expect "4: the transcript holds it exactly once" "$(ob_turns 'outbox four')" 1
+  ob_expect "4: the only digit the pane read is the user's own" \
+    "$(ob_lines | grep -cx '[0-9][0-9]*')" 1
+  echo "::endgroup::"
+}
+
+# 5. Identical texts: two sent, two recorded; two failed, both recorded at the
+# terminal, and Retry on both sends nothing.
+ob_step5() {
+  echo "::group::chat_outbox 5: identical texts"
+  ob_reset
+  flow chat_outbox -e STEP=same || ob_fail "5: the same flow failed"
+  ob_wait_turns ok 2 30
+  ob_expect "5: ok sent twice is two turns" "$(ob_turns ok)" 2
+  ob_expect "5: and two lines read by the pane" "$(ob_sent ok)" 2
+  ob_type 'half typed'
+  sleep 1
+  flow chat_outbox -e STEP=same_failed || ob_fail "5: the same_failed flow failed"
+  ob_expect "5: with a draft at the terminal, none typed" "$(ob_sent okay)" 0
+  ob_clear_draft
+  # The session has both, as if they had gone in after all.
+  ob_line okay
+  sleep 2
+  ob_line okay
+  ob_wait_turns okay 2 30
+  ob_expect "5: the session records both" "$(ob_turns okay)" 2
+  flow chat_outbox -e STEP=same_retry || ob_fail "5: the same_retry flow failed"
+  sleep 8
+  ob_expect "5: after Retry on both, still two turns" "$(ob_turns okay)" 2
+  ob_expect "5: and nothing typed by the app: only the user's two lines" "$(ob_sent okay)" 2
+  ob_expect "5: delivered, so the device keeps nothing" "$(ob_kept okay)" 0
+  echo "::endgroup::"
+}
+
+# 6. Disk: the outbox folder made read-only for the app, where the emulator
+# lets run-as do that; the message fails, with why, and nothing is typed.
+ob_step6() {
+  echo "::group::chat_outbox 6: a store that cannot be written"
+  ob_reset
+  local mode
+  mode=$(adb shell "run-as $OB_PKG sh -c 'mkdir -p files/chat_outbox && chmod 500 files/chat_outbox && ls -ld files/chat_outbox'" 2>/dev/null | tr -d '\r')
+  echo "outbox folder now: $mode"
+  case $mode in
+    dr-x*)
+      flow chat_outbox -e STEP=disk || ob_fail "6: the disk flow failed"
+      ob_expect "6: nothing typed" "$(ob_sent 'outbox six')" 0
+      ob_expect "6: the transcript holds none" "$(ob_turns 'outbox six')" 0
+      ob_expect "6: and nothing was written" "$(ob_kept 'outbox six')" 0
+      ;;
+    *)
+      echo "::notice::chat_outbox 6 skipped: this emulator cannot make the app's outbox folder read-only"
+      ;;
+  esac
+  ob_device_clear
+  echo "::endgroup::"
+}
+
+# The connection to the host cut, as a network blip does: the listener stopped
+# so nothing can reconnect, and the connections it had made killed, which the
+# app sees as the session ending. Only sshd's own processes of the test user;
+# the stand-in's tmux server is not among them.
+ob_drop_ssh() {
+  sudo systemctl stop ssh
+  sudo pkill -f "sshd: $SSH_USER" || true
+  echo "sshd stopped; connections of $SSH_USER left: $(pgrep -fc "sshd: $SSH_USER" || true)"
+}
+# The host back, answering.
+ob_restore_ssh() {
+  sudo systemctl start ssh
+  local i
+  for i in $(seq 20); do
+    (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null && return 0
+    sleep 1
+  done
+  ob_fail "sshd did not come back"
+}
+
+# How many entries of the outbox are marked as waiting for something that may
+# pass: failed, and transient. A message waiting for the connection is one.
+ob_waiting() { ob_device | grep -c '"transient":true'; }
+
+# 7. Positive: a message sent while the connection is down is kept, says it
+# waits for the connection, and is delivered once, with no Retry, when the
+# connection is back.
+ob_step7() {
+  local msg='outbox reconnect seven'
+  echo "::group::chat_outbox 7: the connection drops, the message waits, delivered once on reconnect"
+  ob_reset
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_open || ob_fail "7: the rc_open flow failed"
+  ob_drop_ssh
+  # The app has seen the session end by now.
+  sleep 12
+  flow chat_outbox -e STEP=rc_send -e "MSG=$msg" || ob_fail "7: the rc_send flow failed"
+  sleep 10
+  ob_expect "7: nothing typed while the connection was down" "$(ob_sent "$msg")" 0
+  ob_expect "7: the transcript holds none" "$(ob_turns "$msg")" 0
+  ob_expect "7: kept on the device, waiting" "$(ob_kept "$msg")" 1
+  ob_expect "7: marked as waiting for something that may pass" "$(ob_waiting)" 1
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_back -e "MSG=$msg" || ob_fail "7: the rc_back flow failed"
+  # A second send, if one were coming, would have been typed by now.
+  sleep 10
+  ob_expect "7: the transcript holds it exactly once" "$(ob_turns "$msg")" 1
+  ob_expect "7: the pane read it exactly once" "$(ob_sent "$msg")" 1
+  ob_expect "7: delivered, so the device keeps nothing" "$(ob_kept "$msg")" 0
+  echo "::endgroup::"
+}
+
+# 8. Negative: a connection down for longer than every retry step together
+# (2 + 5 + 15 + 45 + 120 = 187 s) leaves the message waiting, not failed: the
+# wait for the connection uses none of the steps. Then it goes, once.
+ob_step8() {
+  local msg='outbox reconnect eight'
+  echo "::group::chat_outbox 8: down for longer than the retry steps, still waiting, then delivered once"
+  ob_reset
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_open || ob_fail "8: the rc_open flow failed"
+  ob_drop_ssh
+  sleep 12
+  flow chat_outbox -e STEP=rc_send -e "MSG=$msg" || ob_fail "8: the rc_send flow failed"
+  sleep 205
+  flow chat_outbox -e STEP=rc_wait -e "MSG=$msg" || ob_fail "8: the rc_wait flow failed"
+  ob_expect "8: still nothing typed" "$(ob_sent "$msg")" 0
+  ob_expect "8: still kept on the device" "$(ob_kept "$msg")" 1
+  ob_expect "8: still waiting, not given up on" "$(ob_waiting)" 1
+  ob_expect "8: not failed for good" "$(ob_device | grep -c '"transient":true')" 1
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_back -e "MSG=$msg" || ob_fail "8: the rc_back flow failed"
+  sleep 10
+  ob_expect "8: the transcript holds it exactly once" "$(ob_turns "$msg")" 1
+  ob_expect "8: the pane read it exactly once" "$(ob_sent "$msg")" 1
+  ob_expect "8: delivered, so the device keeps nothing" "$(ob_kept "$msg")" 0
+  echo "::endgroup::"
+}
+
+# The stand-in session gone, as after a host restart: its tmux session killed,
+# its row taken out of what `claude agents` lists, its state file removed. Its
+# transcript stays, as a restarted host keeps it.
+ob_end_session() {
+  ob_host tmux kill-session -t e2e-live 2>/dev/null
+  ob_host python3 - "/home/$SSH_USER/.e2e-agents.json" "$LIVE_SID" <<'PY'
+import json, sys
+path, sid = sys.argv[1], sys.argv[2]
+rows = [r for r in json.load(open(path)) if r.get('sessionId') != sid]
+json.dump(rows, open(path, 'w'))
+PY
+  sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
+    -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
+}
+
+# 9. Positive: the host restarted while a message waited, and what the chat
+# followed is gone when the connection is back. The message is kept, failed,
+# with a plain reason, Retry and Remove; nothing is typed anywhere.
+ob_step9() {
+  local msg='outbox reconnect nine'
+  echo "::group::chat_outbox 9: the session is gone when the connection is back"
+  ob_reset
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_open || ob_fail "9: the rc_open flow failed"
+  ob_drop_ssh
+  sleep 12
+  flow chat_outbox -e STEP=rc_send -e "MSG=$msg" || ob_fail "9: the rc_send flow failed"
+  ob_end_session
+  ob_restore_ssh
+  flow chat_outbox -e STEP=rc_gone -e "MSG=$msg" || ob_fail "9: the rc_gone flow failed"
+  sleep 8
+  ob_expect "9: nothing typed anywhere" "$(ob_sent "$msg")" 0
+  ob_expect "9: the transcript holds none" "$(ob_turns "$msg")" 0
+  ob_expect "9: still kept on the device" "$(ob_kept "$msg")" 1
+  ob_expect "9: kept as failed, with the reason" \
+    "$(ob_device | grep -c 'The session ended before this was sent')" 1
+  ob_expect "9: and no longer waiting for anything to pass" "$(ob_waiting)" 0
+  echo "::endgroup::"
+}
+
+# Steps 7 to 9 alone, which is minutes rather than the whole outbox
+# block: the connection dropping under a waiting message.
+chat_outbox_reconnect() {
+  OB_STATUS=0
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo rm -f "$OB_PANE_LOG" "$OB_RELEASE"
+  ob_host touch "$OB_STAMPED"
+  ob_step7
+  ob_step8
+  ob_step9
+  ob_restore_ssh
+  keep_shots 'chat-outbox-*.png'
+  adb shell am force-stop "$OB_PKG" >/dev/null 2>&1
+  sudo rm -f "$OB_STAMPED" "$OB_RELEASE" "$OB_PANE_LOG"
+  end_live_session
+  stand_in ''
+  return "$OB_STATUS"
+}
+
+chat_outbox() {
+  OB_STATUS=0
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo rm -f "$OB_PANE_LOG" "$OB_RELEASE"
+  # Turns the stand-in echoes carry a uuid and a time, as the CLI's do.
+  ob_host touch "$OB_STAMPED"
+  ob_step1
+  ob_step2
+  ob_step3
+  ob_step4
+  ob_step5
+  ob_step6
+  keep_shots 'chat-outbox-*.png'
+  adb shell am force-stop "$OB_PKG" >/dev/null 2>&1
+  sudo rm -f "$OB_STAMPED" "$OB_RELEASE" "$OB_PANE_LOG"
+  end_live_session
+  stand_in ''
+  return "$OB_STATUS"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -1391,6 +2174,9 @@ done
 echo "::group::single_instance (report only)"
 single_instance || echo "::warning::single_instance failed -- report only, not gating"
 echo "::endgroup::"
+# Its steps are groups of their own, in the job log.
+jeansh_open2 || echo "::warning::jeansh_open2 failed -- report only, not gating"
+
 echo "::group::jeansh_open (report only)"
 jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
 echo "::endgroup::"
@@ -1491,12 +2277,36 @@ echo "::group::chat_cwd (report only)"
 chat_cwd || echo "::warning::chat_cwd failed -- report only, not gating"
 echo "::endgroup::"
 
+# Its steps are groups of their own, in the job log.
+chat_outbox || echo "::warning::chat_outbox failed -- report only, not gating"
+chat_outbox_reconnect || echo "::warning::chat_outbox_reconnect failed -- report only, not gating"
+
 echo "::group::chat_edit_previous (report only)"
 chat_edit_previous || echo "::warning::chat_edit_previous failed -- report only, not gating"
 echo "::endgroup::"
 
+echo "::group::chat_ask_watched (report only)"
+chat_ask_watched || echo "::warning::chat_ask_watched failed -- report only, not gating"
+echo "::endgroup::"
+
 echo "::group::chat_slash (report only)"
 chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_ask (report only)"
+chat_ask || echo "::warning::chat_ask failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_follow_jump (report only)"
+chat_follow_jump || echo "::warning::chat_follow_jump failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_tasks (report only)"
+chat_tasks || echo "::warning::chat_tasks failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::bug_button (report only)"
+bug_button || echo "::warning::bug_button failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::tmux_mouse_reattach (report only)"

@@ -1,0 +1,291 @@
+# Claude's questions in chat, for a session chat only WATCHES: a claude --bg
+# session and Claude in a tmux pane. Their question is not the chat's to
+# answer through the SDK, so Send answers types the picks into the session's
+# own dialog (`claude attach`, or the pane), with the keys measured on a real
+# 2.1.287: Down and Enter for a choice, Space and Tab for several, words typed
+# into "Type something." and the review's Submit answers.
+#
+# One file, a KIND a run: tools/e2e_android.sh's chat_ask_watched runs it once
+# for each, and between runs reads what reached the dialog off the stand-in's
+# log (tools/e2e_ask_watched.py), which the flow cannot see: the keys, how
+# many attaches, whether the session still waits.
+#
+#   single  pick option 2 -> "Banana", the session goes on
+#   multi   a pick with words of one's own is refused, nothing typed; then
+#           two ticks -> "Red, Blue"
+#   two     two questions in one call
+#   other   words with $(touch x) arrive as text
+#   perm    the session waits for a permission prompt, not an answer: refused
+#   pane    the same as single, into a tmux pane
+#
+# KIND and SESSION come from -e alone: Maestro 2.10 lets a flow's own env:
+# block win over -e (see tools/e2e_android.sh), so they have no default.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- pressKey: Home
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*${SESSION}.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*${SESSION}.*"
+
+# single: the question is a card, an option is picked and sent, and the card
+# shows what the session's own transcript recorded.
+- runFlow:
+    when:
+      true: ${KIND == 'single'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Which fruit\\?"
+          timeout: 30000
+      - assertNotVisible: "AskUserQuestion"
+      - tapOn: "Banana"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Banana
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      # The answer is the card's only content once it is in: no options left.
+      - extendedWaitUntil:
+          visible: "Continuing after your answer\\."
+          timeout: 60000
+      - assertVisible: "(?s).*Banana.*"
+      - assertNotVisible: "(?s)Cherry.*"
+      - assertNotVisible: "Send answers"
+      - assertNotVisible: "(?s).*Not answered.*"
+      - takeScreenshot: chat-ask-watched-single
+
+# multi: words of one's own beside ticks are refused before a key goes. Then
+# the words come off and two ticks go in, as "Red, Blue".
+- runFlow:
+    when:
+      true: ${KIND == 'multi'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Which colours\\?"
+          timeout: 30000
+      - tapOn: "Red"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Red
+      - tapOn: "Other…"
+      - inputText: "my own"
+      - hideKeyboard
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      - extendedWaitUntil:
+          visible: "(?s).*Jeansh cannot type this answer.*"
+          timeout: 30000
+      - assertNotVisible: "Continuing after your answer\\."
+      - assertVisible: "Send answers"
+      - takeScreenshot: chat-ask-watched-multi-refused
+      - tapOn: "(?s).*my own.*"
+      - eraseText: 20
+      - hideKeyboard
+      - tapOn: "Blue"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Blue
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      - extendedWaitUntil:
+          visible: "Continuing after your answer\\."
+          timeout: 60000
+      - assertVisible: "(?s).*Red, Blue.*"
+      - assertNotVisible: "(?s).*Not answered.*"
+      - assertNotVisible: "Send answers"
+      - takeScreenshot: chat-ask-watched-multi
+
+# two: two questions in one call, one answer each.
+- runFlow:
+    when:
+      true: ${KIND == 'two'}
+    commands:
+      # The card is taller than the screen and the chat sits at its end: the
+      # first question is above the view.
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 30000
+      - scrollUntilVisible:
+          element: "Which size\\?"
+          direction: UP
+      - waitForAnimationToEnd
+      - tapOn: "Large"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Large
+      - scrollUntilVisible:
+          element: "Circle"
+      - waitForAnimationToEnd
+      - tapOn: "Circle"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Circle
+      # The button is below the fold here, under the jump-to-latest chip.
+      - scrollUntilVisible:
+          element: "Send answers"
+      # Settled first, as a tap meant for the button once landed beneath it
+      # while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      - extendedWaitUntil:
+          visible: "Continuing after your answer\\."
+          timeout: 60000
+      - assertVisible: "(?s).*Large.*"
+      - assertVisible: "(?s).*Circle.*"
+      - assertNotVisible: "(?s)Small.*"
+      - assertNotVisible: "(?s).*Not answered.*"
+      - takeScreenshot: chat-ask-watched-two
+
+# other: the user's words, shell syntax and all, go in as text.
+- runFlow:
+    when:
+      true: ${KIND == 'other'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Which city\\?"
+          timeout: 30000
+      - tapOn: "Other…"
+      - inputText: "Lisbon $(touch x)"
+      - hideKeyboard
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      - extendedWaitUntil:
+          visible: "Continuing after your answer\\."
+          timeout: 60000
+      - assertVisible: "(?s).*Lisbon.*touch x.*"
+      - assertNotVisible: "(?s).*Not answered.*"
+      - takeScreenshot: chat-ask-watched-other
+
+# perm: the session waits for a tool's permission, not for this answer. Said
+# on the card, nothing typed (the run checks that no attach was opened), and
+# the question is still open.
+- runFlow:
+    when:
+      true: ${KIND == 'perm'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Which day\\?"
+          timeout: 30000
+      - tapOn: "Friday"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Friday
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      - extendedWaitUntil:
+          visible: "(?s).*is not waiting for an answer but for permission prompt.*"
+          timeout: 30000
+      - assertVisible: "Send answers"
+      - assertVisible: "(?s)Monday.*"
+      - assertNotVisible: "Continuing after your answer\\."
+      - takeScreenshot: chat-ask-watched-perm
+
+# pane: Claude in a tmux pane, its dialog found by the pane's terminal.
+- runFlow:
+    when:
+      true: ${KIND == 'pane'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s).*typed into that pane.*"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible: "Which drink\\?"
+          timeout: 30000
+      - tapOn: "Coffee"
+      - assertNotVisible: "No photos or videos"
+      - takeScreenshot: chat-ask-watched-picked-Coffee
+      # Settled first: a tap meant for the button once landed on the composer
+      # beneath it while the list was still moving.
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - takeScreenshot: chat-ask-watched-before-send
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - assertNotVisible: "No photos or videos"
+      - extendedWaitUntil:
+          visible: "Continuing after your answer\\."
+          timeout: 60000
+      - assertVisible: "(?s).*Coffee.*"
+      - assertNotVisible: "(?s)Water.*"
+      - assertNotVisible: "(?s).*Not answered.*"
+      - takeScreenshot: chat-ask-watched-pane
+
+# No hideKeyboard: with none up it presses Back. The strip is reachable either
+# way.
+- tapOn:
+    text: "(?s)Close .*Claude.*"
+    optional: true
+- tapOn:
+    text: "Close ${HOST_LABEL}.*"
+    optional: true

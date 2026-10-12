@@ -33,12 +33,13 @@ if [ -z "$target" ]; then
 fi
 shift $(($# > 0 ? 1 : 0))
 
-tests=integration_test/desktop_smoke_test.dart
+tests=${E2E_TESTS:-integration_test/desktop_smoke_test.dart}
 
 # A run narrowed to some tests, or the no-portal one, is that run alone:
 # the window phases follow only a whole run.
 phases=1
 [ -n "${JEANSH_E2E_NO_PORTAL:-}" ] && phases=
+[ -n "${E2E_TESTS:-}" ] && phases=
 for arg in "$@"; do
   case "$arg" in --plain-name* | --name* | -n) phases= ;; esac
 done
