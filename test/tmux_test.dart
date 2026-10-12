@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/session/clipboard_terminal.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/session/tmux.dart';
+import 'package:sshbox/src/ui/terminal_paste.dart' show pasteShared;
 import 'package:sshbox/src/ui/tmux_panes.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -21,7 +22,11 @@ List<int> _line(String line) => utf8.encode('$line\n');
 /// cursor under it, and tmux goes straight on from answering its capture to
 /// [afterCapture] in the same read.
 class _FakeTmux {
-  _FakeTmux(this.layout, {this.afterCapture});
+  _FakeTmux(this.layout, {this.afterCapture, this.refuse});
+
+  /// A command it answers with an error, as tmux does a set-buffer it cannot
+  /// read.
+  final bool Function(String command)? refuse;
 
   final String layout;
   final String? afterCapture;
@@ -42,6 +47,13 @@ class _FakeTmux {
       commands.add(command);
       final number = ++_number;
       final reply = ['%begin 1789000000 $number 1'];
+      if (refuse?.call(command) ?? false) {
+        reply
+          ..add('bad buffer')
+          ..add('%error 1789000000 $number 1');
+        reply.forEach(say);
+        continue;
+      }
       if (command.startsWith('display -p "#{window_id}')) {
         reply.add('@1\t$layout\t%1');
       }
@@ -436,6 +448,119 @@ void main() {
       [lines[0].getText().trimRight(), lines[1].getText().trimRight()],
       ['before', 'after'],
     );
+  });
+
+  group('a paste into a pane', () {
+    Future<(TmuxSession, _FakeTmux, List<String>)> attach({
+      bool Function(String)? refuse,
+    }) async {
+      final fake = _FakeTmux('b25d,80x24,0,0,1', refuse: refuse);
+      final said = <String>[];
+      final tmux = TmuxSession(
+        name: 'sshbox-test',
+        channel: fake.channel,
+        newTerminal: ClipboardTerminal.new,
+        transform: (data) => data,
+        onChanged: () {},
+        onEnded: () {},
+        onPasteFailed: said.add,
+      );
+      addTearDown(tmux.dispose);
+      fake.say('%session-changed \$1 sshbox-test');
+      await pumpEventQueue();
+      return (tmux, fake, said);
+    }
+
+    test('replaces a lone surrogate, which has no UTF-8, and arrives whole', () async {
+      final (tmux, fake, said) = await attach();
+      // \uD800 on its own is the character tmux refuses a chunk over.
+      tmux.panes.single.terminal.paste('a\u{d800}b');
+      await pumpEventQueue();
+      final set = fake.commands.singleWhere((c) => c.startsWith('set-buffer'));
+      expect(set, endsWith('-- "a\\ufffdb"'));
+      expect(set, isNot(contains('d800')));
+      expect(fake.commands.last, startsWith('paste-buffer -p'));
+      expect(said, isEmpty);
+    });
+
+    test('a refused chunk stops the paste, drops the buffer and says so', () async {
+      var sets = 0;
+      final (tmux, fake, said) = await attach(
+        refuse: (c) => c.startsWith('set-buffer') && ++sets == 2,
+      );
+      // Past one chunk, so a middle one is refused.
+      tmux.panes.single.terminal.paste('x' * 20000);
+      await pumpEventQueue();
+      expect(
+        fake.commands.where((c) => c.startsWith('paste-buffer')),
+        isEmpty,
+        reason: 'a cut paste is never pasted',
+      );
+      expect(fake.commands.any((c) => c.startsWith('delete-buffer')), isTrue);
+      expect(said, hasLength(1));
+      expect(said.single, contains('did not arrive whole'));
+      expect(said.single, contains('bad buffer'));
+    });
+
+    test('the focused pane\'s program is asked of tmux by name', () async {
+      final (tmux, fake, _) = await attach();
+      expect(await tmux.focusedCommand(), isNull, reason: 'an empty answer');
+      expect(
+        fake.commands.last,
+        'display-message -p -t %1 "#{pane_current_command}"',
+      );
+    });
+
+    test('a tmux that will not name the pane is a shell: multi-line is '
+        'refused', () async {
+      final binding = TestWidgetsFlutterBinding.ensureInitialized();
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (_) async => null,
+      );
+      addTearDown(
+        () => binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final (tmux, fake, _) = await attach(
+        refuse: (c) => c.startsWith('display-message'),
+      );
+      expect(await tmux.focusedCommand(), isNull);
+      expect(fake.commands.last, startsWith('display-message'));
+
+      final pane = tmux.panes.single.terminal;
+      final refused = await pasteShared(
+        pane,
+        'first\nsecond',
+        paneCommand: tmux.focusedCommand,
+      );
+      expect(refused, contains('would run each line'));
+    });
+
+    test('each client has a buffer of its own, and nothing typed jumps a paste', () async {
+      final (a, fakeA, _) = await attach();
+      final (b, fakeB, _) = await attach();
+      a.panes.single.terminal.paste('one');
+      b.panes.single.terminal.paste('two');
+      await pumpEventQueue();
+      String bufferOf(_FakeTmux f) => RegExp(r'-b (\S+)').firstMatch(
+        f.commands.firstWhere((c) => c.startsWith('set-buffer')),
+      )!.group(1)!;
+      expect(bufferOf(fakeA), isNot('jeansh-paste'));
+      expect(bufferOf(fakeA), isNot(bufferOf(fakeB)));
+
+      // Typed straight after a paste lands after it.
+      a.panes.single.terminal.paste('y' * 20000);
+      a.send('Z');
+      await pumpEventQueue();
+      final order = fakeA.commands
+          .where((c) => c.startsWith('paste-buffer') || c.startsWith('send-keys'))
+          .toList();
+      expect(order.last, startsWith('send-keys'));
+      expect(order[order.length - 2], startsWith('paste-buffer'));
+    });
   });
 
   testWidgets('two panes sit side by side, and touching one focuses it', (
