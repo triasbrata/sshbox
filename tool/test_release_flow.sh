@@ -204,17 +204,42 @@ esac
 SH
 chmod +x "$work/bin/aws"
 
+# GitHub, as far as the notes step uses it: a pull request's title and
+# description, which $GH_PULLS_FAIL refuses, and the release's notes, kept.
+# The descriptions come back as GitHub's API gives them, more than the
+# title and body the step asks --jq for.
+cat > "$work/bin/gh" <<'SH'
+#!/bin/bash
+case "$1 $2" in
+  "api repos/o/r/pulls/"*)
+    [ -z "${GH_PULLS_FAIL:-}" ] || { echo 'HTTP 403: Resource not accessible by integration' >&2; exit 1; }
+    n=${2##*/}
+    printf '{"title": "PR %s", "body": "How: tap %s."}\n' "$n" "$n" ;;
+  "release edit")
+    [ "$3" = "$TAG" ] || { echo "stub gh: edits $3, not $TAG" >&2; exit 1; }
+    cp "${@: -1}" "$RUNNER_TEMP/release-body" ;;
+  *) echo "stub gh: unexpected $*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$work/bin/gh"
+
 # notes <what> <tag> <list as JSON, or '' for none> <subjects wanted> <subjects not wanted>
+#       [<pull requests wanted, as title=feature ...>]
+# Subjects are of commits the model is handed outside a pull request; with
+# a fifth argument, the pull requests it is handed are exactly those.
 notes() {
   export R2_LIST=$work/releases.json RUNNER_TEMP=$work/run
   rm -rf "$RUNNER_TEMP" "$R2_LIST"; mkdir -p "$RUNNER_TEMP"
   [ -z "$3" ] || printf '%s' "$3" > "$R2_LIST"
-  # The model stands in as a copy of what it would have been handed.
+  # The model stands in as a copy of what it would have been handed, and
+  # writes a release body of its own.
   mkdir -p tool
-  printf '%s\n' 'import shutil, sys' \
-    'shutil.copy(sys.argv[sys.argv.index("--changes") + 1], sys.argv[-1] + ".changes")' > tool/release_notes.py
+  printf '%s\n' 'import shutil, sys' 'a = sys.argv' \
+    'shutil.copy(a[a.index("--changes") + 1], a[-1] + ".changes")' \
+    'shutil.copy(a[a.index("--prs") + 1], a[-1] + ".prs")' \
+    'open(a[a.index("--body") + 1], "w").write("the notes\n")' > tool/release_notes.py
   local name=${2#v}
-  log=$(PATH=$work/bin:$PATH TAG=$2 NAME=$name BUILD=1 \
+  log=$(PATH=$work/bin:$PATH TAG=$2 NAME=$name BUILD=1 GITHUB_REPOSITORY=o/r GH_TOKEN=x \
     OPENROUTER_API_KEY=x AWS_ACCESS_KEY_ID=x AWS_SECRET_ACCESS_KEY=x R2_ENDPOINT=x R2_BUCKET=b \
     $step_shell "$work/notes.sh" 2>&1); code=$?
   rm -rf tool
@@ -222,6 +247,12 @@ notes() {
   local bad=""
   for s in $4; do grep -qx "\* $s" <<< "$got" || bad="$bad missing $s;"; done
   for s in $5; do grep -qx "\* $s" <<< "$got" && bad="$bad has $s;"; done
+  if [ $# -ge 6 ]; then
+    prs=$(jq -r '"\(.title)=\(.feature)"' "$RUNNER_TEMP/releases.json.prs" 2>/dev/null | tr '\n' ' ')
+    [ "$prs" = "$6" ] || bad="$bad pull requests '$prs', not '$6';"
+  fi
+  [ "$(cat "$RUNNER_TEMP/release-body" 2>/dev/null)" = "the notes" ] ||
+    bad="$bad the release's notes were not written;"
   if [ $code -eq 0 ] && [ -z "$bad" ]; then pass "$1"
   else fail "$1" "exit $code;$bad $(tail -n 1 <<< "$log")"; fi
 }
@@ -253,6 +284,45 @@ notes "with no list yet, from the release before" \
 
 notes "a listed version with no tag falls back to the release before" \
   v1.0.71 '[{"version":"9.9.9"}]' "d1" "c1"
+
+# pr <number, or '' for a merge of no pull request> <branch> <title> <commit>...
+# A commit given as name:feature carries Release: feature; one given as - is
+# a docs change.
+pr() {
+  local number=$1 branch=$2 title=$3; shift 3
+  git checkout -qb "$branch"
+  for c in "$@"; do
+    case $c in
+      -) docs ;;
+      *:feature) app 'Release: feature' "${c%:feature}" ;;
+      *) app '' "$c" ;;
+    esac
+  done
+  git checkout -q main
+  if [ -n "$number" ]; then
+    git merge -q --no-ff "$branch" -m "Merge pull request #$number from o/$branch" -m "$title"
+  else
+    git merge -q --no-ff "$branch" -m "Merge branch '$branch'"
+  fi
+}
+pr 7 feat "Folder download" p1:feature p2
+pr 8 fix "A fix" q1
+pr 9 readme "Docs" -
+pr '' other "" r1
+app '' e1
+git tag -a v1.0.72 -m 'Jeansh 1.0.72, build 73'
+
+notes "each pull request goes in with its description, a feature marked" \
+  v1.0.72 '[{"version":"1.0.71"}]' "e1 r1" "d1 p1 p2 q1" "PR 7=true PR 8=false "
+
+GH_PULLS_FAIL=1 notes "a pull request GitHub will not describe goes in as its commits" \
+  v1.0.72 '[{"version":"1.0.71"}]' "e1 r1" "d1" "Folder download=true A fix=false "
+fallback=$(jq -r 'select(.title == "Folder download") | .body' "$RUNNER_TEMP/releases.json.prs")
+if grep -qx '\* p1' <<< "$fallback" && grep -qx '\* p2' <<< "$fallback"; then
+  pass "its commits stand in for its description"
+else
+  fail "its commits stand in for its description" "body: $fallback"
+fi
 
 ## release.yml's feed #######################################################
 

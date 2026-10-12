@@ -1371,16 +1371,22 @@ The repository is public, so GitHub Actions costs nothing.
     no binary on the release and it does not say where the builds are served
     from. See *Updating a desktop build* below, and
     `lib/src/update/updater.dart`.
-  - `notes`, once both succeed, hands the app's commit messages since the
-    last release that has notes to a model through OpenRouter
-    (`tool/release_notes.py`,
+  - `notes`, once both and `feed` succeed, hands the pull requests merged
+    into the app since the last release that has notes, with their
+    descriptions, to a model through OpenRouter (`tool/release_notes.py`,
     `anthropic/claude-sonnet-5` unless the repository variable
-    `RELEASE_NOTES_MODEL` names another). The model writes the notes in
-    English and Indonesian, and they are put first in `site/releases.json`
-    in the same bucket. [jeansh.brata.cloud/releases](https://jeansh.brata.cloud/releases)
+    `RELEASE_NOTES_MODEL` names another). Commits pushed without a pull
+    request go along as their messages, and so does a pull request GitHub
+    will not describe. A pull request with a commit carrying
+    `Release: feature` is marked as a feature, and each feature gets its
+    name, what it does and the steps to use it: where in the app, which
+    button, shortcut or command. The other changes are bullets. The model
+    writes the notes in English and Indonesian, and they are put first in
+    `site/releases.json` in the same bucket. [jeansh.brata.cloud/releases](https://jeansh.brata.cloud/releases)
     reads that one file through an R2 binding, so a release shows there
-    without a deploy. `tool/test_release_notes.py` checks what it does with
-    a reply.
+    without a deploy. The same notes, English then Indonesian, replace the
+    one line `feed` gave the tag's GitHub release. `tool/test_release_notes.py`
+    checks what it does with a reply.
 
     "Since the last release that has notes", rather than since the last
     tag, because this job waits on every build: a release with a red build
