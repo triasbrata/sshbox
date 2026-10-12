@@ -1394,7 +1394,7 @@ EOS
   # 3. Onward ssh: only worth reading when the control shows the account can
   # be reached and a LC_ variable does get through to it.
   rc=$(jo2_cat jo3.rc)
-  out=$(jo2_cat jo3.out | tail -n 2 | tr "\n" " ")
+  out=$(jo2_cat jo3.out | tail -n 3 | tr "\n" " ")
   # The push key is a file, never a variable: none of it in this tab's own
   # shell either. Only a real relay key makes the file, and the emulator has no
   # FCM to get one with, so that check is made when there is a file and said to
