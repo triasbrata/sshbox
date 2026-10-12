@@ -11,7 +11,8 @@
 #   clean    a clean host: nothing said. In a terminal: the command opens a
 #            file tab; with its secret file gone and the environment
 #            variable set by hand it opens nothing; seven files open five tabs;
-#            five open five; and an ssh onward with SendEnv carries nothing of it
+#            five open five; and an ssh onward with SendEnv carries nothing of
+#            it, nor the push key, which is no variable in this shell either
 #   off      the switch back off
 appId: cloud.brata.terminal
 env:
@@ -178,7 +179,7 @@ env:
 
       # 3. Onward ssh: what the terminal's shell exports goes no further.
       # The runner made the other account and its key; what it saw is in files.
-      - inputText: "ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv='LC_*' jeansh2e@localhost 'env | grep -c OPEN_SECRET; ls -A ~/.config/jeansh 2>/dev/null | wc -l' >~/jo3.out 2>&1; echo $? >~/jo3.rc; LC_E2E_PROBE=1 ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv=LC_E2E_PROBE jeansh2e@localhost 'env | grep -c LC_E2E_PROBE' >~/jo3.control 2>&1"
+      - inputText: "env | grep -c -e LC_SSHBOX_KEY -e LC_SSHBOX_HOST_ID >~/jo3.own; ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv='LC_*' jeansh2e@localhost 'env | grep -c -e LC_SSHBOX_KEY -e LC_SSHBOX_HOST_ID; env | grep -c OPEN_SECRET; ls -A ~/.config/jeansh 2>/dev/null | wc -l' >~/jo3.out 2>&1; echo $? >~/jo3.rc; LC_E2E_PROBE=1 ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv=LC_E2E_PROBE jeansh2e@localhost 'env | grep -c LC_E2E_PROBE' >~/jo3.control 2>&1"
       - pressKey: Enter
       - tapOn:
           text: "never-shown-pause"
