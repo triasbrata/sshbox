@@ -1207,6 +1207,9 @@ for e in events:
             keys.append('text:' + e['c'])
     else:
         keys.append(e['k'])
+# A lone space byte is the Space key (a real dialog reads it so); only a run
+# with other characters in it is text.
+keys = ['space' if k == 'text: ' else k for k in keys]
 attaches = [e for e in events if e['ev'] == 'attach-id' and e['id'] == 'e2eask%02d' % n]
 answered = [e['answers'] for e in events if e['ev'] == 'answered' and e['sid'] == sid]
 rows = json.load(open(os.path.join(home, '.e2e-agents.json')))
