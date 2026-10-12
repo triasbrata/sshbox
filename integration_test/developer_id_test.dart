@@ -135,7 +135,7 @@ Future<void> _body(WidgetTester tester) async {
   {
     {
       // A relaunch forgets what a process remembers.
-      KeystoreSecretStore.forgetKept();
+      KeystoreSecretStore().forgetKept();
       secretNotice.value = null;
       await (await SharedPreferences.getInstance()).reload();
       final missing = _noSshd;

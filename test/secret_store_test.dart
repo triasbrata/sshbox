@@ -500,6 +500,24 @@ void main() {
       expect(notices, [SecretNotice.movedAway]);
     });
 
+    test('forgetting what was kept makes the next read ask again, and the '
+        'notice be said again', () async {
+      final kept = KeystoreSecretStore.over(
+        login,
+        keepReads: true,
+        moved: moved,
+      );
+      expect(await kept.read(password), isNull);
+      expect(await kept.read(password), isNull);
+      expect(login.reads, 1, reason: 'the null answer is kept');
+      expect(notices, [SecretNotice.movedAway]);
+
+      kept.forgetKept();
+      expect(await kept.read(password), isNull);
+      expect(login.reads, 2, reason: 'a cold read reaches the keychain');
+      expect(notices, [SecretNotice.movedAway, SecretNotice.movedAway]);
+    });
+
     test('a missing secret never moved says nothing', () async {
       expect(await unsigned.read(SecretKeys.passphrase('h1')), isNull);
       expect(notices, isEmpty);
