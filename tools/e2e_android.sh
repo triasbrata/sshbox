@@ -1658,6 +1658,7 @@ ob_waiting() { ob_device | grep -c '"transient":true'; }
 # waits for the connection, and is delivered once, with no Retry, when the
 # connection is back.
 ob_step7() {
+  local msg='outbox reconnect seven'
   echo "::group::chat_outbox 7: the connection drops, the message waits, delivered once on reconnect"
   ob_reset
   ob_restore_ssh
@@ -1665,19 +1666,19 @@ ob_step7() {
   ob_drop_ssh
   # The app has seen the session end by now.
   sleep 12
-  flow chat_outbox -e STEP=rc_send || ob_fail "7: the rc_send flow failed"
+  flow chat_outbox -e STEP=rc_send -e "MSG=$msg" || ob_fail "7: the rc_send flow failed"
   sleep 10
-  ob_expect "7: nothing typed while the connection was down" "$(ob_sent 'outbox reconnect')" 0
-  ob_expect "7: the transcript holds none" "$(ob_turns 'outbox reconnect')" 0
-  ob_expect "7: kept on the device, waiting" "$(ob_kept 'outbox reconnect')" 1
+  ob_expect "7: nothing typed while the connection was down" "$(ob_sent "$msg")" 0
+  ob_expect "7: the transcript holds none" "$(ob_turns "$msg")" 0
+  ob_expect "7: kept on the device, waiting" "$(ob_kept "$msg")" 1
   ob_expect "7: marked as waiting for something that may pass" "$(ob_waiting)" 1
   ob_restore_ssh
-  flow chat_outbox -e STEP=rc_back || ob_fail "7: the rc_back flow failed"
+  flow chat_outbox -e STEP=rc_back -e "MSG=$msg" || ob_fail "7: the rc_back flow failed"
   # A second send, if one were coming, would have been typed by now.
   sleep 10
-  ob_expect "7: the transcript holds it exactly once" "$(ob_turns 'outbox reconnect')" 1
-  ob_expect "7: the pane read it exactly once" "$(ob_sent 'outbox reconnect')" 1
-  ob_expect "7: delivered, so the device keeps nothing" "$(ob_kept 'outbox reconnect')" 0
+  ob_expect "7: the transcript holds it exactly once" "$(ob_turns "$msg")" 1
+  ob_expect "7: the pane read it exactly once" "$(ob_sent "$msg")" 1
+  ob_expect "7: delivered, so the device keeps nothing" "$(ob_kept "$msg")" 0
   echo "::endgroup::"
 }
 
@@ -1685,25 +1686,26 @@ ob_step7() {
 # (2 + 5 + 15 + 45 + 120 = 187 s) leaves the message waiting, not failed: the
 # wait for the connection uses none of the steps. Then it goes, once.
 ob_step8() {
+  local msg='outbox reconnect eight'
   echo "::group::chat_outbox 8: down for longer than the retry steps, still waiting, then delivered once"
   ob_reset
   ob_restore_ssh
   flow chat_outbox -e STEP=rc_open || ob_fail "8: the rc_open flow failed"
   ob_drop_ssh
   sleep 12
-  flow chat_outbox -e STEP=rc_send || ob_fail "8: the rc_send flow failed"
+  flow chat_outbox -e STEP=rc_send -e "MSG=$msg" || ob_fail "8: the rc_send flow failed"
   sleep 205
-  flow chat_outbox -e STEP=rc_wait || ob_fail "8: the rc_wait flow failed"
-  ob_expect "8: still nothing typed" "$(ob_sent 'outbox reconnect')" 0
-  ob_expect "8: still kept on the device" "$(ob_kept 'outbox reconnect')" 1
+  flow chat_outbox -e STEP=rc_wait -e "MSG=$msg" || ob_fail "8: the rc_wait flow failed"
+  ob_expect "8: still nothing typed" "$(ob_sent "$msg")" 0
+  ob_expect "8: still kept on the device" "$(ob_kept "$msg")" 1
   ob_expect "8: still waiting, not given up on" "$(ob_waiting)" 1
   ob_expect "8: not failed for good" "$(ob_device | grep -c '"transient":true')" 1
   ob_restore_ssh
-  flow chat_outbox -e STEP=rc_back || ob_fail "8: the rc_back flow failed"
+  flow chat_outbox -e STEP=rc_back -e "MSG=$msg" || ob_fail "8: the rc_back flow failed"
   sleep 10
-  ob_expect "8: the transcript holds it exactly once" "$(ob_turns 'outbox reconnect')" 1
-  ob_expect "8: the pane read it exactly once" "$(ob_sent 'outbox reconnect')" 1
-  ob_expect "8: delivered, so the device keeps nothing" "$(ob_kept 'outbox reconnect')" 0
+  ob_expect "8: the transcript holds it exactly once" "$(ob_turns "$msg")" 1
+  ob_expect "8: the pane read it exactly once" "$(ob_sent "$msg")" 1
+  ob_expect "8: delivered, so the device keeps nothing" "$(ob_kept "$msg")" 0
   echo "::endgroup::"
 }
 
@@ -1726,20 +1728,21 @@ PY
 # followed is gone when the connection is back. The message is kept, failed,
 # with a plain reason, Retry and Remove; nothing is typed anywhere.
 ob_step9() {
+  local msg='outbox reconnect nine'
   echo "::group::chat_outbox 9: the session is gone when the connection is back"
   ob_reset
   ob_restore_ssh
   flow chat_outbox -e STEP=rc_open || ob_fail "9: the rc_open flow failed"
   ob_drop_ssh
   sleep 12
-  flow chat_outbox -e STEP=rc_send || ob_fail "9: the rc_send flow failed"
+  flow chat_outbox -e STEP=rc_send -e "MSG=$msg" || ob_fail "9: the rc_send flow failed"
   ob_end_session
   ob_restore_ssh
-  flow chat_outbox -e STEP=rc_gone || ob_fail "9: the rc_gone flow failed"
+  flow chat_outbox -e STEP=rc_gone -e "MSG=$msg" || ob_fail "9: the rc_gone flow failed"
   sleep 8
-  ob_expect "9: nothing typed anywhere" "$(ob_sent 'outbox reconnect')" 0
-  ob_expect "9: the transcript holds none" "$(ob_turns 'outbox reconnect')" 0
-  ob_expect "9: still kept on the device" "$(ob_kept 'outbox reconnect')" 1
+  ob_expect "9: nothing typed anywhere" "$(ob_sent "$msg")" 0
+  ob_expect "9: the transcript holds none" "$(ob_turns "$msg")" 0
+  ob_expect "9: still kept on the device" "$(ob_kept "$msg")" 1
   ob_expect "9: kept as failed, with the reason" \
     "$(ob_device | grep -c 'The session ended before this was sent')" 1
   ob_expect "9: and no longer waiting for anything to pass" "$(ob_waiting)" 0

@@ -607,19 +607,19 @@ env:
       - tapOn:
           text: "Message “E2E live session”…"
           waitToSettleTimeoutMs: 500
-      - inputText: "outbox reconnect"
+      - inputText: "${MSG}"
       - tapOn:
           text: "Send"
           waitToSettleTimeoutMs: 500
       - extendedWaitUntil:
           visible: "(?s).*Waiting for the connection.*"
           timeout: 30000
-      - assertVisible: "(?s).*outbox reconnect.*"
+      - assertVisible: "(?s).*${MSG}.*"
       - assertNotVisible: "(?s).*Not sent.*"
       - assertNotVisible: "(?s).*Not typed.*"
       - assertNotVisible: "(?s).*Not delivered.*"
       - assertNotVisible: "Retry"
-      - assertNotVisible: "(?i)Echo: outbox reconnect"
+      - assertNotVisible: "(?i)Echo: ${MSG}"
       - takeScreenshot: chat-outbox-waiting-for-connection
 
 # Long after every retry step would have been spent: still waiting.
@@ -628,7 +628,7 @@ env:
       true: ${STEP == 'rc_wait'}
     commands:
       - assertVisible: "(?s).*Waiting for the connection.*"
-      - assertVisible: "(?s).*outbox reconnect.*"
+      - assertVisible: "(?s).*${MSG}.*"
       - assertNotVisible: "(?s).*Not sent.*"
       - assertNotVisible: "(?s).*Not typed.*"
       - assertNotVisible: "(?s).*Not delivered.*"
@@ -654,7 +654,7 @@ env:
           text: "(?s)^(?!Close).*Claude.*"
           optional: true
       - extendedWaitUntil:
-          visible: "(?i)Echo: outbox reconnect"
+          visible: "(?i)Echo: ${MSG}"
           timeout: 120000
       - assertNotVisible: "(?s).*Waiting for the connection.*"
       - assertNotVisible: "(?s).*Not sent.*"
@@ -684,10 +684,10 @@ env:
       - extendedWaitUntil:
           visible: "(?s).*The session ended before this was sent.*"
           timeout: 120000
-      - assertVisible: "(?s).*outbox reconnect.*"
+      - assertVisible: "(?s).*${MSG}.*"
       - assertVisible: "Retry"
       - assertVisible: "Remove"
-      - assertNotVisible: "(?i)Echo: outbox reconnect"
+      - assertNotVisible: "(?i)Echo: ${MSG}"
       - assertNotVisible: "(?s).*Waiting for the connection.*"
       - takeScreenshot: chat-outbox-session-gone
       - tapOn: "(?s)Close .*Claude.*"
