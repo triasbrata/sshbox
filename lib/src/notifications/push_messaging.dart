@@ -41,6 +41,15 @@ class PushMessaging {
     // or Windows, and no desktop build carries a Firebase config, so there
     // the direct way — see SessionManager — is how a host reaches the app.
     if (isDesktop) return;
+    // Firebase.initializeApp reads google_app_id from the APK's resources by
+    // name, the lookup that crashed Play's pre-launch robot (Firebase Test Lab)
+    // in AssetManager2::GetResourceId (JEANSH-8, JEANSH-4), a signal no Dart
+    // catch sees. Skipping the local notifications alone did not stop it, this
+    // running next. Nobody reads a push there.
+    if (defaultTargetPlatform == TargetPlatform.android &&
+        await NotificationGateway.onTestLab()) {
+      return;
+    }
     try {
       await Firebase.initializeApp();
     } catch (error) {

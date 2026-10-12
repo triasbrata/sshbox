@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show SemanticsNode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/chat/chat_ask.dart';
 import 'package:sshbox/src/ui/chat_ask_card.dart';
@@ -165,14 +166,32 @@ void main() {
       expect(find.text('XL\n  L'), findsOneWidget);
     });
 
-    testWidgets('an option is read with what it means, as one node a screen '
-        'reader and a flow can find', (tester) async {
+    testWidgets('an option is one button labelled with its name alone, what '
+        'it means a node of its own inside it, and no hint', (tester) async {
       final semantics = tester.ensureSemantics();
       await pump(tester, _ask());
 
+      // Exactly "Blue": Android reads a label and a hint as one string, which
+      // a flow looking for the option by its name would not find.
       final blue = tester.getSemantics(find.bySemanticsLabel('Blue'));
       expect(blue.label, 'Blue');
-      expect(blue.hint, 'A cool colour.');
+      expect(blue.hint, isEmpty);
+      expect(blue.getSemanticsData().flagsCollection.isButton, isTrue);
+      // What it means is still read with it, from inside the button.
+      final inside = <String>[];
+      void walk(SemanticsNode node) {
+        inside.add(node.label);
+        node.visitChildren((child) {
+          walk(child);
+          return true;
+        });
+      }
+
+      blue.visitChildren((child) {
+        walk(child);
+        return true;
+      });
+      expect(inside, contains('A cool colour.'));
       semantics.dispose();
     });
 

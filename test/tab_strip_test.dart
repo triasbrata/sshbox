@@ -178,6 +178,39 @@ void main() {
     expect(reconnected, same(tab.session));
   });
 
+  testWidgets('a chat tab whose connection ended offers to reconnect, since '
+      'its messages wait for it, and to close from its long press', (
+    tester,
+  ) async {
+    final shell = _shell(tester, 'host-1', 'box');
+    final tab = _chat(shell);
+    LiveSession? reconnected;
+    TabRef? closed;
+
+    // Connected-or-not-yet: the chat's own close button.
+    await _pump(tester, [shell, tab], onReconnect: (s) => reconnected = s);
+    expect(find.byTooltip('Reconnect'), findsNothing);
+
+    await shell.session.connect(secrets: _NoSecrets());
+    await _pump(
+      tester,
+      [shell, tab],
+      onReconnect: (s) => reconnected = s,
+      onClose: (t) => closed = t,
+    );
+    // The shell's own cable and the chat's: two ways to the same connection.
+    expect(find.byTooltip('Reconnect'), findsNWidgets(2));
+    await tester.tap(find.byTooltip('Reconnect').last);
+    expect(reconnected, same(shell.session));
+
+    // Its close button has become Reconnect, so closing is in its menu.
+    await tester.longPress(find.textContaining('Claude'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Close tab').last);
+    await tester.pumpAndSettle();
+    expect(closed?.kind, TabKind.chat);
+  });
+
   testWidgets('long-pressing a shell that failed to connect offers to close it', (
     tester,
   ) async {

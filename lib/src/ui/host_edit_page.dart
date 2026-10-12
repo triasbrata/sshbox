@@ -605,8 +605,9 @@ class _HostEditPageState extends State<HostEditPage> {
                         ),
                         const SizedBox(height: 8),
                         TuiText(
-                          'Sent to this host by itself, as LC_SSHBOX_KEY. '
-                          'Copy it only for a server that does not accept it.',
+                          'Written to this host by itself, in '
+                          '~/.config/jeansh/notify-key. Copy it only to use it '
+                          'somewhere else.',
                           tone: TuiTextTone.dim,
                           size: 11,
                         ),
