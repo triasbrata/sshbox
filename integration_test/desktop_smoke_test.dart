@@ -3991,7 +3991,11 @@ touch '${done.path}'
       const title = 'LOOK · TERMINAL · KEYBOARD · PRIVACY';
       final header = find.text(title);
       final anySettings = find.text(title, skipOffstage: false);
-      final terminal = find.byType(TerminalView);
+      // This tab's terminal, by its Terminal: Settings draws one of its own
+      // as a font sample.
+      final terminal = find.byWidgetPredicate(
+        (w) => w is TerminalView && identical(w.terminal, view.terminal),
+      );
       void settingsUp(String when) {
         expect(header, findsOneWidget, reason: '$when: Settings is not up');
         expect(
