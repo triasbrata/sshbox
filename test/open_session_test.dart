@@ -105,6 +105,23 @@ class _Shell
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
+/// A host that answers the install and then refuses the shell.
+class _FailingShell extends _Shell {
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async {
+    await beforeShell?.call(this);
+    throw const SshSessionException('no shell');
+  }
+}
+
 class _Secrets implements SecretStore {
   final map = <String, String>{};
   @override
@@ -288,6 +305,33 @@ void main() {
       LiveSession.openInstallTimeout = const Duration(milliseconds: 20);
       final hung = await installWith('hang');
       expect(hung.single, contains('did not answer'));
+    });
+
+    test('a problem met while connecting is said when the connect is over, '
+        'never before, and also when the connect then fails', () async {
+      // A toast raised while the connect sheet is up lands under it.
+      final during = <bool>[];
+      late LiveSession session;
+      final manager = SessionManager(
+        onOpenProblem: (_) => during.add(session.connecting),
+      );
+      final shell = _Shell()
+        ..installAnswer = 'left alone'
+        ..answerDelay = const Duration(milliseconds: 30);
+      session = manager.create(host, transport: (_, _) => shell);
+      addTearDown(session.dispose);
+      await session.connect(secrets: _Secrets());
+      expect(during, [false]);
+
+      // The connect fails after the install: the problem is still said.
+      final said = <String>[];
+      final failing = _FailingShell()..installAnswer = 'fail';
+      final other = SessionManager(onOpenProblem: said.add)
+          .create(host, transport: (_, _) => failing);
+      addTearDown(other.dispose);
+      await other.connect(secrets: _Secrets());
+      expect(other.isConnected, isFalse);
+      expect(said.single, contains('failed'));
     });
 
     test('a host whose switch is off is not asked, nor told', () async {
