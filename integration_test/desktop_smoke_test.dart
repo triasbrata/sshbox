@@ -632,6 +632,24 @@ Future<void> _realPointer(Future<void> Function() body) async {
   }
 }
 
+/// Prints every key event the app is handed, tagged [where], until the
+/// returned function is called: what X made of a chord, in the job log.
+void Function() _logKeys(String where) {
+  bool log(KeyEvent event) {
+    debugPrint(
+      'key[$where] ${event.runtimeType} logical=${event.logicalKey.debugName} '
+      '(${event.logicalKey.keyId.toRadixString(16)}) '
+      'physical=${event.physicalKey.debugName} char=${event.character} '
+      'ctrl=${HardwareKeyboard.instance.isControlPressed} '
+      'meta=${HardwareKeyboard.instance.isMetaPressed}',
+    );
+    return false;
+  }
+
+  HardwareKeyboard.instance.addHandler(log);
+  return () => HardwareKeyboard.instance.removeHandler(log);
+}
+
 /// [body], and on a failure what reached the app of the keys and the
 /// buttons meanwhile: whether a real key arrived at all.
 Future<void> _hearing(Future<void> Function() body) async {
@@ -3959,6 +3977,31 @@ touch '${done.path}'
     },
   );
 
+  // #283, the key reaching the app at all: Settings opened by its button,
+  // then Ctrl+, from Home with no terminal anywhere. The events the app
+  // sees are printed, so a log shows what X made of the chord.
+  _test(
+    'Ctrl+, closes Settings opened by its button, and the app hears the chord',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      final removeLog = _logKeys('Home');
+      addTearDown(removeLog);
+      await _launch(tester);
+      await _settings(tester);
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['key', '--clearmodifiers', 'ctrl+comma']);
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(
+        find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY', skipOffstage: false),
+        findsNothing,
+        reason: 'Ctrl+, did not close Settings opened by its button',
+      );
+      expect(_homeCard('Local shell'), findsOneWidget, reason: 'not on Home');
+    },
+  );
+
   // #283: Ctrl+, toggles Settings, through X as a person presses it. A 2x2:
   // pressed with Settings closed it opens, with it showing it closes (from
   // the page, from a sub-page, and with a text field focused); a bare comma
@@ -3972,6 +4015,7 @@ touch '${done.path}'
         ? null
         : 'the keys go through xdotool on this run\'s Xvfb',
     (tester) async {
+      addTearDown(_logKeys('terminal'));
       await _launch(tester);
       final view = await _localShell(tester);
       // A program that shows what reached it: ^[ for an escape, no more.
