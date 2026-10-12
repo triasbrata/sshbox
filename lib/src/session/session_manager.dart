@@ -2224,7 +2224,7 @@ class SessionManager extends ChangeNotifier {
             'files': [...session._restoredFiles, ...session._openFiles],
             'web': [
               for (final web in session._webTabs)
-                if (!web._signIn) ?_savedUrl(web.url),
+                if (!web._signIn && web.htmlPath == null) ?_savedUrl(web.url),
             ],
           },
       ],

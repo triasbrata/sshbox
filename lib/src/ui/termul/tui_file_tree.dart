@@ -71,6 +71,8 @@ class TuiFileTree extends StatelessWidget {
     this.onNewFile,
     this.onNewFolder,
     this.onUpload,
+    this.onOpenBrowser,
+    this.openBrowserEnabled = false,
     this.onRefresh,
     this.onCollapseAll,
     this.onClose,
@@ -109,6 +111,11 @@ class TuiFileTree extends StatelessWidget {
   final VoidCallback? onNewFile;
   final VoidCallback? onNewFolder;
   final VoidCallback? onUpload;
+
+  /// Shows the selected file in a browser tab. The button is drawn when this
+  /// is set, and tappable only while [openBrowserEnabled].
+  final VoidCallback? onOpenBrowser;
+  final bool openBrowserEnabled;
   final VoidCallback? onRefresh;
   final VoidCallback? onCollapseAll;
   final VoidCallback? onClose;
@@ -149,6 +156,8 @@ class TuiFileTree extends StatelessWidget {
               onNewFile: onNewFile,
               onNewFolder: onNewFolder,
               onUpload: onUpload,
+              onOpenBrowser: onOpenBrowser,
+              openBrowserEnabled: openBrowserEnabled,
               onRefresh: onRefresh,
               onCollapseAll: onCollapseAll,
               busy: loading,
@@ -374,6 +383,8 @@ class _RootHeader extends StatelessWidget {
     required this.onNewFile,
     required this.onNewFolder,
     required this.onUpload,
+    required this.onOpenBrowser,
+    required this.openBrowserEnabled,
     required this.onRefresh,
     required this.onCollapseAll,
     required this.busy,
@@ -384,6 +395,8 @@ class _RootHeader extends StatelessWidget {
   final VoidCallback? onNewFile;
   final VoidCallback? onNewFolder;
   final VoidCallback? onUpload;
+  final VoidCallback? onOpenBrowser;
+  final bool openBrowserEnabled;
   final VoidCallback? onRefresh;
   final VoidCallback? onCollapseAll;
   final bool busy;
@@ -452,6 +465,12 @@ class _RootHeader extends StatelessWidget {
               glyph: '↑',
               onPressed: enabled ? onUpload : null,
             ),
+            if (onOpenBrowser != null)
+              _GlyphBtn(
+                label: 'Open in browser tab',
+                glyph: '↗',
+                onPressed: enabled && openBrowserEnabled ? onOpenBrowser : null,
+              ),
             _GlyphBtn(
               label: 'Refresh',
               glyph: '↻',

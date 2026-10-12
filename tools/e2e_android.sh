@@ -348,6 +348,58 @@ html_tab() {
   flow html_tab_text
 }
 
+# #272: an HTML file opens with the files beside it, and only those
+# (.maestro/html_site.yaml). The site is in the login home, jeansh-e2e-site/,
+# with a secret file BESIDE the folder that no page of it may reach, a 6 MB
+# script, and a link to /etc/hostname. A page that is not allowed something is
+# said so in the tab, and what it would have got is not on screen.
+html_site() {
+  local status=0 leak
+  sudo -u "$SSH_USER" -H sh -s <<'EOS'
+cd "$HOME" || exit 1
+rm -rf jeansh-e2e-site jeansh-e2e-secret.txt
+mkdir jeansh-e2e-site
+printf 'SECRET-TOKEN' >jeansh-e2e-secret.txt
+cd jeansh-e2e-site || exit 1
+printf '%s' '<!doctype html><meta charset=utf-8><link rel=stylesheet href=style.css><h1 id=t>plain</h1><img alt="PIC" src=pic.png><script src=app.js></script>' >page.html
+printf '#t{color:red}' >style.css
+printf "document.getElementById('t').textContent='Jeansh e2e js ran'" >app.js
+printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' | base64 -d >pic.png
+printf '%s' '<!doctype html><meta charset=utf-8><p id=x>evil</p><script src="../jeansh-e2e-secret.txt"></script><script>fetch("../jeansh-e2e-secret.txt").then(function(r){return r.ok?r.text():""}).then(function(t){document.getElementById("x").textContent+=" "+t}).catch(function(){})</script>' >evil.html
+printf '%s' '<!doctype html><meta charset=utf-8><p>big</p><script src=big.js></script>' >big.html
+dd if=/dev/zero of=big.js bs=1048576 count=6 2>/dev/null
+ln -s /etc/hostname leak.png
+printf '%s' '<!doctype html><meta charset=utf-8><p id=x>link</p><img src=leak.png><script>fetch("leak.png").then(function(r){return r.ok?r.text():""}).then(function(t){document.getElementById("x").textContent+=" "+t}).catch(function(){})</script>' >link.html
+printf 'plain text\n' >plain.txt
+printf '%s' '<!doctype html><meta charset=utf-8><meta http-equiv=refresh content="0;url=mailto:a@b.c"><p>gate page</p>' >gate.html
+EOS
+  leak=$(tr -d '\n' </etc/hostname)
+  [ -n "$leak" ] || leak=hostname-unknown-e2e
+  echo "the link's target holds: $leak"
+  local step
+  for step in page plaintext evil big link gate; do
+    echo "::group::html_site: $step"
+    flow html_site -e "STEP=$step" -e "LEAK=$leak" || {
+      status=1
+      echo "::error::html_site $step failed"
+    }
+    if [ "$step" = gate ]; then
+      # No page navigation reached another app: Jeansh is still the one in front.
+      local front
+      front=$(adb shell dumpsys activity activities | grep -m1 -E 'mResumedActivity|ResumedActivity')
+      echo "in front: $front"
+      case $front in
+        *cloud.brata.terminal*) ;;
+        *) echo "::error::html_site gate: another app is in front"; status=1 ;;
+      esac
+    fi
+    echo "::endgroup::"
+  done
+  keep_shots 'html-site-*.png'
+  sudo -u "$SSH_USER" -H sh -c 'cd "$HOME" && rm -rf jeansh-e2e-site jeansh-e2e-secret.txt'
+  return "$status"
+}
+
 # #94: Gboard sends Backspace as a raw KEYCODE_DEL key event, from the
 # virtual keyboard's device (-1) and flagged as soft, whenever it sees nothing
 # before the caret. Jeansh took it for a hardware keyboard: the soft keyboard
@@ -1591,6 +1643,9 @@ stand_in ''
 echo "::group::html_tab (report only)"
 html_tab || echo "::warning::html_tab failed -- report only, not gating"
 echo "::endgroup::"
+
+# Its steps are groups of their own, in the job log.
+html_site || echo "::warning::html_site failed -- report only, not gating"
 
 echo "::group::chat_session_status (report only)"
 chat_session_status || echo "::warning::chat_session_status failed -- report only, not gating"
