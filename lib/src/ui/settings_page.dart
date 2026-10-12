@@ -595,15 +595,7 @@ void openSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
 /// showing, closed again, back to the page it was opened from — however
 /// deep in Settings the user is, and with a dialog over it too.
 void toggleSettings(NavigatorState navigator, {NotifyKeys? notifyKeys}) {
-  final route = _openSettings[navigator];
-  if (route == null || !route.isActive) {
-    openSettings(navigator, notifyKeys: notifyKeys);
-    return;
-  }
-  // Everything pushed above Settings goes with it; the page under it was
-  // never rebuilt away, so it comes back as it was.
-  navigator.popUntil((r) => r == route);
-  navigator.pop();
+  openSettings(navigator, notifyKeys: notifyKeys);
 }
 
 /// A key a hardware keyboard holds down to make a click on the terminal open
