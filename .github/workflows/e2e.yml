@@ -78,7 +78,12 @@ jobs:
     # without failing anything. ponytail: one job runs every flow, so each
     # report-only flow added lengthens every release; split them into a
     # parallel job when this ceiling nears.
-    timeout-minutes: 120
+    # 120 was outgrown too: v1.0.111's gate took 83 minutes of flows, then the
+    # chat flows added on 2026-10-12 pushed the step past 115, and runs
+    # 38210062066, 38217678634 and v1.0.112-rc.1's gate were each cancelled at
+    # 2 h with the suite unfinished (so its true length is unmeasured, only
+    # above 115 minutes). 240 is that floor doubled; GitHub allows 360.
+    timeout-minutes: 240
     outputs:
       coverage: ${{ steps.coverage.outputs.pct }}
     steps:
