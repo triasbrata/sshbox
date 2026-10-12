@@ -790,9 +790,19 @@ class TmuxSession {
   String? _lastResize;
 
   /// Keystrokes for the focused pane, as they would reach a plain shell.
+  ///
+  /// Attached does not mean the panes are known yet: tmux says so a moment
+  /// later. What arrives in between is held, up to 64 KB, and goes to the
+  /// focused pane as soon as there is one, rather than being dropped.
   void send(String data) {
     final pane = focused;
-    if (pane != null) _sendTo(pane, data);
+    if (pane != null) {
+      _sendTo(pane, data);
+    } else if (!_disposed && _early.fold<int>(0, (n, s) => n + s.length) +
+            data.length <=
+        64 * 1024) {
+      _early.add(data);
+    }
   }
 
   /// The program in the foreground of the focused pane, as tmux names it
@@ -810,6 +820,8 @@ class TmuxSession {
       return null;
     }
   }
+
+  final _early = <String>[];
 
   /// As hex, so no byte is ever read as tmux syntax: `send-keys -H` writes
   /// each one to the pane as it is, rather than as a key tmux looks up.
@@ -1170,6 +1182,13 @@ class TmuxSession {
     }
     // After sizing: history that is filled in wraps at the pane's width.
     added.forEach(_fill);
+    final early = focused;
+    if (early != null && _early.isNotEmpty) {
+      for (final data in _early.toList()) {
+        _sendTo(early, data);
+      }
+      _early.clear();
+    }
     onChanged();
   }
 

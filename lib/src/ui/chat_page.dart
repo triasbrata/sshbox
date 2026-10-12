@@ -145,6 +145,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// Sessions, by host and session id, seen working since last opened here,
   /// and those that have finished since: the dot on their row. Kept for as
   /// long as the app runs, as [_leftAt] is, and never written anywhere.
+  /// Whether the last refresh of the list failed, so the rows shown are what
+  /// it said before: the rail marks them as out of date rather than showing
+  /// them as current.
+  final _stale = ValueNotifier<bool>(false);
+
   static final _sawWorking = <String>{};
   static final _unseen = <String>{};
 
@@ -176,9 +181,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       agents.whenComplete(() => _asking = false).then((rows) {
         if (!mounted) return;
         rows.forEach(_note);
+        _stale.value = false;
         _listing.value = AsyncSnapshot.withData(ConnectionState.done, rows);
       }, onError: (Object error) {
         if (mounted) {
+          _stale.value = false;
           _listing.value = AsyncSnapshot.withError(
             ConnectionState.done,
             error,
@@ -196,6 +203,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     try {
       final rows = await _chat.agents(all: true);
       if (!mounted) return;
+      _stale.value = false;
       final before = _listing.value.data;
       if (before != null &&
           before.length == rows.length &&
@@ -206,7 +214,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       rows.forEach(_note);
       _listing.value = AsyncSnapshot.withData(ConnectionState.done, rows);
     } catch (_) {
-      // The list keeps what it had; Refresh shows the error.
+      // The list keeps what it had, marked out of date; Refresh shows the
+      // error itself.
+      if (mounted) _stale.value = true;
     } finally {
       _asking = false;
     }
@@ -363,8 +373,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _scroll.addListener(_onScrolled);
     _looking = Timer.periodic(_look, (_) => _onLook());
     HardwareKeyboard.instance.addHandler(_onHardwareKey);
+    // What the outbox sends again by itself puts its pictures on the host
+    // the way a message sent from the box does.
+    _chat.defaultUpload = widget.session.canUploadFiles ? _upload : null;
     _onChanged();
     unawaited(_loadFolder());
+    // A new chat shows what an earlier run left unsent for it; a picked
+    // session does the same once it is followed.
+    unawaited(_chat.restoreOutbox());
   }
 
   /// The folder a new chat starts in is remembered for each host.
@@ -456,6 +472,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     widget.session.removeListener(_onChanged);
     _chat.removeListener(_onChanged);
     _listing.dispose();
+    _stale.dispose();
     _input.dispose();
     _inputFocus.dispose();
     _menuOpen.dispose();
@@ -635,6 +652,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// A file that is not a picture, as [_dropped] and [_drainShared] take it.
   Future<void> _addFile(String path, String name, bool isDir) async {
+    // Before anything is uploaded: a path that could not be put in the box
+    // would otherwise be dropped with nothing said, after the work was done.
+    if (!_attachable) {
+      return _refuse('Not added: this session is read-only from here.');
+    }
     final here =
         widget.session.host.id == localHostId &&
         defaultTargetPlatform != TargetPlatform.windows;
@@ -652,12 +674,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           direction: TransferDirection.upload,
           work: (transfer) => widget.session.uploadToTmp(
             localPath: path,
-            fileName: name,
+            // A clock prefix, as a picture's copy has: two files of one name
+            // must not overwrite each other at /tmp/<name>.
+            fileName: '${DateTime.now().microsecondsSinceEpoch}-$name',
             onProgress: transfer.report,
             cancel: transfer.cancelled,
           ),
         );
-        if (mounted) _typePath(remote);
+        if (!mounted) return;
+        // The upload is a long wait: the chat may have turned read-only.
+        if (_attachable) {
+          _typePath(remote);
+        } else {
+          _refuse(
+            'Not added: this session turned read-only while $name was '
+            'uploading. It is at $remote.',
+          );
+        }
       } catch (error) {
         // Cancelled from the Transfers tab, which says so itself.
         final cancelled =
@@ -858,6 +891,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> _editPrevious() async {
     final text = await _chat.reviseLast();
     if (text == null || !mounted) return;
+    // Typed meanwhile: never written over. The message it went back to is
+    // said, so it is not lost with the chat's view of it.
+    if (_input.text.trim().isNotEmpty) {
+      showToast(
+        context,
+        'Went back, but the box has a draft, which was kept. The message was: '
+        '“${text.length > 200 ? '${text.substring(0, 200)}…' : text}”',
+        type: TuiToastType.warning,
+        duration: const Duration(seconds: 8),
+      );
+      return;
+    }
     setState(() {
       _input.value = TextEditingValue(
         text: text,
@@ -890,7 +935,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             !keys.isControlPressed &&
             !keys.isMetaPressed &&
             !keys.isAltPressed)) {
-      if (_sendable) _send();
+      // Not `_sendable`-gated: [_send] says why when it cannot go, with the
+      // text left in the box, where a swallowed Enter said nothing at all.
+      _send();
       return KeyEventResult.handled;
     }
     if (chatEnterSends.value && keys.isShiftPressed) {
@@ -1432,6 +1479,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           child: _SessionList(
             chat: _chat,
             listing: _listing,
+            stale: _stale,
             connected: widget.session.isConnected,
             onPick: _pick,
             onRefresh: () => setState(_listAgents),
@@ -1480,6 +1528,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   child: _SessionRail(
                     chat: _chat,
                     listing: _listing,
+                    stale: _stale,
+                    onRefresh: () => setState(_listAgents),
                     connected: widget.session.isConnected,
                     onToggle: () => _toggleSessions(wide),
                     onNewChat: _newChat,
@@ -4187,6 +4237,8 @@ class _SessionRail extends StatelessWidget {
   const _SessionRail({
     required this.chat,
     required this.listing,
+    required this.stale,
+    required this.onRefresh,
     required this.connected,
     required this.onToggle,
     required this.onNewChat,
@@ -4196,6 +4248,12 @@ class _SessionRail extends StatelessWidget {
 
   final ClaudeChat chat;
   final ValueListenable<AsyncSnapshot<List<ClaudeAgent>>> listing;
+
+  /// Whether the rows are what the list said before a refresh that failed.
+  final ValueListenable<bool> stale;
+
+  /// Asks for the list again.
+  final VoidCallback onRefresh;
   final bool connected;
   final VoidCallback onToggle;
   final VoidCallback onNewChat;
@@ -4254,42 +4312,75 @@ class _SessionRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final p = TermulThemeData.of(context).palette;
     return ValueListenableBuilder<AsyncSnapshot<List<ClaudeAgent>>>(
       valueListenable: listing,
-      builder: (context, snapshot, _) {
-        final rows = snapshot.data ?? const <ClaudeAgent>[];
-        final pinned = [for (final a in rows) if (a.pinned) a];
-        final running = [for (final a in rows) if (!a.pinned && a.live) a];
-        final finished = [for (final a in rows) if (!a.pinned && !a.live) a];
-        final groups = [
-          for (final g in [pinned, running, finished])
-            if (g.isNotEmpty) g,
-        ];
-        return ColoredBox(
-          color: p.sidebar,
-          child: ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              _RailButton(
-                glyph: '»',
-                label: 'Expand the sessions',
-                onTap: onToggle,
-              ),
-              _RailButton(
-                glyph: '+',
-                label: 'New chat',
-                onTap: connected ? onNewChat : null,
-              ),
-              const SizedBox(height: 12),
-              for (final (i, group) in groups.indexed) ...[
-                if (i > 0) Divider(height: 1, color: p.border),
-                for (final agent in group) _icon(context, agent),
-              ],
-            ],
+      builder: (context, snapshot, _) => ValueListenableBuilder<bool>(
+        valueListenable: stale,
+        builder: (context, isStale, _) => _rail(context, snapshot, isStale),
+      ),
+    );
+  }
+
+  Widget _rail(
+    BuildContext context,
+    AsyncSnapshot<List<ClaudeAgent>> snapshot,
+    bool isStale,
+  ) {
+    final p = TermulThemeData.of(context).palette;
+    // What the host said, as it said it: never shown as an empty list.
+    final error = snapshot.connectionState == ConnectionState.done
+        ? snapshot.error
+        : null;
+    final rows = snapshot.data ?? const <ClaudeAgent>[];
+    final pinned = [for (final a in rows) if (a.pinned) a];
+    final running = [for (final a in rows) if (!a.pinned && a.live) a];
+    final finished = [for (final a in rows) if (!a.pinned && !a.live) a];
+    final groups = [
+      for (final g in [pinned, running, finished])
+        if (g.isNotEmpty) g,
+    ];
+    return ColoredBox(
+      color: p.sidebar,
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          _RailButton(
+            glyph: '»',
+            label: 'Expand the sessions',
+            onTap: onToggle,
           ),
-        );
-      },
+          _RailButton(
+            glyph: '+',
+            label: 'New chat',
+            onTap: connected ? onNewChat : null,
+          ),
+          const SizedBox(height: 12),
+          if (error != null)
+            _RailButton(
+              glyph: '!',
+              label: 'Could not list the sessions: $error. Tap to try again.',
+              onTap: onRefresh,
+            )
+          else ...[
+            if (isStale)
+              _RailButton(
+                glyph: '⚠',
+                label:
+                    'The list may be out of date: it could not be refreshed. '
+                    'Tap to try again.',
+                onTap: onRefresh,
+              ),
+            for (final (i, group) in groups.indexed) ...[
+              if (i > 0) Divider(height: 1, color: p.border),
+              for (final agent in group)
+                Opacity(
+                  opacity: isStale ? 0.4 : 1,
+                  child: _icon(context, agent),
+                ),
+            ],
+          ],
+        ],
+      ),
     );
   }
 }
@@ -4511,6 +4602,7 @@ class _SessionList extends StatelessWidget {
     required this.chat,
     required this.listing,
     required this.connected,
+    required this.stale,
     required this.onPick,
     required this.onRefresh,
     required this.onNewChat,
@@ -4553,6 +4645,9 @@ class _SessionList extends StatelessWidget {
   /// As the page last asked for them; null before the session first came
   /// up.
   final ValueListenable<AsyncSnapshot<List<ClaudeAgent>>> listing;
+
+  /// Whether the rows are what the list said before a failed refresh.
+  final ValueListenable<bool> stale;
 
   /// Whether the session is up: the list is asked for over its connection.
   final bool connected;
@@ -4614,7 +4709,30 @@ class _SessionList extends StatelessWidget {
   );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+    valueListenable: stale,
+    builder: (context, isStale, _) => Column(
+      children: [
+        // The rows are what the list said before a refresh failed: said so,
+        // with a way to ask again, as the rail says it.
+        if (isStale)
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: TuiButton(
+              label: 'The list may be out of date: it could not be '
+                  'refreshed. Tap to try again.',
+              logName: 'Refresh stale sessions',
+              prefix: '⚠',
+              variant: TuiButtonVariant.ghost,
+              onPressed: connected ? onRefresh : null,
+            ),
+          ),
+        Expanded(child: _listBody()),
+      ],
+    ),
+  );
+
+  Widget _listBody() {
     return ValueListenableBuilder<AsyncSnapshot<List<ClaudeAgent>>>(
       valueListenable: listing,
       builder: (context, snapshot, _) {
