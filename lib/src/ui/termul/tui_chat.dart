@@ -68,7 +68,7 @@ class TuiChatBubble extends StatelessWidget {
     final pending = delivery != null;
     final note = switch (delivery) {
       TuiChatDelivery.sending => 'Sending…',
-      TuiChatDelivery.queued =>
+      TuiChatDelivery.queued => failureReason ??
         'Queued: it runs after what the session is doing.',
       TuiChatDelivery.failed => failureReason ?? 'Not delivered.',
       null => null,

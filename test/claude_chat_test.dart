@@ -2846,7 +2846,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 500));
         final said = chat.entries.whereType<ChatSaid>().single;
         expect(said.delivery, Delivery.failed);
-        expect(said.why, contains('is no longer running'));
+        expect(said.why, ClaudeChat.sessionEndedWhy);
         expect(host.terminals, isEmpty);
       });
 
@@ -8392,6 +8392,154 @@ void main() {
       final entry = (await onDisk()).entries.single;
       expect(entry.failed, isTrue);
       expect(entry.transient, isFalse, reason: 'left for the user\'s Retry');
+    });
+
+    test('a message the session records only after the first look is not '
+        'typed again: it is looked for a second time once things settled',
+        () async {
+      ClaudeChat.settleDelay = const Duration(milliseconds: 300);
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no draft\n';
+      final chat = make(host);
+      await chat.continueFrom(_interactive);
+      chat.send('typed before the drop');
+      await wait();
+      host.paneTyping.clear();
+      host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+
+      // The first look finds nothing; the session records the turn a moment
+      // later, as it does after a connection comes back.
+      expect(chat.retry(chat.entries.whereType<ChatSaid>().single), isNull);
+      Timer(const Duration(milliseconds: 120), () {
+        host.history = transcript([('late-1', 'typed before the drop')]);
+      });
+      await wait(900);
+
+      expect(host.paneTyping, isEmpty, reason: 'never typed twice');
+      final box = await onDisk();
+      expect(box.entries, isEmpty);
+      expect(box.consumed, ['late-1']);
+      expect(
+        chat.entries.whereType<ChatSaid>().map((s) => s.delivery),
+        [null],
+      );
+    });
+
+    test('a message still not recorded after the second look is sent, once',
+        () async {
+      ClaudeChat.settleDelay = const Duration(milliseconds: 100);
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no draft\n';
+      final chat = make(host);
+      await chat.continueFrom(_interactive);
+      chat.send('really not there');
+      await wait();
+      host.paneTyping.clear();
+      host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+
+      chat.retry(chat.entries.whereType<ChatSaid>().single);
+      await wait(700);
+
+      expect(host.paneTyping, hasLength(1));
+    });
+
+    test('the host restarts and the --bg session is gone when the connection '
+        'is back: every message written for it stays, failed, with a plain '
+        'reason, and Retry sends it to the session continued', () async {
+      final host = _LiveHost('0\n');
+      final chat = make(host, connected: () => !host.down);
+      await chat.continueFrom(_live);
+      host.down = true;
+      chat.send('first unsent');
+      chat.send('second unsent');
+      await wait();
+
+      // The host is back, and what it was running is not.
+      host.down = false;
+      host.alive = false;
+      host.state = null;
+      await chat.resume();
+      await wait(300);
+      host.adds('sshbox:ended\n');
+      await host.follow!.close();
+      await wait(1500);
+
+      final saids = chat.entries.whereType<ChatSaid>().toList();
+      expect([for (final s in saids) s.text], ['first unsent', 'second unsent']);
+      for (final said in saids) {
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, ClaudeChat.sessionEndedWhy);
+      }
+      final box = await onDisk();
+      expect(box.entries.map((e) => e.text), ['first unsent', 'second unsent']);
+      expect(box.entries.every((e) => e.failed && e.why == ClaudeChat.sessionEndedWhy),
+          isTrue);
+      expect(host.terminals, isEmpty, reason: 'nothing typed into a dead session');
+
+      // The chat went on in the session continued, where Retry sends.
+      expect(host.startedClaude, isTrue);
+      expect(chat.watching, isNull);
+      expect(chat.retry(saids.first), isNull);
+    });
+
+    test('a session that ends while the chat still watches it, found out when '
+        'a message is sent, is continued, and the message keeps its bubble and '
+        'its entry', () async {
+      final host = _LiveHost('0\n');
+      final chat = make(host);
+      await chat.continueFrom(_live);
+      host.alive = false;
+      host.state = null;
+      expect(host.startedClaude, isFalse);
+
+      chat.send('into the void');
+      await wait();
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, ClaudeChat.sessionEndedWhy);
+      expect(host.startedClaude, isTrue, reason: 'continued in place');
+      expect(chat.watching, isNull);
+      expect(host.terminals, isEmpty);
+      final entry = (await onDisk()).entries.single;
+      expect(entry.text, 'into the void');
+      expect(entry.failed, isTrue);
+    });
+
+    test('what ended with the session survives the chat being reopened and '
+        'the app restarting: shown failed with the reason, copyable, with '
+        'Retry and Remove, and gone only by Remove', () async {
+      await store().save(
+        key,
+        OutboxBox(
+          entries: [
+            OutboxEntry(
+              id: 'g1',
+              text: 'written before the host restarted',
+              createdAt: DateTime.now().toUtc(),
+              failed: true,
+              why: ClaudeChat.sessionEndedWhy,
+            ),
+          ],
+        ),
+      );
+      for (var open = 0; open < 2; open++) {
+        final host = _LiveHost('0\n');
+        final chat = make(host);
+        await chat.continueFrom(_finished);
+        await wait();
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.text, 'written before the host restarted');
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, ClaudeChat.sessionEndedWhy);
+        expect(host.terminals, isEmpty);
+        expect((await onDisk()).entries, hasLength(1));
+        if (open == 1) {
+          chat.remove(said);
+          await wait();
+          expect((await onDisk()).entries, isEmpty);
+        }
+      }
     });
 
     test('without an outbox nothing is kept and a message goes as before',
