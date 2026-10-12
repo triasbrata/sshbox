@@ -1394,13 +1394,25 @@ EOS
   # 3. Onward ssh: only worth reading when the control shows the account can
   # be reached and a LC_ variable does get through to it.
   rc=$(jo2_cat jo3.rc)
-  out=$(jo2_cat jo3.out | tail -n 2 | tr "\n" " ")
+  out=$(jo2_cat jo3.out | tail -n 3 | tr "\n" " ")
+  # The push key is a file, never a variable: none of it in this tab's own
+  # shell either. Only a real relay key makes the file, and the emulator has no
+  # FCM to get one with, so that check is made when there is a file and said to
+  # be skipped when there is none.
+  jo2_expect "3: no push key or host id in the tab's own environment" \
+    "$(jo2_cat jo3.own | tr -d '\n ')" 0
+  if sudo test -f "$home/.config/jeansh/notify-key"; then
+    jo2_expect "3: the push key file is private" \
+      "$(sudo stat -c %a "$home/.config/jeansh/notify-key")" 600
+  else
+    echo "::notice::jeansh_open2 3: this host got no relay key (no FCM on this runner), so the notify-key file check is skipped"
+  fi
   echo "onward ssh: exit [$rc], saw [$out], control [$(jo2_cat jo3.control | tr '\n' ' ')]"
   if [ "$rc" != 0 ]; then
     echo "::warning::jeansh_open2 3: the onward ssh did not connect, so nothing was learned: $out"
     JO2_STATUS=1
   else
-    jo2_expect "3: onward, no key in the environment, and no key file" "$out" "0 0 "
+    jo2_expect "3: onward, no push key or host id in the environment, no open secret, and no key file" "$out" "0 0 0 "
     if [ "$(jo2_cat jo3.control | tr -d '\n ')" != 1 ]; then
       echo "::notice::jeansh_open2 3: this sshd does not take LC_ variables, so the 0 above is not a proof; it is a check that nothing was left behind"
     fi

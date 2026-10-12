@@ -27,9 +27,61 @@ const openLongestPath = 4096;
 const openCommandScript = r'''#!/bin/sh
 # jeansh-open: installed by Jeansh
 # Usage: jeansh <file>...   Opens each file in Jeansh's file tab.
+#        jeansh notify [title] <body>   Sends a notification to the phone.
 if [ $# -eq 0 ]; then
-  echo "usage: jeansh <file>..." >&2
+  echo "usage: jeansh <file>... | jeansh notify [title] <body>" >&2
   exit 2
+fi
+if [ "$1" = notify ] && [ $# -ge 2 ] && [ $# -le 3 ]; then
+  shift
+  if [ $# -eq 1 ]; then title=; body=$1; else title=$1; body=$2; fi
+  # The direct way first, down this connection, while it is open.
+  if [ -n "$LC_SSHBOX_NOTIFY_URL" ] && [ -n "$LC_SSHBOX_NOTIFY_SECRET" ] &&
+    curl -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
+      -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
+      --data-urlencode "title=$title" --data-urlencode "body=$body" \
+      >/dev/null 2>&1; then
+    exit 0
+  fi
+  # Then the relay, signed with this host's key, which is in a file Jeansh
+  # writes on every connect, not in the environment. A link, or a file that
+  # is not ours, is not read.
+  kf="$HOME/.config/jeansh/notify-key"
+  key=
+  if [ -f "$kf" ] && [ ! -L "$kf" ] && [ -O "$kf" ]; then
+    IFS= read -r key <"$kf"
+  fi
+  if [ -z "$key" ]; then
+    echo "jeansh: no push key on this host: connect to it from Jeansh, which writes ~/.config/jeansh/notify-key" >&2
+    exit 1
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "jeansh: notify needs openssl" >&2
+    exit 1
+  fi
+  esc() { printf %s "$1" | tr '\n' ' ' | sed 's/[\\"]/\\&/g'; }
+  if [ -n "$title" ]; then
+    data=$(printf '{"title":"%s","body":"%s"}' "$(esc "$title")" "$(esc "$body")")
+  else
+    data=$(printf '{"body":"%s"}' "$(esc "$body")")
+  fi
+  ts=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+  id=$(openssl rand -hex 16)
+  hash=$(printf %s "$data" | openssl dgst -sha256 -r | cut -d' ' -f1)
+  # The key reaches openssl on a file descriptor: never in ps.
+  sig=$(printf 'POST:/v1/send:%s:%s:%s' "$hash" "$ts" "$id" |
+    openssl dgst -sha256 -sign /dev/fd/3 3<<EOF | openssl base64 -A
+-----BEGIN PRIVATE KEY-----
+$(printf %s "${key#*:}" | fold -w 64)
+-----END PRIVATE KEY-----
+EOF
+  ) || exit 1
+  # JEANSH_RELAY_URL is only for tests, which have no relay to reach.
+  exec curl -fsS "${JEANSH_RELAY_URL:-https://jeansh-notify.brata.cloud}/v1/send" \
+    -H 'Content-Type: application/json' \
+    -H "X-PARTNER-ID: ${key%%:*}" -H "X-TIMESTAMP: $ts" \
+    -H "X-EXTERNAL-ID: $id" -H "X-SIGNATURE: $sig" \
+    --data-binary "$data"
 fi
 # The secret is in a file Jeansh rewrites on every connect, not in the
 # environment. A link, or a file that is not ours, is not read.
@@ -271,27 +323,39 @@ const openCurrent = 'current';
 const openLeftAlone = 'left alone';
 const openSecretLink = 'secret folder is a link';
 
-/// What a host runs to put [openCommandScript] at `~/.local/bin/jeansh` and
-/// a secret in `~/.config/jeansh/open-secret`, as one `sh -c` line. The
-/// secret is the first line of its standard input, never part of the line,
-/// which any local user could read in the process list. Each is
+/// With no open secret sent, only the push key was put in place.
+const openKeyed = 'keyed';
+
+/// What a host runs to put [openCommandScript] at `~/.local/bin/jeansh`, a
+/// secret in `~/.config/jeansh/open-secret` and this host's push key in
+/// `~/.config/jeansh/notify-key`, as one `sh -c` line. The two are the first
+/// two lines of its standard input, `-` for one that is not sent, never part
+/// of the line, which any local user could read in the process list. Each is
 /// written beside its place under a name of its own and renamed into it, so
 /// a link planted at the name is replaced and never written through; a link
-/// at `~/.config/jeansh` is refused. A link at `jeansh`, or a file without
+/// at `~/.config/jeansh` is refused. With no open secret nothing else is
+/// done ([openKeyed]). A link at `jeansh`, or a file without
 /// [openCommandMarker], is left alone. Its last line says [openInstalled],
-/// [openCurrent], [openLeftAlone] or [openSecretLink]; anything else, or an
-/// exit code, is a failure.
+/// [openCurrent], [openLeftAlone], [openSecretLink] or [openKeyed]; anything
+/// else, or an exit code, is a failure.
 String openCommandInstallScript() {
   final script =
       r'''
 d="$HOME/.local/bin"; t="$d/jeansh"; c="$HOME/.config/jeansh"
 IFS= read -r s
+IFS= read -r k
 case $s in ''|*[!A-Za-z0-9_-]*) exit 1 ;; esac
+case $k in ''|*[!A-Za-z0-9_:+/=-]*) exit 1 ;; esac
 umask 077
 if [ -L "$c" ]; then echo "secret folder is a link"; exit 0; fi
 mkdir -p "$c" && chmod 700 "$c" || exit 1
-w=$(mktemp "$c/open-secret.XXXXXX") || exit 1
-printf '%s\n' "$s" > "$w" && chmod 600 "$w" && mv -f "$w" "$c/open-secret" || { rm -f "$w"; exit 1; }
+put() {
+  w=$(mktemp "$c/$1.XXXXXX") || return 1
+  printf '%s\n' "$2" > "$w" && chmod 600 "$w" && mv -f "$w" "$c/$1" || { rm -f "$w"; return 1; }
+}
+if [ "$k" != - ]; then put notify-key "$k" || exit 1; fi
+if [ "$s" = - ]; then echo keyed; exit 0; fi
+put open-secret "$s" || exit 1
 mkdir -p "$d" || exit 1
 if [ -L "$t" ] || { [ -e "$t" ] && { [ ! -f "$t" ] || ! grep -q '^# jeansh-open: installed by Jeansh' "$t"; }; }; then
   echo "left alone"; exit 0

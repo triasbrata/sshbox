@@ -763,7 +763,7 @@ class LiveSession extends ChangeNotifier {
             write(secret);
           } catch (error) {
             appLog.warn('connect: session $id jeansh secret not written');
-            onOpenProblem?.call(
+            _sayOpenProblem(
               error is OpenInstallException
                   ? error.message
                   : 'Could not set up the jeansh command here: $error',
@@ -776,6 +776,14 @@ class LiveSession extends ChangeNotifier {
           const Duration(seconds: 3),
           onTimeout: () => null,
         );
+        // The push key and the open secret go to files on the host, in one
+        // exec and before the shell starts, so a profile can read them at
+        // the first login. Never the environment, which an `ssh` started
+        // from the shell would hand on. The shell opens whatever comes of
+        // it: a timeout or a failure is said, not waited on.
+        if (host.installOpenCommand || value != null) {
+          await _installOpenCommand(connection, key: value);
+        }
         return {
           // That this terminal shows an OSC 8 hyperlink and a Ctrl+tap opens
           // it, for a profile to turn `FORCE_HYPERLINK` on from, so Claude
@@ -788,10 +796,6 @@ class LiveSession extends ChangeNotifier {
           // desktop without FCM never has. A tmux tab needs none of this:
           // its script sets `FORCE_HYPERLINK` itself (see [TmuxSession]).
           'LC_SSHBOX_HYPERLINKS': '1',
-          if (value != null) ...{
-            'LC_SSHBOX_KEY': value,
-            'LC_SSHBOX_HOST_ID': host.id,
-          },
           if (_onNotify != null) ...await _openNotifyPort(connection),
         };
       }
@@ -870,11 +874,6 @@ class LiveSession extends ChangeNotifier {
       _syncForwarding();
       unawaited(_fetchHostname());
       unawaited(_saveOs(secrets));
-      if (host.installOpenCommand &&
-          !isLocalHostId(host.id) &&
-          session is CommandCapable) {
-        unawaited(_installOpenCommand(session));
-      }
       if (!isLocalHostId(host.id) && session is CommandCapable) {
         unawaited(_measureClock(session as CommandCapable));
       }
@@ -890,6 +889,7 @@ class LiveSession extends ChangeNotifier {
         _connecting = false;
         _notify();
       }
+      _flushOpenProblems();
     }
   }
 
@@ -1248,19 +1248,47 @@ class LiveSession extends ChangeNotifier {
     }
   }
 
+  /// What went wrong with the install while the connect was still under way.
+  /// A toast shown then lands under the connect sheet and is gone before it
+  /// closes, so it is held and said when the connect ends, whether it
+  /// worked or not.
+  final _heldOpenProblems = <String>[];
+
+  void _sayOpenProblem(String message) {
+    if (_connecting) {
+      _heldOpenProblems.add(message);
+    } else {
+      onOpenProblem?.call(message);
+    }
+  }
+
+  void _flushOpenProblems() {
+    if (_heldOpenProblems.isEmpty) return;
+    final held = List<String>.of(_heldOpenProblems);
+    _heldOpenProblems.clear();
+    if (_disposed) return;
+    for (final message in held) {
+      onOpenProblem?.call(message);
+    }
+  }
+
   /// How long the host has to answer the install.
   @visibleForTesting
   static Duration openInstallTimeout = const Duration(seconds: 10);
 
-  /// Puts `jeansh` and this connect's secret on the host, when its switch is
-  /// on: see [openCommandInstallScript]. The log says what the host answered
-  /// and nothing else; whatever is not an install is said to the user, since
-  /// `jeansh <file>` would then do nothing and nothing else would say why.
+  /// Puts this host's push [key] and, when its switch is on, `jeansh` and
+  /// this connect's secret on the host, in one exec: see
+  /// [openCommandInstallScript]. The log says what the host answered and
+  /// nothing else; whatever is not an install is said to the user, since
+  /// `jeansh` and a push from the host would then do nothing and nothing
+  /// else would say why. Never longer than [openInstallTimeout], and the
+  /// shell opens whatever comes of it.
   ///
-  /// The secret goes to the script on its standard input, never on its
-  /// command line, which any local user can read.
-  Future<void> _installOpenCommand(Object session) async {
-    final secret = openRequests.ring.issue();
+  /// Both go to the script on its standard input, never on its command line,
+  /// which any local user can read.
+  Future<void> _installOpenCommand(Object session, {String? key}) async {
+    final open = host.installOpenCommand;
+    final secret = open ? openRequests.ring.issue() : null;
     var timedOut = false;
     final output = StringBuffer();
     CommandChannel? channel;
@@ -1273,15 +1301,15 @@ class LiveSession extends ChangeNotifier {
 
     try {
       if (session is! ChannelCapable) throw StateError('no channel');
-      channel = await session.open(
-        openCommandInstallScript(),
-      );
+      channel = await session.open(openCommandInstallScript());
       subscription = channel.output.listen(
         (bytes) => output.write(utf8.decode(bytes, allowMalformed: true)),
         onDone: finish,
         onError: finish,
       );
-      channel.write(Uint8List.fromList(utf8.encode('$secret\n')));
+      channel.write(
+        Uint8List.fromList(utf8.encode('${secret ?? '-'}\n${key ?? '-'}\n')),
+      );
       await done.future.timeout(openInstallTimeout);
     } on TimeoutException {
       timedOut = true;
@@ -1297,30 +1325,38 @@ class LiveSession extends ChangeNotifier {
         .where((line) => line.trim().isNotEmpty)
         .toList();
     final answer = lines.isEmpty ? '' : lines.last.trim();
-    const known = {openInstalled, openCurrent, openLeftAlone, openSecretLink};
+    const known = {
+      openInstalled,
+      openCurrent,
+      openLeftAlone,
+      openSecretLink,
+      openKeyed,
+    };
     appLog.add(
       'connect: session $id jeansh command '
       '${known.contains(answer) ? answer : timedOut ? 'timed out' : 'failed'}',
     );
     if (_disposed) return;
+    final what = open && key != null
+        ? 'the jeansh command and the push key'
+        : open
+        ? 'the jeansh command'
+        : 'the push key';
     final message = switch (answer) {
-      openInstalled || openCurrent => null,
+      openInstalled || openCurrent || openKeyed => null,
       openLeftAlone =>
         "The jeansh command was not put on this host: ~/.local/bin/jeansh is "
             "not the app's own, so it was left alone. jeansh <file> there "
             "will not open files in Jeansh.",
       openSecretLink =>
-        'The jeansh command was not set up on this host: ~/.config/jeansh is '
-            'a link, so the key was not written there. jeansh <file> will '
-            'not open files in Jeansh.',
+        'Jeansh did not set up $what on this host: ~/.config/jeansh is a '
+            'link, so nothing was written there.',
       _ when timedOut =>
-        'The host did not answer in time when Jeansh set up the jeansh '
-            'command, so jeansh <file> may not open files here.',
-      _ =>
-        'Setting up the jeansh command on this host failed, so jeansh '
-            '<file> will not open files in Jeansh here.',
+        'The host did not answer in time when Jeansh set up $what, so it '
+            'may not be there.',
+      _ => 'Setting up $what on this host failed, so it is not there.',
     };
-    if (message != null) onOpenProblem?.call(message);
+    if (message != null) _sayOpenProblem(message);
   }
 
   /// How far the host's clock is from ours, from its own `date +%s` over the
