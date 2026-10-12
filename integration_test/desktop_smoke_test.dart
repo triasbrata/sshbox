@@ -36,6 +36,8 @@ import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/session/session_manager.dart' show LiveSession;
+import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/key_bar.dart'
     show KeyBarController, TerminalKeyBar;
 import 'package:sshbox/src/ui/terminal_page.dart' show TerminalPage;
@@ -1356,6 +1358,118 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// A host whose connect waits on [gate], then comes up or refuses, and keeps
+/// what the app wrote to it: a stand-in for a shell that is slow to start.
+class _EarlyHost implements SessionTransport, TerminalSession {
+  _EarlyHost(this.gate, {this.refuse = false});
+
+  final Completer<void> gate;
+  final bool refuse;
+  final sent = <String>[];
+
+  @override
+  Future<TerminalSession> connect({
+    required HostProfile host,
+    required SecretStore secrets,
+    required int columns,
+    required int rows,
+    bool shell = true,
+    Map<String, String> environment = const {},
+    Future<Map<String, String>> Function(ForwardCapable host)? beforeShell,
+  }) async {
+    await gate.future;
+    if (refuse) throw const SshSessionException('Connection refused.');
+    status.value = SessionStatus.connected;
+    return this;
+  }
+
+  @override
+  final ValueNotifier<SessionStatus> status = ValueNotifier(
+    SessionStatus.connecting,
+  );
+
+  @override
+  Stream<String> get output => const Stream.empty();
+
+  @override
+  String? get failure => null;
+
+  @override
+  void send(String data) => sent.add(data);
+
+  @override
+  void resize(int columns, int rows, int pixelWidth, int pixelHeight) {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+/// Duplicates the shown tab from its chip's right-click menu, and, the moment
+/// the new tab is on the strip and before anything is waited for, types into
+/// it: a line, Enter, a pasted line, Enter. Each line appends its text to
+/// [out], so what reached the shell, in what order and how often, is read
+/// off the file. Returns the new tab's terminal.
+Future<TerminalView> _duplicateAndTypeAtOnce(
+  WidgetTester tester,
+  File out,
+  String early,
+  String pasted,
+) async {
+  final tabs = find.byWidgetPredicate(
+    (w) =>
+        w is Tooltip &&
+        ((w.message ?? '').startsWith('Close ') || w.message == 'Reconnect'),
+  );
+  final before = tabs.evaluate().length;
+  final first = find
+      .ancestor(of: tabs.first, matching: find.byType(InkWell))
+      .first;
+  await tester.tapAt(
+    tester.getCenter(first),
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryMouseButton,
+  );
+  await _pick(tester, 'Duplicate session');
+  TerminalView? typed;
+  await _until(tester, () {
+    if (tabs.evaluate().length != before + 1) return false;
+    final views = find.byType(TerminalView).evaluate();
+    if (views.isEmpty) return false;
+    final view = views.first.widget as TerminalView;
+    view.terminal.textInput('echo $early >> ${out.path}');
+    view.terminal.keyInput(TerminalKey.enter);
+    view.terminal.paste('echo $pasted >> ${out.path}');
+    view.terminal.keyInput(TerminalKey.enter);
+    typed = view;
+    return true;
+  }, 'the duplicated tab, typed into the moment it exists');
+  return typed!;
+}
+
+/// Reads [out] until it holds [lines] lines, then waits a moment and reads it
+/// again: that it holds exactly these, once each, in this order.
+Future<void> _expectLines(
+  WidgetTester tester,
+  File out,
+  List<String> lines,
+) async {
+  List<String> read() => out.existsSync()
+      ? out.readAsLinesSync().where((l) => l.isNotEmpty).toList()
+      : <String>[];
+  await _until(
+    tester,
+    () => read().length >= lines.length,
+    'the shell to have run what was typed (it has run ${read()})',
+    timeout: const Duration(seconds: 30),
+  );
+  await tester.pump(const Duration(seconds: 2));
+  expect(
+    read(),
+    lines,
+    reason: 'what reached the shell, in order and once each',
+  );
+}
+
 /// Ends this run's sshbox- sessions on its private tmux server: a test that
 /// failed before closing its tab left one, which the next tmux test, that
 /// begins by expecting none, then failed on.
@@ -2564,6 +2678,132 @@ touch '${done.path}'
     },
   );
 
+  // #276: keys typed before a tab's shell is connected are held and sent, not
+  // dropped. A Local shell is duplicated and the new tab typed into the moment
+  // it is on the strip: a typed line and a pasted one, both of which must
+  // reach the shell, in order, once each. The race is real on a Mac, whose
+  // login shell is slow to start; Linux may be quick enough not to show it.
+  _test(
+    'what is typed into a tab the moment it opens reaches its shell, in '
+    'order and once',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      await _launch(tester);
+      await _localShell(tester);
+      final out = File('${_scratch().path}/out');
+      final r = DateTime.now().millisecondsSinceEpoch;
+      await _duplicateAndTypeAtOnce(tester, out, 'early-$r', 'pasted-$r');
+      await _expectLines(tester, out, ['early-$r', 'pasted-$r']);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #276, the same in a Local tmux tab: attached is not yet knowing the
+  // panes, and what arrives between is held for the focused pane.
+  _test(
+    'what is typed into a tmux tab the moment it opens lands in its pane once',
+    skip: Platform.isWindows
+        ? _powershell
+        : Platform.isMacOS && Platform.environment['CI'] != 'true'
+        ? "off CI a Mac's tmux server is its user's own"
+        : null,
+    (tester) async {
+      addTearDown(_killSshboxTmux);
+      await _launch(tester);
+      await _localShell(tester, tmux: true);
+      final out = File('${_scratch().path}/out');
+      final r = DateTime.now().millisecondsSinceEpoch;
+      await _duplicateAndTypeAtOnce(tester, out, 'early-$r', 'pasted-$r');
+      await _expectLines(tester, out, ['early-$r', 'pasted-$r']);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #276, the other way: a shell that never starts. What was typed while it
+  // connected is said not to have been sent, once, and a later successful
+  // connect types none of it. A real TerminalPage over a session whose
+  // transport is a stand-in that refuses, since a real tab of an SSH host
+  // does not exist until it is connected.
+  _test(
+    'what is typed while a shell fails to start is said lost, and never '
+    'typed into a later connect',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      final secrets = KeystoreSecretStore();
+      final gate = Completer<void>();
+      final failing = _EarlyHost(gate, refuse: true);
+      final working = _EarlyHost(Completer<void>()..complete());
+      var next = failing;
+      final session = LiveSession(
+        host: const HostProfile(
+          id: 'e2e-early-input',
+          label: 'early',
+          host: '127.0.0.1',
+          username: 'e2e',
+        ),
+        transport: (_, _) => next,
+      );
+      addTearDown(session.dispose);
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      unawaited(
+        navigator.push(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, _, _) => TerminalPage(
+              session: session,
+              secrets: secrets,
+              onOpenFile: (path, {line}) {},
+              onOpenWeb: (_) {},
+              onOpenChat: () {},
+              onOpenGit: () {},
+              onOpenDiff: (_) {},
+              onSaveFileRoot: (_) async {},
+            ),
+          ),
+        ),
+      );
+      await _until(
+        tester,
+        () => find.byType(TerminalPage).evaluate().isNotEmpty,
+        'the terminal page',
+      );
+      final connecting = session.connect(secrets: secrets);
+      await tester.pump(const Duration(milliseconds: 300));
+      final r = DateTime.now().millisecondsSinceEpoch;
+      session.terminal.textInput('lost-$r');
+      session.terminal.keyInput(TerminalKey.enter);
+      expect(failing.sent, isEmpty, reason: 'written before there was a shell');
+      gate.complete();
+      await connecting;
+      expect(session.isConnected, isFalse);
+
+      // The toast is up about a second: watched every frame.
+      var toasted = false;
+      for (var i = 0; i < 100 && !toasted; i++) {
+        await tester.pump(const Duration(milliseconds: 30));
+        toasted = find
+            .textContaining('What you typed was not sent')
+            .evaluate()
+            .isNotEmpty;
+      }
+      expect(toasted, isTrue, reason: 'no toast said the typing was lost');
+      expect(failing.sent, isEmpty);
+
+      // A later connect that works types none of it; typing now goes in.
+      next = working;
+      await session.connect(secrets: secrets);
+      expect(session.isConnected, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+      expect(working.sent, isEmpty, reason: 'the old typing was replayed');
+      session.terminal.textInput('after-$r');
+      expect(working.sent.join(), 'after-$r');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
   // #274, 1: a picture pasted into a tmux tab after a reconnect. The tab's
   // terminal is rebuilt from a capture, which holds no modes, so its own
   // bracketed-paste flag is false however the program in the pane is set; the

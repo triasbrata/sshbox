@@ -699,8 +699,73 @@ class LiveSession extends ChangeNotifier {
 
     _terminal.onOutput = (data) {
       final transformed = outputTransform?.call(data) ?? data;
+      if (_holdInput(transformed)) return;
       _session?.send(transformed);
     };
+  }
+
+  /// The most input held while a shell is still being connected: 64 KB.
+  static const heldInputLimit = 64 * 1024;
+
+  /// What was typed, pasted or tapped before the channel was ready, in order,
+  /// for [_releaseInput] to write once it is.
+  final _held = <String>[];
+
+  /// True from the start of a connect until its shell is up or it is over.
+  bool _holdingInput = false;
+  int _heldSize = 0;
+  bool _heldOverflow = false;
+
+  String? _inputProblem;
+
+  /// Says, once, that input never reached the shell (or only part of it did),
+  /// for the page to show: input that vanishes must not look as if it went.
+  String? takeInputProblem() {
+    final problem = _inputProblem;
+    _inputProblem = null;
+    return problem;
+  }
+
+  /// Holds [data] and returns true while a connect is on its way and nothing
+  /// can take it yet. Past [heldInputLimit] the rest is dropped, and said.
+  bool _holdInput(String data) {
+    if (!_holdingInput) return false;
+    if (_heldSize + data.length > heldInputLimit) {
+      _heldOverflow = true;
+    } else {
+      _held.add(data);
+      _heldSize += data.length;
+    }
+    return true;
+  }
+
+  /// The shell is up: what was held goes in, in order.
+  void _releaseInput() {
+    _holdingInput = false;
+    final held = List.of(_held);
+    final overflow = _heldOverflow;
+    _held.clear();
+    _heldSize = 0;
+    _heldOverflow = false;
+    for (final data in held) {
+      sendRaw(data);
+    }
+    if (overflow) {
+      _inputProblem =
+          'Too much was typed before the shell was ready: '
+          'part of it was not sent.';
+    }
+  }
+
+  /// The connect failed or was given up on: what was held is dropped, never
+  /// typed into a later connection, and the user is told.
+  void _dropInput() {
+    _holdingInput = false;
+    final any = _held.isNotEmpty || _heldOverflow;
+    _held.clear();
+    _heldSize = 0;
+    _heldOverflow = false;
+    if (any) _inputProblem = 'What you typed was not sent: the shell did not start.';
   }
 
   /// Bumped by every connect and by [abandon], so a connect that comes
@@ -729,6 +794,7 @@ class LiveSession extends ChangeNotifier {
     final attempt = ++_attempt;
     bool current() => attempt == _attempt && !_disposed;
     _connecting = true;
+    _holdingInput = true;
     appLog.add(
       'connect: session $id start'
       '${isLocalHostId(host.id) ? ' local' : ' ssh'}${host.useTmux ? ' tmux' : ''}',
@@ -881,6 +947,7 @@ class LiveSession extends ChangeNotifier {
       _outputSubscription = session.output.listen(_terminal.write);
       session.status.addListener(_onStatusChanged);
       _session = session;
+      _releaseInput();
       // A page laid out while this waited — at a sign-in, beside its web
       // tab — had no shell yet to tell its size to.
       if (_size != opened) session.resize(_size.$1, _size.$2, 0, 0);
@@ -900,6 +967,9 @@ class LiveSession extends ChangeNotifier {
       appLog.warn('connect: session $id failed ${error.runtimeType}');
       if (current()) _error = error.toString();
     } finally {
+      // Still holding means no shell came of it: nothing was written, and
+      // nothing will be, to this or to a later connection.
+      if (current() && _holdingInput) _dropInput();
       if (current()) {
         _connecting = false;
         _notify();
@@ -1086,6 +1156,7 @@ class LiveSession extends ChangeNotifier {
   /// Bypasses [outputTransform] — key bar entries are already complete
   /// escape sequences. In tmux mode, to the focused pane.
   void sendRaw(String data) {
+    if (_holdInput(data)) return;
     final tmux = _tmux;
     if (tmux != null) {
       tmux.send(data);
@@ -1562,6 +1633,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     if (!_connecting) return;
     _attempt++;
     _connecting = false;
+    _dropInput();
     _error = 'Connection cancelled.';
     _notify();
   }
