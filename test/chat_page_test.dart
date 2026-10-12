@@ -158,6 +158,9 @@ class _Shell
   /// What was typed into each terminal opened on the host.
   final typed = <List<String>>[];
 
+  /// What a terminal opened on the host draws first.
+  String attachScreen = ' ❯ ';
+
   /// Every file put on the host, by name; the first [failUploads] of them
   /// fail, as a disk that is full does.
   final uploaded = <String>[];
@@ -197,8 +200,9 @@ class _Shell
     final keys = <String>[];
     typed.add(keys);
     final screen = StreamController<Uint8List>();
-    // `claude attach` drawing its input line.
-    scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))));
+    // `claude attach` drawing its input line, or what a test says it shows.
+    final draws = attachScreen;
+    scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(draws))));
     return (
       output: screen.stream,
       write: (Uint8List data) {
@@ -1120,6 +1124,92 @@ void main() {
     expect(find.text('Blue'), findsOneWidget);
   });
 
+  testWidgets('the question card\'s buttons and options are each one button '
+      'in the accessibility tree, named as they read, and work from there, '
+      'as a screen reader and an e2e driver find them', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final shell = _Shell()
+      ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+    );
+    await tester.pump();
+    await _continue(tester, 'Zsh config fix');
+    const input = {
+      'questions': [
+        {
+          'question': 'Which colour?',
+          'header': 'Colour',
+          'multiSelect': false,
+          'options': [
+            {'label': 'Red', 'description': 'A warm colour.'},
+            {'label': 'Blue', 'description': 'A cool colour.'},
+          ],
+        },
+      ],
+    };
+    shell.event({
+      'type': 'control_request',
+      'request_id': 'req-1',
+      'request': {
+        'subtype': 'can_use_tool',
+        'tool_name': 'AskUserQuestion',
+        'input': input,
+        'tool_use_id': 'toolu_ask',
+        'requires_user_interaction': true,
+      },
+    });
+    await tester.pump();
+    await tester.pump();
+
+    // Each by the text it shows, once in the whole tree: a button whose
+    // accessible text is that and nothing more — Android reads a node's
+    // value, label and hint as one string, so a hint would make "Red" read
+    // "Red, A warm colour." — and right under the card, with no unnamed
+    // node between them for a driver to land on instead.
+    void named(String name, {required bool tappable}) {
+      final node = find.semantics.byLabel(name);
+      expect(node, findsOne, reason: name);
+      final element = node.evaluate().single;
+      final data = element.getSemanticsData();
+      expect(data.flagsCollection.isButton, isTrue, reason: name);
+      expect(data.hint, isEmpty, reason: name);
+      expect(data.value, isEmpty, reason: name);
+      expect(data.hasAction(ui.SemanticsAction.tap), tappable, reason: name);
+      expect(
+        element.parent?.getSemanticsData().label,
+        startsWith('Claude asks a question'),
+        reason: name,
+      );
+    }
+
+    for (final name in ['Red', 'Blue', 'Dismiss']) {
+      named(name, tappable: true);
+    }
+    // Not until something is chosen.
+    named('Send answers', tappable: false);
+    // What an option means is still read, as words of its own.
+    expect(find.semantics.byLabel('A cool colour.'), findsOne);
+
+    tester.semantics.tap(find.semantics.byLabel('Blue'));
+    await tester.pump();
+    named('Send answers', tappable: true);
+    tester.semantics.tap(find.semantics.byLabel('Send answers'));
+    await tester.pump();
+    final reply = shell.written
+        .map((line) => jsonDecode(line.trim()) as Map)
+        .singleWhere((m) => m['type'] == 'control_response');
+    final response = (reply['response'] as Map)['response'] as Map;
+    expect(response['behavior'], 'allow');
+    expect((response['updatedInput'] as Map)['answers'], {
+      'Which colour?': 'Blue',
+    });
+    semantics.dispose();
+  });
+
   testWidgets('a ⋮ mode change while a question is open: its buttons go, '
       'nothing is written to either Claude, and a message is not sent '
       'without a word', (tester) async {
@@ -1496,8 +1586,9 @@ void main() {
     });
   });
 
-  testWidgets('a question in a session being watched is shown with where to '
-      'answer it, and nothing is sent', (tester) async {
+  testWidgets('a question in a session being watched is answered from the '
+      'card, typed into its dialog; a session no longer asking is said out '
+      'loud and gets no keys', (tester) async {
     const input = {
       'questions': [
         {
@@ -1559,10 +1650,69 @@ void main() {
 
     expect(find.text('Deploy now?'), findsOneWidget);
     expect(find.text('Ship it.'), findsOneWidget);
+    // Answerable here, and with nothing to dismiss it by at its dialog.
+    expect(find.bySemanticsLabel('Dismiss'), findsNothing);
+    await tester.tap(find.bySemanticsLabel('No'));
+    await tester.pump();
+
+    // The host's side answers in real time, and the pauses between keys are
+    // the test's own clock: both go on, a round of each [rounds] times, well
+    // inside a toast's 5 s.
+    Future<void> wait(int rounds) async {
+      for (var turn = 0; turn < rounds; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+    }
+
+    // The session has moved on to a permission prompt: on the card and in a
+    // toast, nothing opened or typed, never taken for answered.
+    final asking = shell.listing!;
+    shell.listing = asking.replaceAll('input needed', 'permission prompt');
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await wait(4);
     expect(
-      find.textContaining('Answer it at claude attach 81badf4a'),
-      findsOneWidget,
+      find.textContaining('Not answered: “the deploy” is not waiting for an '
+          'answer but for permission prompt'),
+      findsNWidgets(2),
     );
+    expect(shell.typed, isEmpty);
+    expect(find.text('→ '), findsNothing);
+    await tester.pump(const Duration(seconds: 6));
+
+    // Asking again, its dialog on screen: the keys the dialog takes for No,
+    // and answered once the session's transcript says so.
+    shell
+      ..listing = asking
+      ..attachScreen =
+          'Deploy now?\r\n❯ 1. Yes\r\n  2. No\r\n'
+          'Enter to select · ↑/↓ to navigate · Esc to cancel\r\n';
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await wait(12);
+    expect(shell.typed.single, ['\x1b[B', '\r']);
+    expect(find.bySemanticsLabel('Typing the answer…'), findsOneWidget);
+    shell.adds({
+      'type': 'user',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_result',
+            'tool_use_id': 'toolu_ask',
+            'content': 'The user answered.',
+          },
+        ],
+      },
+      'toolUseResult': {
+        'questions': input['questions'],
+        'answers': {'Deploy now?': 'No'},
+      },
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('→ '), findsOneWidget);
+    expect(find.textContaining('Not answered'), findsNothing);
     expect(find.bySemanticsLabel('Send answers'), findsNothing);
     expect(shell.written, isEmpty);
     expect(shell.paneTyped, isEmpty);
