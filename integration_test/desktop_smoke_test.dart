@@ -5492,13 +5492,17 @@ touch '${done.path}'
 
         Future<void> wheel() =>
             pointer(['click', '--repeat', '4', '--delay', '80', '4']);
+        // The scrollback's own Scrollable is the innermost under the view:
+        // with a mouse mode on, xterm2 wraps it in an InfiniteScrollView
+        // whose Scrollable, outside it, turns the wheel into reports and
+        // moves with every wheel.
         ScrollableState scroll() => tester.state<ScrollableState>(
           find
               .descendant(
                 of: find.byType(TerminalView).first,
                 matching: find.byType(Scrollable),
               )
-              .first,
+              .last,
         );
         final wheelEvent = RegExp(r'\x1b\[<6[45];\d+;\d+M');
         String heardSince(int from) => got.readAsStringSync().substring(from);
@@ -5539,11 +5543,8 @@ touch '${done.path}'
               'the stuck mode to send the wheel to the program '
               '(it was sent ${heardSince(heard)})',
             );
-            // The scroll position is not read here: with a mouse mode on,
-            // xterm2 wraps the view in an InfiniteScrollView whose own
-            // Scrollable turns the wheel into reports, and it is the first
-            // Scrollable under the view, so it moves while the program is
-            // told. It is not the scrollback.
+            // Reported, not scrolled: the scrollback did not move.
+            expect(scroll().position.pixels, from, reason: 'it scrolled');
           }
         }
 
