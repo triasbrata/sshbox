@@ -8363,6 +8363,48 @@ void main() {
       return (chat, host, ask);
     }
 
+    test('a question still pending shows again, answerable, when the session '
+        'is opened again: read from history, and after it arrived live; an '
+        'answered one comes back with its answer', () async {
+      final (chat, host, ask) = await watch();
+      expect(chat.canAnswerAtTerminal(ask), isTrue);
+      await chat.newChat();
+      expect(chat.entries.whereType<ChatQuestion>(), isEmpty);
+      await chat.continueFrom(_live);
+      var again = chat.entries.whereType<ChatQuestion>().single.ask;
+      expect(again.open, isTrue);
+      expect(chat.canAnswerAtTerminal(again), isTrue);
+
+      // It came while watched, through the follow; then opened again.
+      final live = _LiveHost(
+        '0\n',
+        state: 'blocked',
+        waitingFor: 'input needed',
+      );
+      final watcher = ClaudeChat(
+        open: live.open,
+        openTerminal: live.openTerminal,
+      );
+      addTearDown(watcher.dispose);
+      await watcher.continueFrom(_live);
+      live.adds(call);
+      await _settle();
+      expect(watcher.entries.whereType<ChatQuestion>(), hasLength(1));
+      final text = jsonEncode(call);
+      live.history = '${utf8.encode('$text\n').length}\n$text\n';
+      await watcher.continueFrom(_live);
+      again = watcher.entries.whereType<ChatQuestion>().single.ask;
+      expect(watcher.canAnswerAtTerminal(again), isTrue);
+
+      // Answered meanwhile: read-only, with the answer.
+      final answered = '$text\n${jsonEncode(recorded(picked))}';
+      live.history = '${utf8.encode('$answered\n').length}\n$answered\n';
+      await watcher.continueFrom(_live);
+      again = watcher.entries.whereType<ChatQuestion>().single.ask;
+      expect(again.answers, picked);
+      expect(watcher.canAnswerAtTerminal(again), isFalse);
+    });
+
     test('an open question of a watched session can be answered from the '
         'chat; one settled, or in a chat watching nothing, cannot', () async {
       final (chat, host, ask) = await watch();
