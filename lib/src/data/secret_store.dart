@@ -207,10 +207,10 @@ class KeystoreSecretStore implements SecretStore {
   /// the kept reads and the keys already said. The desktop e2e starts the app
   /// again in one process, which is the only place this is called.
   @visibleForTesting
-  static void forgetKept() {
-    _shared._kept.clear();
-    _shared._reading.clear();
-    _shared._said.clear();
+  void forgetKept() {
+    _kept.clear();
+    _reading.clear();
+    _said.clear();
   }
 
   /// What the keychain answered, null for no item, by key.
