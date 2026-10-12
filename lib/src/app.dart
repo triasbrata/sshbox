@@ -165,6 +165,17 @@ class _SshboxAppState extends State<SshboxApp> {
     }
   }
 
+  /// The comma key. Under Ctrl a desktop may name it other than `comma` (an
+  /// X11 keyval translated with the modifier held, a layout that does not
+  /// list it), so the key itself counts too — unless the layout has put a
+  /// letter or a digit there, as Dvorak puts W, which is that letter's.
+  static bool _isComma(KeyEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.comma) return true;
+    if (event.physicalKey != PhysicalKeyboardKey.comma) return false;
+    return !RegExp(r'^[A-Za-z0-9]$').hasMatch(key.keyLabel);
+  }
+
   /// Whether this ⌘, went down here, so its key-up is taken too.
   bool _settingsKeyDown = false;
 
@@ -178,9 +189,7 @@ class _SshboxAppState extends State<SshboxApp> {
   /// key reaches no widget, and not the menu either, which Flutter asks only
   /// with what it leaves unhandled — so Settings opens once.
   KeyEventResult _onSettingsKey(KeyEvent event) {
-    if (event.logicalKey != LogicalKeyboardKey.comma) {
-      return KeyEventResult.ignored;
-    }
+    if (!_isComma(event)) return KeyEventResult.ignored;
     if (event is KeyUpEvent) {
       if (!_settingsKeyDown) return KeyEventResult.ignored;
       _settingsKeyDown = false;

@@ -106,6 +106,7 @@ Future<void> _openTerminal(WidgetTester tester, _Shell shell) async {
 }
 
 void main() {
+  realKeyboard();
   setUp(
     () => SharedPreferences.setMockInitialValues({
       'sshbox.telemetry.notice': true,
@@ -271,4 +272,48 @@ void main() {
     },
     variant: desktops,
   );
+}
+
+/// The chord as a desktop can deliver it with Ctrl held: the comma key's
+/// physical key, but a logical key that is not `comma`.
+Future<void> _pressAs(WidgetTester tester, LogicalKeyboardKey logical) async {
+  final mac = defaultTargetPlatform == TargetPlatform.macOS;
+  final modifier = mac
+      ? LogicalKeyboardKey.metaLeft
+      : LogicalKeyboardKey.controlLeft;
+  await tester.sendKeyDownEvent(modifier);
+  await tester.sendKeyEvent(logical, physicalKey: PhysicalKeyboardKey.comma);
+  await tester.sendKeyUpEvent(modifier);
+  await _settle(tester);
+}
+
+void realKeyboard() {
+  final desktops = TargetPlatformVariant({
+    TargetPlatform.macOS,
+    TargetPlatform.linux,
+    TargetPlatform.windows,
+  });
+
+  group('the comma key by its physical key', () {
+    testWidgets('from a focused terminal, with a logical key that is not '
+        'comma, it still toggles and reaches no program', (tester) async {
+      final shell = _Shell();
+      await _start(tester, shell);
+      await _openTerminal(tester, shell);
+
+      await _pressAs(tester, LogicalKeyboardKey.period);
+      expect(_settings, findsOneWidget);
+      await _pressAs(tester, LogicalKeyboardKey.period);
+      expect(_settings, findsNothing);
+      expect(shell.sent.join(), isNot(contains(',')));
+    }, variant: desktops);
+
+    testWidgets('a layout with a letter on that key is not taken', (
+      tester,
+    ) async {
+      await _start(tester, _Shell());
+      await _pressAs(tester, LogicalKeyboardKey.keyW);
+      expect(_settings, findsNothing);
+    }, variant: desktops);
+  });
 }
