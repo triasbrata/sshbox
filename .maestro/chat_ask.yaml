@@ -61,13 +61,13 @@ env:
     element: "(?s)Blue.*"
 - tapOn: "(?s)Blue.*"
 - extendedWaitUntil:
-    visible: "Send answers"
+    visible: "(?s).*Send answers.*"
     timeout: 20000
-- tapOn: "Send answers"
+- tapOn: "(?s).*Send answers.*"
 - extendedWaitUntil:
     visible: "You chose Blue"
     timeout: 30000
-- assertNotVisible: "Send answers"
+- assertNotVisible: "(?s).*Send answers.*"
 - takeScreenshot: chat-ask-answered
 
 # Another question, dismissed: the card says so, and Claude is told.
@@ -78,8 +78,8 @@ env:
     visible: "Which size\\?"
     timeout: 30000
 - scrollUntilVisible:
-    element: "Dismiss"
-- tapOn: "Dismiss"
+    element: "(?s).*Dismiss.*"
+- tapOn: "(?s).*Dismiss.*"
 - extendedWaitUntil:
     visible: "You dismissed the question"
     timeout: 30000
