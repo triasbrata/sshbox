@@ -3992,13 +3992,21 @@ touch '${done.path}'
       await _settings(tester);
       await _xdo(['windowfocus', '--sync', await _window()]);
       await _xdo(['key', '--clearmodifiers', 'ctrl+comma']);
-      await tester.pump(const Duration(milliseconds: 800));
-      expect(
-        find.text('LOOK · TERMINAL · KEYBOARD · PRIVACY', skipOffstage: false),
-        findsNothing,
-        reason: 'Ctrl+, did not close Settings opened by its button',
+      // A pop takes several frames on a runner: polled, not read once.
+      await _until(
+        tester,
+        () =>
+            find
+                .text(
+                  'LOOK · TERMINAL · KEYBOARD · PRIVACY',
+                  skipOffstage: false,
+                )
+                .evaluate()
+                .isEmpty &&
+            _homeCard('Local shell').evaluate().isNotEmpty,
+        'Ctrl+, to close Settings opened by its button, back on Home',
+        timeout: const Duration(seconds: 8),
       );
-      expect(_homeCard('Local shell'), findsOneWidget, reason: 'not on Home');
     },
   );
 
@@ -4029,7 +4037,7 @@ touch '${done.path}'
       Future<void> keys(String chord) async {
         await _xdo(['windowfocus', '--sync', await _window()]);
         await _xdo(['key', '--clearmodifiers', chord]);
-        await tester.pump(const Duration(milliseconds: 800));
+        await tester.pump(const Duration(milliseconds: 200));
       }
 
       const title = 'LOOK · TERMINAL · KEYBOARD · PRIVACY';
@@ -4040,22 +4048,42 @@ touch '${done.path}'
       final terminal = find.byWidgetPredicate(
         (w) => w is TerminalView && identical(w.terminal, view.terminal),
       );
-      void settingsUp(String when) {
-        expect(header, findsOneWidget, reason: '$when: Settings is not up');
-        expect(
-          terminal,
-          findsNothing,
-          reason: '$when: the terminal still shows with Settings up',
+      const slow = Duration(seconds: 8);
+      // A push or a pop takes several frames on a runner, so each outcome
+      // is waited for, then asserted with its opposite.
+      Future<void> settingsUp(String when) async {
+        await _until(
+          tester,
+          () => header.evaluate().length == 1 && terminal.evaluate().isEmpty,
+          '$when: Settings up and the terminal covered',
+          timeout: slow,
         );
+        expect(header, findsOneWidget, reason: '$when: Settings is not up');
+        expect(terminal, findsNothing, reason: '$when: the terminal shows');
       }
 
-      void terminalBack(String when) {
-        expect(terminal, findsOneWidget, reason: '$when: no terminal');
-        expect(
-          anySettings,
-          findsNothing,
-          reason: '$when: Settings is still there',
+      Future<void> terminalBack(String when) async {
+        await _until(
+          tester,
+          () =>
+              terminal.evaluate().length == 1 && anySettings.evaluate().isEmpty,
+          '$when: the terminal back and Settings gone',
+          timeout: slow,
         );
+        expect(terminal, findsOneWidget, reason: '$when: no terminal');
+        expect(anySettings, findsNothing, reason: '$when: Settings is there');
+      }
+
+      // A key that must open nothing: Settings is watched for as long as an
+      // opening is waited for, and never appears.
+      Future<void> opensNothing(String chord, String what) async {
+        await keys(chord);
+        final end = DateTime.now().add(slow);
+        while (DateTime.now().isBefore(end)) {
+          expect(anySettings, findsNothing, reason: '$what opened Settings');
+          await tester.pump(const Duration(milliseconds: 100));
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
       }
 
       // Scrolled up a few lines; the line at the top of the view.
@@ -4083,9 +4111,9 @@ touch '${done.path}'
       // 1: Ctrl+, opens it, the shell hears nothing of it, and a second
       // press brings the terminal back as it was.
       await keys('ctrl+comma');
-      settingsUp('Ctrl+, from the terminal');
+      await settingsUp('Ctrl+, from the terminal');
       await keys('ctrl+comma');
-      terminalBack('the second Ctrl+,');
+      await terminalBack('the second Ctrl+,');
       expect(position().pixels, scrolled, reason: 'scrollback moved');
       expect(top(), topBefore, reason: 'another line is at the top');
       final shown = terminal.evaluate().first.widget as TerminalView;
@@ -4102,13 +4130,14 @@ touch '${done.path}'
       // No second Settings: one press more opens exactly one, and one more
       // closes it.
       await keys('ctrl+comma');
+      await settingsUp('a third press');
       expect(header, findsOneWidget, reason: 'not exactly one Settings');
       await keys('ctrl+comma');
-      terminalBack('after a third and fourth press');
+      await terminalBack('after a third and fourth press');
 
       // 2: from a sub-page, one press goes back to the terminal.
       await keys('ctrl+comma');
-      settingsUp('before the sub-page');
+      await settingsUp('before the sub-page');
       final row = _label('Key bar');
       await tester.scrollUntilVisible(
         row,
@@ -4125,7 +4154,7 @@ touch '${done.path}'
       );
       await tester.pump(const Duration(milliseconds: 600));
       await keys('ctrl+comma');
-      terminalBack('Ctrl+, on the Key bar page');
+      await terminalBack('Ctrl+, on the Key bar page');
       expect(
         _label('Add key'),
         findsNothing,
@@ -4135,7 +4164,7 @@ touch '${done.path}'
       // 3: with a text field focused, in a dialog over Settings, it closes
       // both and the comma is typed nowhere.
       await keys('ctrl+comma');
-      settingsUp('before the font picker');
+      await settingsUp('before the font picker');
       final fonts = find.textContaining('Installed on this computer');
       await tester.scrollUntilVisible(
         fonts,
@@ -4175,24 +4204,27 @@ touch '${done.path}'
         () => typedComma = typedComma || controller.text.contains(','),
       );
       await keys('ctrl+comma');
-      terminalBack('Ctrl+, with the font filter focused');
-      expect(picker, findsNothing, reason: 'the picker stayed');
+      await terminalBack('Ctrl+, with the font filter focused');
+      await _until(
+        tester,
+        () => picker.evaluate().isEmpty,
+        'the font picker to close with Settings',
+        timeout: slow,
+      );
       expect(typedComma, isFalse, reason: 'the chord typed a comma');
 
       // 4: the negatives, on the terminal: a bare comma reaches the shell
       // and opens nothing; Super+comma opens nothing.
       await tester.tap(terminal);
       await tester.pump(const Duration(milliseconds: 300));
-      await keys('comma');
-      expect(anySettings, findsNothing, reason: 'a bare comma opened Settings');
+      await opensNothing('comma', 'a bare comma');
       final live = terminal.evaluate().first.widget as TerminalView;
       await _until(
         tester,
         () => _text(live).any((l) => l.trim() == ','),
         'the comma to reach the shell',
       );
-      await keys('super+comma');
-      expect(anySettings, findsNothing, reason: 'Super+comma opened Settings');
+      await opensNothing('super+comma', 'Super+comma');
       expect(terminal, findsOneWidget, reason: 'the terminal went');
       await keys('ctrl+c');
       await _closeTabs(tester);
