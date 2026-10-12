@@ -570,17 +570,32 @@ jobs:
           }
 
       # #286: an unsigned build and a secret a signed one moved away. A
-      # relaunch is a new run, so one run a phase, on the same data.
+      # relaunch is a new run, so one run a phase, on the same data. Each run
+      # is a build of its own, so a different ad-hoc binary from the one that
+      # saved an item: the runner's login keychain is opened to any program
+      # between phases (its password is empty), as a user would click Always
+      # Allow, or the read waits for a prompt nobody sees. A change to the
+      # runner, not to the app.
       - name: Moved secrets on an unsigned build
-        timeout-minutes: 15
+        timeout-minutes: 20
         if: always()
         run: |
+          kc="$HOME/Library/Keychains/login.keychain-db"
           rc=0
           for phase in add relaunch rollback rollback-relaunch none; do
             E2E_TESTS=integration_test/developer_id_test.dart \
               JEANSH_E2E_DEVID=$phase tools/e2e_desktop.sh macos \
               || { rc=1; break; }
+            security show-keychain-info "$kc" || true
+            security set-key-partition-list -S apple-tool:,apple:,unsigned: \
+              -s -k "" "$kc" >/dev/null 2>&1 \
+              && echo "keychain opened to any program after $phase" \
+              || echo "set-key-partition-list failed after $phase"
           done
+          if [ "$rc" -ne 0 ]; then
+            echo "securityd, the last 2 minutes:"
+            log show --last 2m --predicate 'process == "securityd" OR subsystem == "com.apple.securityd"' 2>/dev/null | tail -40 || true
+          fi
           exit $rc
 
       # The native crash and hang scrub (apple/NativeCrashes.swift) against a
