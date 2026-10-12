@@ -215,8 +215,11 @@ jobs:
   # the called jobs ask for.
   release:
     needs: [next, promote]
+    # pull-requests: read for release.yml's notes, written from the merged
+    # pull requests' descriptions.
     permissions:
       contents: write
+      pull-requests: read
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.next.outputs.tag }}
