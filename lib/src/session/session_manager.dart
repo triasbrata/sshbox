@@ -339,6 +339,21 @@ class LiveSession extends ChangeNotifier {
     return problem;
   }
 
+  /// A paste tmux refused, for the page to say once: a paste that did not
+  /// arrive must never look as if it did.
+  String? _pasteProblem;
+
+  String? takePasteProblem() {
+    final problem = _pasteProblem;
+    _pasteProblem = null;
+    return problem;
+  }
+
+  void _pasteFailed(String message) {
+    _pasteProblem = message;
+    _notify();
+  }
+
   /// Set by the page while it is on screen, so armed key-bar modifiers can be
   /// folded into outgoing keystrokes. Lives here as a hook rather than a
   /// dependency so this layer never has to import UI code.
@@ -939,6 +954,7 @@ class LiveSession extends ChangeNotifier {
         transform: (data) => outputTransform?.call(data) ?? data,
         onChanged: _notify,
         onEnded: _onTmuxEnded,
+        onPasteFailed: _pasteFailed,
         size: _size,
         // A session the app did not make is left as its owner set it up:
         // see [TmuxSession.record]. By its name rather than by how the tab
