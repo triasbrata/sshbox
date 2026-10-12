@@ -243,7 +243,6 @@ class KeystoreSecretStore implements SecretStore {
     if (legacy != null) return _moveFrom(legacy, key);
     final moved = _moved;
     if (moved != null && await moved.contains(key)) {
-      _say(key, SecretNotice.movedAway);
     }
     return null;
   }
