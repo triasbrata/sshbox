@@ -140,11 +140,9 @@ class KeystoreSecretStore implements SecretStore {
   KeystoreSecretStore.over(
     this._storage, {
     bool? keepReads,
-    FlutterSecureStorage? legacy,
-    MovedSecrets? moved,
-  }) : _keepReads = keepReads ?? defaultTargetPlatform == TargetPlatform.macOS,
-       _legacy = legacy,
-       _moved = moved;
+    this._legacy,
+    this._moved,
+  }) : _keepReads = keepReads ?? defaultTargetPlatform == TargetPlatform.macOS;
 
   static final _shared = forPlatform(
     group: macosKeychainGroup,
