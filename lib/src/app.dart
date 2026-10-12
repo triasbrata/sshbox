@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'session/open_command.dart' show writeOpenSecret;
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
@@ -36,6 +37,26 @@ import 'ui/update_dialog.dart';
 import 'update/updater.dart';
 import 'telemetry/app_log.dart';
 
+/// What puts a local shell's secret for `jeansh` where its script reads it,
+/// or null where there is no such script: a Mac or Linux desktop alone. The
+/// arguments are for a test; the app passes none.
+@visibleForTesting
+void Function(String)? localOpenSecretWriter({
+  String? home,
+  bool? desktop,
+  bool? windows,
+}) {
+  home ??= Platform.environment['HOME'];
+  if (!(desktop ?? isDesktop) ||
+      (windows ?? Platform.isWindows) ||
+      home == null ||
+      home.isEmpty) {
+    return null;
+  }
+  final folder = home;
+  return (secret) => writeOpenSecret(folder, secret);
+}
+
 class SshboxApp extends StatefulWidget {
   const SshboxApp({super.key, @visibleForTesting this.transport});
 
@@ -62,7 +83,36 @@ class _SshboxAppState extends State<SshboxApp> {
     notifyKeys: _notifyKeys,
     onNotify: _notifications.showForHost,
     onOpenRefused: _openRefused,
+    onOpenDropped: _openDropped,
+    onOpenProblem: _openProblem,
+    writeLocalOpenSecret: localOpenSecretWriter(),
   );
+
+  /// Requests `jeansh` made that were right and could not be opened.
+  void _openDropped(int count, String reason) {
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    showToast(
+      context,
+      count == 1
+          ? '1 jeansh file was not opened: $reason.'
+          : '$count jeansh files were not opened: $reason.',
+      type: TuiToastType.warning,
+      duration: const Duration(seconds: 5),
+    );
+  }
+
+  /// `jeansh` could not be set up, or was left alone: said in words.
+  void _openProblem(String message) {
+    final context = _navigator.currentContext;
+    if (context == null) return;
+    showToast(
+      context,
+      message,
+      type: TuiToastType.warning,
+      duration: const Duration(seconds: 5),
+    );
+  }
 
   /// A `jeansh` request a terminal refused. Never says which check, nor that
   /// it was one: a program's output can cause this too.
@@ -107,6 +157,7 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_checkForUpdate());
     unawaited(_countThisInstall());
     unawaited(_sayIfFontMissing());
+    unawaited(_sayIfOpenCommandMissing());
     lastFault.addListener(_offerToReport);
     localTmux.addListener(_noTmux.clear);
     if (defaultTargetPlatform == TargetPlatform.macOS) {
@@ -189,6 +240,15 @@ class _SshboxAppState extends State<SshboxApp> {
     return KeyEventResult.handled;
   }
 
+  /// The `jeansh` command the Settings switch keeps on this computer, when
+  /// putting it back at start failed: said once the app is on screen.
+  Future<void> _sayIfOpenCommandMissing() async {
+    if (localOpenCommand.startupProblem == null) return;
+    await WidgetsBinding.instance.endOfFrame;
+    final message = localOpenCommand.startupProblem;
+    if (message != null) _openProblem(message);
+  }
+
   /// The font the saved choice named, when this computer no longer has it:
   /// said once the app is on screen — see [TerminalSettings.sayIfMissing].
   Future<void> _sayIfFontMissing() async {
@@ -241,7 +301,6 @@ class _SshboxAppState extends State<SshboxApp> {
       'Jeansh reports crashes\nIt also counts this install once a day. '
       'Neither report carries a hostname, login, path or command. You can '
       'turn both off in Settings.',
-      duration: const Duration(seconds: 8),
       action: (label: 'Settings', onPressed: _openSettings),
       // Low, clear of Home's header and title, which it lands on, and of
       // its Add.

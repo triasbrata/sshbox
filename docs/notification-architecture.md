@@ -53,7 +53,8 @@ flowchart LR
 | App, secret store `sshbox.notify.keys` | for each host id: the key id, the P-256 private key (PKCS#8 DER, base64) and the FCM token it is registered for | `NotifyKeys._save`, `lib/src/notifications/notify_key.dart` |
 | App, secret store `sshbox.notify.revoke` | the keys dropped with their host or by a reset whose revoke the relay has not confirmed: key id → PKCS#8 DER, base64. None goes to a host again | `NotifyKeys._save`, `_revokePending` |
 | App, memory only | FCM's current token; each connection's direct secret | `NotifyKeys._fcmToken`; `DirectNotify.secret`, `lib/src/notifications/direct_notify.dart` |
-| Server, the shell's environment | `LC_SSHBOX_KEY` = `<keyId>:<base64 PKCS#8>`, `LC_SSHBOX_HOST_ID`, `LC_SSHBOX_NOTIFY_URL`, `LC_SSHBOX_NOTIFY_SECRET` | `LiveSession.connect`, `lib/src/session/session_manager.dart` |
+| Server, the shell's environment | `LC_SSHBOX_NOTIFY_URL`, `LC_SSHBOX_NOTIFY_SECRET` | `LiveSession.connect`, `lib/src/session/session_manager.dart` |
+| Server, a file | `~/.config/jeansh/notify-key` = `<keyId>:<base64 PKCS#8>`, 0600, written on the install channel's stdin before the shell starts | `LiveSession._installOpenCommand` |
 | Server, during one relay send | the key as a PEM file, created under `umask 077` and deleted on exit | `relay: notify.sh` |
 | Relay, Worker secret `FCM_SERVICE_ACCOUNT` | the Firebase service account JSON with its RSA key; the access token it buys, cached until 5 minutes before it expires | `accessToken`, `relay: src/index.ts` |
 | Relay, Workers KV `KEYS` | `k:<keyId>` → `{publicKey, token, host, created}`; `n:<keyId>:<X-EXTERNAL-ID>` → `"1"` for 600 s, for every register, send and revoke let through | `register`, `unsigned`, `relay: src/index.ts` |
@@ -146,7 +147,7 @@ sequenceDiagram
     SSHD-->>App: failure
     App->>App: no direct variables, and nothing is said
   end
-  Note over App: The variables: LC_SSHBOX_KEY = keyId:base64 PKCS8 DER and<br/>LC_SSHBOX_HOST_ID = host.id when there is a key,<br/>LC_SSHBOX_NOTIFY_URL = http://127.0.0.1:P/v1/send and<br/>LC_SSHBOX_NOTIFY_SECRET when there is a port
+  Note over App: The variables: LC_SSHBOX_NOTIFY_URL = http://127.0.0.1:P/v1/send and<br/>LC_SSHBOX_NOTIFY_SECRET when there is a port
   alt plain shell
     App->>SSHD: session channel: env requests, pty-req, shell
   else tmux (LiveSession._attachTmux, Dartssh2Transport.open)
@@ -158,13 +159,13 @@ sequenceDiagram
   end
   SSHD->>Shell: start it, with the variables it accepted
   opt tmux
-    Shell->>Shell: find tmux by full path. If update-environment lacks LC_SSHBOX_KEY:<br/>set -ga update-environment LC_SSHBOX_KEY LC_SSHBOX_HOST_ID<br/>LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET
+    Shell->>Shell: find tmux by full path. If update-environment lacks FORCE_HYPERLINK:<br/>set -ga update-environment LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET
     Shell->>Shell: tmux -u -C new-session -A -s name. tmux copies the four into<br/>the session when it makes it and at every attach
   end
 ```
 
-A refused variable drops all four, the direct pair too. Such a server can
-still be given `LC_SSHBOX_KEY` by hand, from **Copy notification key** on the
+A refused variable drops both, the direct pair. The push key is a file, so it
+needs no `AcceptEnv`; **Copy notification key** on the
 host's edit page (`lib/src/ui/host_edit_page.dart`, `_copyNotifyKey`). When
 tmux turns out to be missing, the connection is closed and a plain-shell
 connect runs this diagram again.
@@ -219,12 +220,12 @@ sequenceDiagram
   participant FCM as FCM HTTP v1
   participant App as Jeansh app
 
-  Note over N: No direct variables, or the direct way failed.<br/>No LC_SSHBOX_KEY or no openssl: exit 1 with a hint.
+  Note over N: No direct variables, or the direct way failed.<br/>No ~/.config/jeansh/notify-key (or LC_SSHBOX_KEY, as older versions sent) or no openssl: exit 1 with a hint.
   N->>N: data = JSON {body, title}, escaped with awk, title only when given
-  N->>N: umask 077, mktemp: PEM of LC_SSHBOX_KEY after the colon,<br/>folded at 64, removed on exit by a trap
+  N->>N: umask 077, mktemp: PEM of the key file after the colon,<br/>folded at 64, removed on exit by a trap
   N->>N: stamp = date -u +%Y-%m-%dT%H:%M:%S+00:00<br/>id = openssl rand -hex 16<br/>hash = hex SHA-256 of data
   N->>N: sig = base64 of openssl dgst -sha256 -sign PEM<br/>over POST:/v1/send:hash:stamp:id
-  N->>Relay: POST /v1/send, body data, headers read from stdin:<br/>X-PARTNER-ID = LC_SSHBOX_KEY before the colon, X-TIMESTAMP = stamp,<br/>X-EXTERNAL-ID = id, X-SIGNATURE = sig, Content-Type: application/json
+  N->>Relay: POST /v1/send, body data, headers read from stdin:<br/>X-PARTNER-ID = the key before the colon, X-TIMESTAMP = stamp,<br/>X-EXTERNAL-ID = id, X-SIGNATURE = sig, Content-Type: application/json
   Note over Relay: verified() finds the key, then unsigned() checks the rest
   Relay->>KV: get k:keyId, only if X-PARTNER-ID is jnk_ and 32 base64url chars
   break no such key
