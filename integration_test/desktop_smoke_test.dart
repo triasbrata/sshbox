@@ -3010,6 +3010,7 @@ touch '${done.path}'
       // The key bar, with every key under test.
       final emitted = <String>[];
       final controller = KeyBarController();
+      final barKey = GlobalKey(debugLabel: '#274 key bar');
       final navigator = Navigator.of(
         tester.element(find.byType(TerminalView).first),
         rootNavigator: true,
@@ -3023,6 +3024,7 @@ touch '${done.path}'
               child: Align(
                 alignment: Alignment.bottomCenter,
                 child: TerminalKeyBar(
+                  key: barKey,
                   controller: controller,
                   terminal: Terminal(),
                   onEmit: emitted.add,
@@ -3033,18 +3035,35 @@ touch '${done.path}'
           ),
         ),
       );
-      final bar = find.byType(TerminalKeyBar);
-      await _until(
-        tester,
-        () => bar.evaluate().isNotEmpty,
-        'the key bar to show',
-      );
+      // This test's own bar, by key: any other TerminalKeyBar the app has
+      // up (a terminal's own, under this page) is not the one tapped.
+      final bar = find.byKey(barKey);
+      Finder keyOf(String label) =>
+          find.descendant(of: bar, matching: find.text(label));
+      // Every label of every key bar, said when one never shows.
+      String bars() =>
+          '${find.byType(TerminalKeyBar).evaluate().length} bars, ours '
+          '${bar.evaluate().length}: '
+          '${find.descendant(of: find.byType(TerminalKeyBar), matching: find.byType(Text)).evaluate().map((e) => (e.widget as Text).data ?? (e.widget as Text).textSpan?.toPlainText()).join(' | ')}';
+      // The route has to have finished arriving, and every key been built:
+      // a bar is a ListView, which builds the keys it can see.
+      for (final label in ['ESC', 'CTRL', '-', '/', '|', '~', ':', '*']) {
+        try {
+          await _until(tester, () async {
+            await tester.pump(const Duration(milliseconds: 100));
+            return keyOf(label).evaluate().length == 1;
+          }, 'the key bar to show $label');
+        } catch (_) {
+          debugPrint('Key bars at the failure: ${bars()}');
+          rethrow;
+        }
+      }
       await tester.pump(const Duration(milliseconds: 600));
       for (final key in ['ESC', 'CTRL', '-', '/', '|', '~', ':', '*']) {
-        await tester.tap(find.descendant(of: bar, matching: find.text(key)));
+        await tester.tap(keyOf(key));
         await tester.pump(const Duration(milliseconds: 100));
       }
-      await tester.tap(find.descendant(of: bar, matching: find.text('CTRL')));
+      await tester.tap(keyOf('CTRL'));
       await tester.pump(const Duration(milliseconds: 100));
       navigator.pop();
       await tester.pump(const Duration(seconds: 1));
@@ -4143,7 +4162,10 @@ touch '${done.path}'
       await sudo(['chmod', '755', bin]);
       final remoteName = 'e2e-drop-$pid.txt';
       addTearDown(() async {
-        await sudo(['rm', '-f', bin, '/tmp/$remoteName']);
+        // The upload is named with a clock prefix, so two files of one name
+        // cannot overwrite each other at /tmp.
+        await sudo(['sh', '-c', 'rm -f /tmp/*-$remoteName']);
+        await sudo(['rm', '-f', bin]);
         await sudo(['rm', '-rf', '/home/$user/.claude']);
       });
 
@@ -4200,17 +4222,19 @@ touch '${done.path}'
       await _drag(tester, file.path, dir);
       await _until(
         tester,
-        () => box() == '/tmp/$remoteName ',
+        () => RegExp('^/tmp/\\d+-${RegExp.escape(remoteName)} \$').hasMatch(box()),
         'the uploaded path and a space in the box',
         timeout: const Duration(seconds: 30),
       );
+      // Where it went, named with a clock prefix: that very path is read back.
+      final remotePath = box().trim();
       final mine = transfers.items
           .take(transfers.items.length - before)
           .toList();
       expect(mine, hasLength(1), reason: 'one transfer for the one file');
       expect(mine.single.name, remoteName);
       expect(mine.single.state, TransferState.done);
-      final read = await Process.run('sudo', ['cat', '/tmp/$remoteName']);
+      final read = await Process.run('sudo', ['cat', remotePath]);
       expect(read.stdout, 'uploaded by the e2e');
       debugPrint(
         'STEP 3 PASS: Transfers ran ${mine.single.name} (${mine.single.state}), '
@@ -4232,7 +4256,7 @@ touch '${done.path}'
             .isNotEmpty,
         'the folder refused, saying it cannot be uploaded',
       );
-      expect(box(), '/tmp/$remoteName ', reason: 'the folder added no path');
+      expect(box(), '$remotePath ', reason: 'the folder added no path');
       expect(transfers.items.length, before + 1);
       debugPrint('STEP 4 PASS: "A folder cannot be uploaded" toast');
       await _closeTabs(tester);
@@ -6095,6 +6119,215 @@ touch '${done.path}'
           );
         }
         await check('after the reconnect');
+
+        await _closeTabs(tester);
+      },
+    );
+  }
+
+  // A tap on a tmux pane asks tmux for the pane's mouse modes and puts the
+  // LOCAL terminal right when it differs ("masi kena bug tidak bisa scroll
+  // claude app randomly"). To make only the local side differ, the test
+  // writes the mode sequence straight into the pane's own Terminal object
+  // (the test runs in the app's process): going through the program would go
+  // through tmux as well, which would change tmux's flags and leave the two
+  // sides agreeing. That is the real fault's shape: tmux holds the program's
+  // modes, and what reached this terminal did not (output dropped around a
+  // reconnect, a mode set while the capture was being asked for).
+  // Real X wheel and click. 2x2 with the agree case:
+  //  lost:  program reads the mouse, local mode wiped -> before the tap the
+  //         wheel does not reach it; after the tap it does (positive).
+  //  stuck: program reads none, local mode set -> before the tap the program
+  //         is sent the wheel; after it nothing is and the scrollback moves.
+  //  agree: no desync -> logged as agreeing, nothing put right (negative).
+  // Mutation: no resync call in TmuxPaneLayout's onPointerDown, which fails
+  // the lost and stuck tap cases. The same three cases run again with no tap:
+  // the app goes inactive and resumed, and the resume checks every pane
+  // (JEANSH-F: nothing was logged between a reconnect and the report, the app
+  // having been inactive many times). Mutation: ResumeObserver never added
+  // in app.dart, which fails the lost and stuck resume cases.
+  for (final (kind, via) in [
+    for (final k in ['lost', 'stuck', 'agree'])
+      for (final v in ['tap', 'resume']) (k, v),
+  ]) {
+    final mouse = kind != 'stuck';
+    _test(
+      'a ${via == 'tap' ? 'tap on a tmux pane' : 'resume of the app with a tmux pane'} ${kind == 'agree'
+          ? 'finds its mouse modes agree and leaves them'
+          : kind == 'lost'
+          ? 'puts back the mouse mode the terminal lost: the wheel reaches '
+                'the program'
+          : 'takes away a mouse mode the program never asked for: the wheel '
+                'scrolls'}',
+      skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+      (tester) async {
+        await _launch(tester);
+        final dir = _scratch();
+        final got = File('${dir.path}/wheel');
+        final view = await _localShell(tester, tmux: true);
+        _run(
+          view,
+          mouse
+              ? r"printf '\033[?1049h\033[?1000h\033[?1002h\033[?1006h'; "
+                    'stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null'
+              : 'seq 1 400; stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () =>
+              got.existsSync() &&
+              (!mouse ||
+                  (view.terminal.isUsingAltBuffer &&
+                      view.terminal.mouseMode != MouseMode.none)),
+          'the program to start',
+        );
+        if (!mouse) {
+          await _until(
+            tester,
+            () => _text(view).any((line) => line.trim() == '400'),
+            'seq to print 400 lines',
+          );
+        }
+
+        Future<void> pointer(List<String> click) async {
+          final box = tester.getRect(find.byType(TerminalView).first);
+          final window = await _windowRect();
+          final ratio = tester.view.devicePixelRatio;
+          final frame = (window.width - tester.view.physicalSize.width) / 2;
+          final x = (window.left + frame + box.center.dx * ratio).round();
+          final y = (window.top + frame + box.center.dy * ratio).round();
+          await _xdo(['windowfocus', '--sync', await _window()]);
+          await _realPointer(() async {
+            await _xdo(['mousemove', '$x', '$y', 'sleep', '0.2', ...click]);
+            await tester.pump(const Duration(milliseconds: 400));
+          });
+        }
+
+        Future<void> wheel() =>
+            pointer(['click', '--repeat', '4', '--delay', '80', '4']);
+        // The scrollback's own Scrollable is the innermost under the view:
+        // with a mouse mode on, xterm2 wraps it in an InfiniteScrollView
+        // whose Scrollable, outside it, turns the wheel into reports and
+        // moves with every wheel.
+        ScrollableState scroll() => tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(TerminalView).first,
+                matching: find.byType(Scrollable),
+              )
+              .last,
+        );
+        final wheelEvent = RegExp(r'\x1b\[<6[45];\d+;\d+M');
+        String heardSince(int from) => got.readAsStringSync().substring(from);
+        final differed = RegExp(
+          'tmux: pane %\\d+ modes differed \\($via\\), put right',
+        );
+        final agreed = RegExp('tmux: pane %\\d+ modes agree \\($via\\)');
+        int count(RegExp r) => r.allMatches(appLog.current).length;
+
+        // Only the local terminal is changed; tmux keeps what the program set.
+        if (kind == 'lost') {
+          view.terminal.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+        } else if (kind == 'stuck') {
+          view.terminal.write('\x1b[?1000h\x1b[?1006h');
+        }
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(
+          view.terminal.mouseMode,
+          kind == 'lost' ? MouseMode.none : isNot(MouseMode.none),
+          reason: 'the desync took ($kind)',
+        );
+
+        // Before the tap: what the desynced terminal does.
+        var heard = got.readAsStringSync().length;
+        var from = scroll().position.pixels;
+        if (kind != 'agree') {
+          await wheel();
+          if (kind == 'lost') {
+            expect(
+              wheelEvent.hasMatch(heardSince(heard)),
+              isFalse,
+              reason: 'the wheel reached the program with no mode here',
+            );
+          } else {
+            await _until(
+              tester,
+              () => wheelEvent.hasMatch(heardSince(heard)),
+              'the stuck mode to send the wheel to the program '
+              '(it was sent ${heardSince(heard)})',
+            );
+            // Reported, not scrolled: the scrollback did not move.
+            expect(scroll().position.pixels, from, reason: 'it scrolled');
+          }
+        }
+
+        // The tap, by a real click, or the resume, with no tap at all.
+        final putRight = count(differed);
+        final same = count(agreed);
+        final watched = kind == 'agree' ? agreed : differed;
+        final watchedFrom = kind == 'agree' ? same : putRight;
+        if (via == 'tap') {
+          await pointer(['click', '1']);
+        } else {
+          // No tap: the app goes inactive and comes back, as a window losing
+          // and taking focus or a sleep and a wake does, through the real
+          // app's own lifecycle observer. xdotool cannot be relied on to
+          // make Flutter's GTK embedder report a focus loss under Xvfb with
+          // no window manager, so the state change is sent in-process; the
+          // OS side of it is unproven here.
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.inactive,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+        }
+        await _until(
+          tester,
+          () => count(watched) > watchedFrom,
+          'the tap to be checked against tmux (the log)',
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        if (kind == 'agree') {
+          expect(count(differed), putRight, reason: 'put right with no cause');
+        } else {
+          expect(
+            count(agreed),
+            same,
+            reason: 'said to agree while it differed',
+          );
+          expect(
+            view.terminal.mouseMode,
+            kind == 'lost' ? isNot(MouseMode.none) : MouseMode.none,
+            reason: 'the terminal now holds what tmux holds',
+          );
+        }
+
+        // After it.
+        heard = got.readAsStringSync().length;
+        from = scroll().position.pixels;
+        await wheel();
+        if (mouse) {
+          await _until(
+            tester,
+            () => wheelEvent.hasMatch(heardSince(heard)),
+            'an SGR wheel event to reach the program after the tap '
+            '(it was sent ${heardSince(heard)})',
+          );
+        } else {
+          expect(
+            heardSince(heard),
+            isEmpty,
+            reason: 'the wheel reached a program that never asked',
+          );
+          expect(
+            scroll().position.pixels,
+            isNot(from),
+            reason: 'the scrollback did not move after the tap',
+          );
+        }
 
         await _closeTabs(tester);
       },

@@ -10,7 +10,7 @@
 # build reads to find its update, on the tag's GitHub release — the one thing
 # this repository publishes, and it carries no build. Then `notes` has the
 # release notes written, in English and Indonesian, for
-# jeansh.brata.cloud/releases. The secrets live in the
+# jeansh.brata.cloud/releases and the tag's GitHub release. The secrets live in the
 # `release` environment, which only a workflow running on main can reach.
 # README.md, Releasing.
 name: Release
@@ -384,12 +384,16 @@ jobs:
           gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
 
   notes:
-    needs: [version, android, desktop]
+    # After feed, which makes the GitHub release these notes are written on.
+    needs: [version, android, desktop, feed]
     # A tag's release, not a dry run and not main as it stands.
     if: inputs.tag != '' && !inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
+    permissions:
+      contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -397,10 +401,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # From the app's commits since the previous tag, onto site/releases.json
-      # in R2, which jeansh.brata.cloud/releases reads: no deploy per release.
+      # From the pull requests merged since the previous tag, onto
+      # site/releases.json in R2, which jeansh.brata.cloud/releases reads (no
+      # deploy per release), and onto the tag's GitHub release.
       - name: Write the release notes onto the website
         env:
+          GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
           TAG: ${{ inputs.tag }}
@@ -445,11 +451,43 @@ jobs:
             prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$TAG^" 2>/dev/null || true)
           fi
           echo "The notes cover ${prev:-everything} to $TAG"
-          git log --no-merges --format='* %s%n%n%b' ${prev:+"$prev.."}"$TAG" -- \
-            lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock \
-            > "$RUNNER_TEMP/changes.txt"
+          range=${prev:+"$prev.."}"$TAG"
+          app=(lib android ios macos linux windows assets third_party pubspec.yaml pubspec.lock)
+          prs="$RUNNER_TEMP/prs.jsonl"
+          changes="$RUNNER_TEMP/changes.txt"
+          : > "$prs"
+          # Commits pushed to main by themselves, which no pull request holds.
+          git log --first-parent --no-merges --format='* %s%n%n%b' "$range" -- "${app[@]}" > "$changes"
+          # Every pull request merged into main that changes the app, with
+          # its description, which says how a feature is used, and whether a
+          # commit in it carries Release: feature. A description GitHub will
+          # not give stands in as the pull request's own commit messages, and
+          # a merge that is no pull request's adds its commits to the rest.
+          for sha in $(git rev-list --first-parent --merges --reverse "$range"); do
+            git diff --quiet "$sha^1" "$sha" -- "${app[@]}" && continue
+            commits=$(git log --no-merges --format='* %s%n%n%b' "$sha^1..$sha^2")
+            number=$(git log -1 --format=%s "$sha" | sed -n 's/^Merge pull request #\([0-9][0-9]*\) .*/\1/p')
+            if [ -z "$number" ]; then
+              printf '%s\n' "$commits" >> "$changes"
+              continue
+            fi
+            feature=false
+            trailers=$(git log --format='%(trailers:key=Release,valueonly)' "$sha^1..$sha^2")
+            grep -qiE '^[[:space:]]*feature[[:space:]]*$' <<< "$trailers" && feature=true
+            if pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq '{title, body}'); then
+              jq -c --argjson f "$feature" '. + {feature: $f}' <<< "$pr" >> "$prs"
+            else
+              echo "::warning::pull request $number: its commit messages stand in for its description"
+              jq -cn --arg t "$(git log -1 --format=%b "$sha" | sed -n 1p)" --arg b "$commits" \
+                --argjson f "$feature" '{title: $t, body: $b, feature: $f}' >> "$prs"
+            fi
+          done
+          echo "$(wc -l < "$prs") pull requests, $(jq -s 'map(select(.feature)) | length' "$prs") of them features"
 
           python3 tool/release_notes.py --version "$NAME" --build "$BUILD" \
-            --changes "$RUNNER_TEMP/changes.txt" "$list"
+            --changes "$changes" --prs "$prs" --body "$RUNNER_TEMP/body.md" "$list"
           r2 s3 cp --only-show-errors --content-type application/json \
             "$list" "s3://$R2_BUCKET/site/releases.json"
+          # The same notes on the tag's GitHub release, in place of feed's
+          # one line, which says where the builds are and stays at the end.
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/body.md"
