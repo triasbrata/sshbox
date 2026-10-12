@@ -1247,57 +1247,6 @@ sys.exit(1 if problems else 0)
 PY
 }
 
-ask_step() { # KIND STEP
-  flow chat_ask_watched -e "KIND=$1" -e "STEP=$2" -e "SESSION=E2E ask $1"
-}
-
-# Taps Send answers with adb, at the centre of the node Android's own view
-# tree says carries that label, after listing every node that does and
-# after the tap what it did: the nodes again, and which component the
-# activity manager started. Maestro's own tap on it landed on the composer
-# below the card, and nothing said why.
-ask_send() { # LABEL
-  local xml=$ROOT/build/ask-ui-$1.xml at
-  code_ui >"$xml"
-  at=$(python3 - "$xml" <<'PY'
-import re, sys
-xml = open(sys.argv[1], encoding='utf-8', errors='replace').read()
-hits = []
-for node in re.findall(r'<node [^>]*>', xml):
-    text = re.search(r' text="([^"]*)"', node)
-    desc = re.search(r' content-desc="([^"]*)"', node)
-    seen = ((text and text.group(1)) or '') + ' | ' + ((desc and desc.group(1)) or '')
-    if 'send answers' in seen.lower():
-        box = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
-        cls = re.search(r' class="([^"]*)"', node)
-        click = re.search(r' clickable="([^"]*)"', node)
-        hits.append((seen, [int(v) for v in box.groups()], cls and cls.group(1),
-                     click and click.group(1)))
-for seen, box, cls, click in hits:
-    print(f'node {seen!r} {cls} clickable={click} bounds={box}', file=sys.stderr)
-exact = [h for h in hits if h[0].split(' | ')[0].strip().lower() == 'send answers'
-         or h[0].split(' | ')[1].strip().lower() == 'send answers']
-if not exact:
-    sys.exit(1)
-l, t, r, b = exact[0][1]
-print((l + r) // 2, (t + b) // 2)
-PY
-  ) || { echo "::error::chat_ask_watched $1: no node says Send answers"; return 1; }
-  echo "Send answers: tapping $at"
-  adb logcat -c 2>/dev/null
-  # shellcheck disable=SC2086
-  adb shell input tap $at
-  sleep 3
-  code_ui >"$ROOT/build/ask-ui-$1-after.xml"
-  echo "after the tap, nodes saying Send answers or the picker:"
-  grep -o '<node [^>]*>' "$ROOT/build/ask-ui-$1-after.xml" |
-    grep -i -E 'send answers|photos|Typing the answer' | cut -c1-260
-  echo "activities started:"
-  adb logcat -d -s ActivityTaskManager:I ActivityManager:I 2>/dev/null |
-    grep -i -E 'pick|photo|image|START' | tail -8
-  return 0
-}
-
 chat_ask_watched() {
   local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) log=/home/$SSH_USER/.e2e-ask.log
   local kind pid pids='' pane
@@ -1342,15 +1291,8 @@ SH
     # so one failure cannot take the runs after it down.
     adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1
     adb shell input keyevent KEYCODE_HOME >/dev/null 2>&1
-    # The picks (pre), a send by adb, and for multi a second pick and send
-    # (mid), then what the card shows (post). A step that fails stops the
-    # rest of this kind, and the next kind starts from Home.
-    {
-      ask_step "$kind" pre &&
-        ask_send "$kind-1" &&
-        { [ "$kind" != multi ] || { ask_step "$kind" mid && ask_send "$kind-2"; }; } &&
-        ask_step "$kind" post
-    } || { echo "::error::chat_ask_watched failed at its '$kind' run"; status=1; }
+    flow chat_ask_watched -e "KIND=$kind" -e "SESSION=E2E ask $kind" ||
+      { echo "::error::chat_ask_watched failed at its '$kind' run"; status=1; }
     echo "the stand-in's log for $kind:"
     sudo cat "$log" 2>/dev/null
     ask_check "$kind" || status=1
