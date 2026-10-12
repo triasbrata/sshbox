@@ -549,6 +549,20 @@ jobs:
             exit 1
           }
 
+      # #286: an unsigned build and a secret a signed one moved away. A
+      # relaunch is a new run, so one run a phase, on the same data.
+      - name: Moved secrets on an unsigned build
+        timeout-minutes: 15
+        if: always()
+        run: |
+          rc=0
+          for phase in add relaunch rollback rollback-relaunch none; do
+            E2E_TESTS=integration_test/developer_id_test.dart \
+              tools/e2e_desktop.sh macos --dart-define=JEANSH_E2E_DEVID=$phase \
+              || { rc=1; break; }
+          done
+          exit $rc
+
   # Windows: the Win32 embedder in the runner's own session, as on macOS.
   # Report-only, on every release. Its Local shell is PowerShell under
   # ConPTY, so the tests that drive sh skip there, each saying why.
