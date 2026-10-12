@@ -3959,6 +3959,198 @@ touch '${done.path}'
     },
   );
 
+  // #283: Ctrl+, toggles Settings, through X as a person presses it. A 2x2:
+  // pressed with Settings closed it opens, with it showing it closes (from
+  // the page, from a sub-page, and with a text field focused); a bare comma
+  // and Super+comma open nothing, and the comma reaches the shell. Each step
+  // reads the opposite outcome as well: Settings gone means the terminal is
+  // there, scrolled as it was; Settings up means the terminal is not.
+  _test(
+    'Ctrl+, opens Settings and a second press closes it, wherever in '
+    'Settings it is pressed; a bare comma and Super+comma open nothing',
+    skip: Platform.isLinux
+        ? null
+        : 'the keys go through xdotool on this run\'s Xvfb',
+    (tester) async {
+      await _launch(tester);
+      final view = await _localShell(tester);
+      // A program that shows what reached it: ^[ for an escape, no more.
+      _run(view, 'seq 1 300; cat -v');
+      await _until(
+        tester,
+        () => _text(view).any((l) => l.trim() == '300'),
+        'seq to finish',
+      );
+
+      Future<void> keys(String chord) async {
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _xdo(['key', '--clearmodifiers', chord]);
+        await tester.pump(const Duration(milliseconds: 800));
+      }
+
+      const title = 'LOOK · TERMINAL · KEYBOARD · PRIVACY';
+      final header = find.text(title);
+      final anySettings = find.text(title, skipOffstage: false);
+      final terminal = find.byType(TerminalView);
+      void settingsUp(String when) {
+        expect(header, findsOneWidget, reason: '$when: Settings is not up');
+        expect(
+          terminal,
+          findsNothing,
+          reason: '$when: the terminal still shows with Settings up',
+        );
+      }
+
+      void terminalBack(String when) {
+        expect(terminal, findsOneWidget, reason: '$when: no terminal');
+        expect(
+          anySettings,
+          findsNothing,
+          reason: '$when: Settings is still there',
+        );
+      }
+
+      // Scrolled up a few lines; the line at the top of the view.
+      ScrollPosition position() => tester
+          .state<ScrollableState>(
+            find
+                .descendant(of: terminal, matching: find.byType(Scrollable))
+                .first,
+          )
+          .position;
+      String top() {
+        final now = (terminal.evaluate().first.widget as TerminalView).terminal;
+        final lines = now.buffer.lines;
+        final p = position();
+        final cell = p.maxScrollExtent / (lines.length - now.viewHeight);
+        return lines[(p.pixels / cell).round()].getText().trim();
+      }
+
+      position().jumpTo(position().maxScrollExtent - 200);
+      await tester.pump(const Duration(milliseconds: 300));
+      final scrolled = position().pixels;
+      expect(scrolled, lessThan(position().maxScrollExtent));
+      final topBefore = top();
+
+      // 1: Ctrl+, opens it, the shell hears nothing of it, and a second
+      // press brings the terminal back as it was.
+      await keys('ctrl+comma');
+      settingsUp('Ctrl+, from the terminal');
+      await keys('ctrl+comma');
+      terminalBack('the second Ctrl+,');
+      expect(position().pixels, scrolled, reason: 'scrollback moved');
+      expect(top(), topBefore, reason: 'another line is at the top');
+      final shown = terminal.evaluate().first.widget as TerminalView;
+      expect(
+        _text(shown).any((l) => l.trim() == '1'),
+        isTrue,
+        reason: 'line 1 is gone from the scrollback',
+      );
+      expect(
+        _text(shown).where((l) => l.contains(',') || l.contains('^[[44;')),
+        isEmpty,
+        reason: 'the shell received the chord',
+      );
+      // No second Settings: one press more opens exactly one, and one more
+      // closes it.
+      await keys('ctrl+comma');
+      expect(header, findsOneWidget, reason: 'not exactly one Settings');
+      await keys('ctrl+comma');
+      terminalBack('after a third and fourth press');
+
+      // 2: from a sub-page, one press goes back to the terminal.
+      await keys('ctrl+comma');
+      settingsUp('before the sub-page');
+      final row = _label('Key bar');
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(row);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(row);
+      await _until(
+        tester,
+        () => _label('Add key').evaluate().isNotEmpty,
+        'the Key bar page',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await keys('ctrl+comma');
+      terminalBack('Ctrl+, on the Key bar page');
+      expect(
+        _label('Add key'),
+        findsNothing,
+        reason: 'the Key bar page is still up',
+      );
+
+      // 3: with a text field focused, in a dialog over Settings, it closes
+      // both and the comma is typed nowhere.
+      await keys('ctrl+comma');
+      settingsUp('before the font picker');
+      final fonts = find.textContaining('Installed on this computer');
+      await tester.scrollUntilVisible(
+        fonts,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await _until(
+        tester,
+        () => find
+            .textContaining('families, monospaced first')
+            .evaluate()
+            .isNotEmpty,
+        "this computer's fonts to be listed",
+      );
+      await tester.ensureVisible(fonts);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(fonts);
+      await _until(
+        tester,
+        () => _label('Installed fonts').evaluate().isNotEmpty,
+        'the font picker',
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      final picker = _kind('AlertDialog', 'TuiDialog');
+      final field = find.descendant(
+        of: picker,
+        matching: find.byType(TextField),
+      );
+      final controller = tester.widget<TextField>(field).controller!;
+      // The opposite: a bare comma goes into the field, so the field is the
+      // one that would have taken the chord's.
+      await keys('comma');
+      expect(controller.text, ',', reason: 'the field was not taking keys');
+      controller.clear();
+      var typedComma = false;
+      controller.addListener(
+        () => typedComma = typedComma || controller.text.contains(','),
+      );
+      await keys('ctrl+comma');
+      terminalBack('Ctrl+, with the font filter focused');
+      expect(picker, findsNothing, reason: 'the picker stayed');
+      expect(typedComma, isFalse, reason: 'the chord typed a comma');
+
+      // 4: the negatives, on the terminal: a bare comma reaches the shell
+      // and opens nothing; Super+comma opens nothing.
+      await tester.tap(terminal);
+      await tester.pump(const Duration(milliseconds: 300));
+      await keys('comma');
+      expect(anySettings, findsNothing, reason: 'a bare comma opened Settings');
+      final live = terminal.evaluate().first.widget as TerminalView;
+      await _until(
+        tester,
+        () => _text(live).any((l) => l.trim() == ','),
+        'the comma to reach the shell',
+      );
+      await keys('super+comma');
+      expect(anySettings, findsNothing, reason: 'Super+comma opened Settings');
+      expect(terminal, findsOneWidget, reason: 'the terminal went');
+      await keys('ctrl+c');
+      await _closeTabs(tester);
+    },
+  );
+
   // #216: the UI text size from the keyboard, the wheel and the in-frame Help
   // menu, as a person would, through X: Ctrl with = − 0 steps it 10% at a
   // time and back to 100%, Ctrl+wheel over the UI grows it and over a
