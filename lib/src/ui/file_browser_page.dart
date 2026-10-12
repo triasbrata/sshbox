@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../files/file_browser.dart';
 import '../files/transfers.dart';
 import 'file_download.dart';
+import 'folder_download.dart';
 import 'file_editor_page.dart';
 import 'file_search_page.dart';
 import 'settings_page.dart' show showDotfiles;
@@ -794,6 +795,45 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
+  /// Brings the folder [entry] down: compressed on the host first when [zip],
+  /// or as its tree when not.
+  Future<void> _downloadFolder(RemoteEntry entry, {required bool zip}) async {
+    appLog.add('action files download folder ${zip ? 'zip' : 'plain'}');
+    setState(() => _busy = true);
+    void onTransfer(Transfer? transfer) {
+      if (!mounted) return;
+      setState(() {
+        _transfer = transfer;
+        _transferLabel = null;
+      });
+    }
+
+    try {
+      if (zip) {
+        await downloadFolderAsArchive(
+          context,
+          widget.browser,
+          entry.path,
+          host: widget.title,
+          onTransfer: onTransfer,
+          onPlain: desktopDownloads
+              ? () => unawaited(_downloadFolder(entry, zip: false))
+              : null,
+        );
+      } else {
+        await downloadFolderPlain(
+          context,
+          widget.browser,
+          entry.path,
+          host: widget.title,
+          onTransfer: onTransfer,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// Puts [entry]'s text on the clipboard without opening it in a tab.
   ///
   /// Unlike the file tab's Copy content, the text is not here yet, so this
@@ -866,6 +906,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           item('Upload here…', () => _uploadInto(entry.path)),
           item('Set as root', () => _setRoot(entry.path)),
           const TuiMenuDivider(),
+          // Compressed on the host, so only where the browser can run a
+          // tool there; the tree as it is, only where there is a folder on
+          // this computer to put it in.
+          if (canArchive(widget.browser))
+            item('Download as zip', () => _downloadFolder(entry, zip: true)),
+          if (desktopDownloads)
+            item('Download folder', () => _downloadFolder(entry, zip: false)),
+          if (canArchive(widget.browser) || desktopDownloads)
+            const TuiMenuDivider(),
         ],
         if (isFile) ...[
           item('Download', () => _download(entry)),
