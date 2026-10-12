@@ -1,0 +1,209 @@
+# jeansh open: secret file, file limit, onward ssh, install result (#218).
+#
+# The host editor's "Add the jeansh command to this host" switch is on for the
+# STEPs that connect. Terminal text is drawn, not in the accessibility tree, so
+# what each command printed and exited with is left in files in the login home
+# for the runner (tools/e2e_android.sh jeansh_open2) to read; the flow asserts
+# what is on screen, and the runner what is on the host.
+#
+#   on       the switch on, back on Home
+#   foreign  a file of somebody else's at ~/.local/bin/jeansh: said at connect
+#   clean    a clean host: nothing said. In a terminal: the command opens a
+#            file tab; with its secret file gone and the environment
+#            variable set by hand it opens nothing; seven files open five tabs;
+#            five open five; and an ssh onward with SendEnv carries nothing of it
+#   off      the switch back off
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'on' || STEP == 'off'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: "Show menu"
+      - tapOn: "Edit"
+      - extendedWaitUntil:
+          visible: "Edit host"
+          timeout: 10000
+      - scrollUntilVisible:
+          element:
+            text: "Add the jeansh command to this host"
+          direction: DOWN
+          centerElement: true
+      - tapOn: "Add the jeansh command to this host"
+      - tapOn: "Save"
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+
+- runFlow:
+    when:
+      true: ${STEP == 'foreign'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      # The notice stays up about a second, so it is waited for directly after
+      # the tap, the host being trusted already, and photographed in the very
+      # next command. A trust prompt is the runner's to answer (STEP trust)
+      # when this fails, and the attempt is made again.
+      - extendedWaitUntil:
+          visible: "(?s).*left alone.*"
+          timeout: 30000
+      - takeScreenshot: jeansh-open2-foreign
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true
+
+- runFlow:
+    when:
+      true: ${STEP == 'clean'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      # A clean host: nothing was said about the command.
+      - assertNotVisible: "(?s).*left alone.*"
+      - assertNotVisible: "(?s).*jeansh command.*"
+      - takeScreenshot: jeansh-open2-clean
+
+      - tapOn:
+          point: 50%, 40%
+      - inputText: "export PATH=$HOME/.local/bin:$PATH; cd ~/jeansh-e2e-open"
+      - pressKey: Enter
+
+      # 1. The secret file. The command, as it is, opens a file tab.
+      - inputText: "jeansh a.md 2>~/jo1.err; echo $? >~/jo1.rc"
+      - pressKey: Enter
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      - takeScreenshot: jeansh-open2-opened
+      - tapOn: "(?s)Close .*a\\.md.*"
+      - tapOn:
+          point: 50%, 40%
+
+      # Without its file, and with the variable set by hand to the right value:
+      # nothing opens, and it says why.
+      - inputText: "mv ~/.config/jeansh/open-secret ~/.config/jeansh/open-secret.keep; export LC_SSHBOX_OPEN_SECRET=$(cat ~/.config/jeansh/open-secret.keep); jeansh a.md 2>~/jo1n.err; echo $? >~/jo1n.rc; unset LC_SSHBOX_OPEN_SECRET; mv ~/.config/jeansh/open-secret.keep ~/.config/jeansh/open-secret"
+      - pressKey: Enter
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - assertNotVisible: "Save to host"
+      - takeScreenshot: jeansh-open2-no-secret-file
+
+      # 2. The file limit: seven files, five tabs. The last one opened is the
+      # one in front, so f5 is there and f6 and f7 are not.
+      - inputText: "jeansh f1 f2 f3 f4 f5 f6 f7 2>~/jo2.err; echo $? >~/jo2.rc"
+      - pressKey: Enter
+      - extendedWaitUntil:
+          visible: "(?s)Close .*f5.*"
+          timeout: 30000
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - assertVisible: "(?s)Close .*f5.*"
+      - assertNotVisible: "(?s)Close .*f6.*"
+      - assertNotVisible: "(?s)Close .*f7.*"
+      - takeScreenshot: jeansh-open2-seven
+      # Back to the shell: the tabs closed, the one in front first.
+      - tapOn:
+          text: "(?s)Close .*f5.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*f4.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*f3.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*f2.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*f1.*"
+          optional: true
+      - tapOn:
+          point: 50%, 40%
+
+      # Five files: all five, and nothing said.
+      - inputText: "jeansh g1 g2 g3 g4 g5 2>~/jo2b.err; echo $? >~/jo2b.rc"
+      - pressKey: Enter
+      - extendedWaitUntil:
+          visible: "(?s)Close .*g5.*"
+          timeout: 30000
+      - assertNotVisible: "(?s)Close .*g6.*"
+      - takeScreenshot: jeansh-open2-five
+      - tapOn:
+          text: "(?s)Close .*g5.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*g4.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*g3.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*g2.*"
+          optional: true
+      - tapOn:
+          text: "(?s)Close .*g1.*"
+          optional: true
+      - tapOn:
+          point: 50%, 40%
+
+      # 3. Onward ssh: what the terminal's shell exports goes no further.
+      # The runner made the other account and its key; what it saw is in files.
+      - inputText: "ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv='LC_*' jeansh2e@localhost 'env | grep -c OPEN_SECRET; ls -A ~/.config/jeansh 2>/dev/null | wc -l' >~/jo3.out 2>&1; echo $? >~/jo3.rc; LC_E2E_PROBE=1 ssh -i $HOME/.e2e-onward-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -o SendEnv=LC_E2E_PROBE jeansh2e@localhost 'env | grep -c LC_E2E_PROBE' >~/jo3.control 2>&1"
+      - pressKey: Enter
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - assertNotVisible: "Save to host"
+      - takeScreenshot: jeansh-open2-onward
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'trust'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn:
+          text: "Close ${HOST_LABEL}.*"
+          optional: true

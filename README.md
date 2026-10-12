@@ -950,6 +950,31 @@ phone and does nothing else, and the relay sends them as that host's, so a
 key that gets out of one host cannot speak for another. Deleting the host
 revokes it; if one gets out, reset them.
 
+**Keeping the names on the host they were made for.** An `ssh` started from
+a Jeansh shell reads that shell's environment, and Debian's and Ubuntu's
+client config sends `LC_*` to the host it reaches. To send the Jeansh names
+to the host they belong to and no further, tell the client not to:
+
+```
+# ~/.ssh/config on a host Jeansh connects to, before any `Host *` block
+# that sends LC_*
+Host *
+    SendEnv -LC_SSHBOX_*
+```
+
+or, per call, `ssh -o 'SendEnv -LC_SSHBOX_*' other-host`. Or, if you would
+rather not touch the config, put this in the shell's profile; Jeansh writes
+neither file for you:
+
+```sh
+ssh() { env -u LC_SSHBOX_KEY -u LC_SSHBOX_HOST_ID -u LC_SSHBOX_NOTIFY_URL \
+  -u LC_SSHBOX_NOTIFY_SECRET command ssh "$@"; }
+```
+
+The `jeansh <file>` command needs none of this: its secret is in
+`~/.config/jeansh/open-secret` (0600), replaced on every connect and read
+each time the command runs, and never in the environment.
+
 **The direct way's ceiling.** The port is on the host's loopback, so on a
 server others log in to, once the connection has ended another local user can
 listen on that port and read what a shell left over from the connection sends
