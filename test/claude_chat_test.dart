@@ -309,7 +309,12 @@ class _LiveHost {
   /// Whether `claude agents` still shows the session's process.
   var alive = true;
 
+  /// Whether the connection is down: every command fails as one on a
+  /// session being reconnected does.
+  var down = false;
+
   Future<CommandChannel> openTerminal(String command) async {
+    if (down) throw StateError('Not connected.');
     commands.add(command);
     final typed = <String>[];
     final closed = [false];
@@ -368,6 +373,7 @@ class _LiveHost {
   List<String> subAgentLines = [];
 
   Future<CommandChannel> open(String command) async {
+    if (down) throw StateError('Not connected.');
     commands.add(command);
     if (command.contains('ls "\$dir"')) return _says(subAgentsOut);
     if (command.contains('/subagents/') && command.contains('wc -c')) {
@@ -6970,6 +6976,7 @@ void main() {
       Duration? Function(int)? backoff,
       OutboxStore? outbox,
       Duration? deliveryTimeout,
+      bool Function()? connected,
     }) {
       final chat = ClaudeChat(
         open: host.open,
@@ -6978,6 +6985,7 @@ void main() {
         outbox: outbox ?? store(),
         backoff: backoff ?? (_) => null,
         deliveryTimeout: deliveryTimeout ?? const Duration(seconds: 30),
+        connected: connected,
       )..holdEvery = const Duration(milliseconds: 40);
       addTearDown(chat.dispose);
       return chat;
@@ -8007,6 +8015,139 @@ void main() {
         chat.entries.whereType<ChatNotice>().single.text,
         contains('could not be read and were set aside'),
       );
+    });
+
+    test('"Not connected" while the connection is being made again uses none '
+        'of the retry steps, and the message goes the moment the connection '
+        'is back, with no Retry', () async {
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(
+        host,
+        // Two quick steps: they would be spent in 40 ms if they were used.
+        backoff: (n) => n < 2 ? const Duration(milliseconds: 20) : null,
+        connected: () => !host.down,
+      );
+      await chat.continueFrom(_interactive);
+      host.paneTyping.clear();
+
+      host.down = true;
+      chat.send('while it reconnects');
+      await wait(600);
+
+      // Still waiting, not failed, nothing used up, nothing typed.
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.queued);
+      expect(said.why, contains('Waiting for the connection'));
+      expect(host.paneTyping, isEmpty);
+      final entry = (await onDisk()).entries.single;
+      expect(entry.attempts, 0);
+      expect(entry.failed && entry.transient, isTrue);
+
+      // The connection is back: the page's reconnect picks the session up.
+      host.down = false;
+      await chat.resume();
+      await wait();
+
+      expect(host.paneTyping.single.stdin, ['while it reconnects']);
+      expect(
+        chat.entries.whereType<ChatSaid>().where((s) => s.delivery == Delivery.failed),
+        isEmpty,
+      );
+      host.adds(userLine('rc-1', 'while it reconnects'));
+      await wait();
+      expect((await onDisk()).entries, isEmpty);
+    });
+
+    test('a reconnect in the middle of the queue sends every waiting '
+        'message once, in order, after the transcript is looked in, and '
+        'one the session already recorded is not typed again', () async {
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(host, connected: () => !host.down);
+      await chat.continueFrom(_interactive);
+      host.paneTyping.clear();
+
+      host.down = true;
+      chat.send('first');
+      chat.send('second');
+      chat.send('third');
+      await wait();
+      expect(host.paneTyping, isEmpty);
+      expect((await onDisk()).entries, hasLength(3));
+
+      // While the connection was down the first one had in fact gone.
+      host.history = transcript([('r1', 'first')]);
+      host.down = false;
+      await chat.resume();
+      for (final (i, words) in ['second', 'third'].indexed) {
+        await wait();
+        expect(host.paneTyping, hasLength(i + 1), reason: words);
+        host.adds(userLine('r${i + 2}', words));
+      }
+      await wait();
+
+      expect([for (final t in host.paneTyping) t.stdin.join()], [
+        'second',
+        'third',
+      ]);
+      final box = await onDisk();
+      expect(box.entries, isEmpty);
+      expect(box.consumed, containsAll(['r1', 'r2', 'r3']));
+    });
+
+    test('a failure that may pass by itself waits across a restart, and '
+        'one that used up its steps stays failed for the user', () async {
+      final now = DateTime.now().toUtc();
+      await store().save(
+        key,
+        OutboxBox(
+          entries: [
+            OutboxEntry(
+              id: 'w1',
+              text: 'still waiting',
+              createdAt: now,
+              failed: true,
+              transient: true,
+              why: 'Could not check on it first: Not connected.',
+            ),
+            OutboxEntry(
+              id: 'w2',
+              text: 'given up on',
+              createdAt: now.add(const Duration(seconds: 1)),
+              failed: true,
+              why: 'Not delivered: it did not record it.',
+            ),
+          ],
+        ),
+      );
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(host);
+      await chat.continueFrom(_interactive);
+      await wait();
+
+      expect(host.paneTyping.single.stdin, ['still waiting']);
+      final failed = chat.entries
+          .whereType<ChatSaid>()
+          .where((s) => s.delivery == Delivery.failed)
+          .single;
+      expect(failed.text, 'given up on');
+    });
+
+    test('when the steps are used up with the connection up, the entry stops '
+        'waiting by itself', () async {
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no busy\n';
+      final chat = make(
+        host,
+        backoff: (n) => n < 1 ? const Duration(milliseconds: 20) : null,
+        connected: () => true,
+      );
+      await chat.continueFrom(_interactive);
+      chat.send('never goes');
+      await wait(600);
+
+      final entry = (await onDisk()).entries.single;
+      expect(entry.failed, isTrue);
+      expect(entry.transient, isFalse, reason: 'left for the user\'s Retry');
     });
 
     test('without an outbox nothing is kept and a message goes as before',

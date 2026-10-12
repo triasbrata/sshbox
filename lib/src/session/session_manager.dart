@@ -494,6 +494,9 @@ class LiveSession extends ChangeNotifier {
     hostKey: host.id,
     // Every message is kept on this device until the session records it.
     outbox: OutboxStore.shared,
+    // Lets a message that waits for a reconnect wait for it, rather than use
+    // up its retries against a connection that is being made again.
+    connected: () => isConnected,
   );
 
   void openChat() {

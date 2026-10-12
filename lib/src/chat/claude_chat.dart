@@ -94,6 +94,11 @@ class ChatSaid extends ChatEntry {
   /// in and its id there. Null for a message nothing keeps.
   String? outboxKey;
   String? outboxId;
+
+  /// Set when a reconnect cleared the view this message was drawn in: its
+  /// entry goes on waiting in the outbox for the same session, and nothing
+  /// that happens to this object is a failure of it.
+  bool keepInOutbox = false;
 }
 
 /// A tool Claude asked for, and what came back — one entry rather than two,
@@ -805,6 +810,7 @@ class ClaudeChat extends ChangeNotifier {
     this.hostKey,
     this.outbox,
     this.backoff = outboxBackoff,
+    this.connected,
   }) : _parent = null,
        _sub = null,
        _subRunning = null;
@@ -827,6 +833,7 @@ class ClaudeChat extends ChangeNotifier {
        hostKey = null,
        outbox = null,
        backoff = outboxBackoff,
+       connected = null,
        // ignore: prefer_initializing_formals
        _parent = parent,
        _sub = agent,
@@ -872,6 +879,12 @@ class ClaudeChat extends ChangeNotifier {
   /// How long to wait before automatic retry number n, null once spent;
   /// a test shortens it.
   final Duration? Function(int attempt) backoff;
+
+  /// Whether the connection to the host is up, as the session says it. While
+  /// it is not, a message that waits for the connection is not given up on:
+  /// the waiting does not use the retry steps, and the retry comes the
+  /// moment the connection is back. Null where the chat cannot know.
+  final bool Function()? connected;
 
   /// How long a picture pasted into a session's input line has to become
   /// its `[Image #N]` before the text after it is typed. Measured on
@@ -2425,6 +2438,7 @@ class ClaudeChat extends ChangeNotifier {
     String? id, {
     required bool failed,
     String? why,
+    bool transient = false,
   }) async {
     if (!_outboxOn || key == null || id == null) return;
     final box = await _boxOrNull(key);
@@ -2433,14 +2447,20 @@ class ClaudeChat extends ChangeNotifier {
     if (entry == null) return;
     entry
       ..failed = failed
+      ..transient = failed && transient
       ..why = failed ? why : null;
     _outboxSaveQuietly(key, box);
   }
 
-  Future<void> _outboxFailed(String? key, String? id, String? why) async {
+  Future<void> _outboxFailed(
+    String? key,
+    String? id,
+    String? why, {
+    bool transient = false,
+  }) async {
     if (!_outboxOn || key == null || id == null) return;
     appLog.add('outbox: failed');
-    return _outboxMark(key, id, failed: true, why: why);
+    return _outboxMark(key, id, failed: true, why: why, transient: transient);
   }
 
   /// The session has the message: it is deleted from the outbox, and [turn],
@@ -2540,24 +2560,49 @@ class ClaudeChat extends ChangeNotifier {
     if (box == null) return;
     final entry = box.entries.where((e) => e.id == id).firstOrNull;
     if (entry == null || _disposed) return;
-    final wait = backoff(entry.attempts);
-    if (wait == null) return;
-    entry.attempts++;
-    _outboxSaveQuietly(key, box);
+    // While the connection is down the wait is for the connection, not for
+    // a step of the backoff: it uses none of them, and is over the moment
+    // the connection is back (see [_retryNow]).
+    final down = _hostDown;
+    final wait = down ? hostDownPoll : backoff(entry.attempts);
+    if (wait == null) {
+      // The steps are spent: it stays failed, for the user's Retry.
+      entry.transient = false;
+      _outboxSaveQuietly(key, box);
+      return;
+    }
+    if (!down) {
+      entry.attempts++;
+      _outboxSaveQuietly(key, box);
+    }
     final target = _target;
     final reason = said.why;
     said
       ..delivery = Delivery.queued
-      ..why = '${reason ?? 'Not delivered'} Trying again in '
-          '${wait.inSeconds} s.';
+      ..why = down
+          ? '${reason ?? 'Not delivered.'} Waiting for the connection.'
+          : '${reason ?? 'Not delivered'} Trying again in '
+                '${wait.inSeconds} s.';
     notifyListeners();
+    _retryTimers.remove(said)?.cancel();
     late final Timer timer;
-    timer = Timer(wait, () {
+    void run() {
+      timer.cancel();
       _timers.remove(timer);
+      _retryTimers.remove(said);
+      _retryRuns.remove(said);
       if (_disposed ||
           !_current(target) ||
           said.delivery != Delivery.queued ||
           !_entries.contains(said)) {
+        return;
+      }
+      // Still down: keep waiting, with no step used.
+      if (_hostDown) {
+        said
+          ..delivery = Delivery.failed
+          ..why = reason;
+        unawaited(_scheduleRetry(said));
         return;
       }
       said
@@ -2567,8 +2612,32 @@ class ClaudeChat extends ChangeNotifier {
       // Cannot go now (Claude restarting, a picture gone): the same wait
       // again while the steps last, and the reason on the message after.
       if (why != null) _undelivered(said, 'Not sent: $why', transient: true);
-    });
+    }
+
+    timer = Timer(wait, run);
     _timers.add(timer);
+    _retryTimers[said] = timer;
+    _retryRuns[said] = run;
+  }
+
+  /// How often a message waiting for the connection looks for it again.
+  static const hostDownPoll = Duration(seconds: 3);
+
+  /// Messages waiting for their next automatic try, with the timer and what
+  /// the timer would do, so the connection coming back can go at once.
+  final Map<ChatSaid, Timer> _retryTimers = {};
+  final Map<ChatSaid, void Function()> _retryRuns = {};
+
+  /// The connection is back (or Claude was started again): every message
+  /// waiting for its next try goes now, each after the transcript has been
+  /// looked in for it, rather than when its timer comes round.
+  void _retryNow() {
+    final waiting = [..._retryRuns.entries];
+    for (final entry in waiting) {
+      _retryTimers.remove(entry.key)?.cancel();
+      _retryRuns.remove(entry.key);
+      entry.value();
+    }
   }
 
   /// What was left in the outbox for the session on show, drawn as bubbles:
@@ -2615,7 +2684,9 @@ class ClaudeChat extends ChangeNotifier {
             )
             ..outboxKey = key
             ..outboxId = entry.id;
-      if (entry.failed || _composing) {
+      // A failure that may pass by itself is still waiting, not failed.
+      final waits = !entry.failed || entry.transient;
+      if (!waits || _composing) {
         // A new chat's message that was left waiting may have started a
         // session or not; the user decides.
         said
@@ -2639,7 +2710,7 @@ class ClaudeChat extends ChangeNotifier {
     notifyListeners();
     for (final said in waiting) {
       final why = _redeliver(said, defaultUpload);
-      if (why != null) _undelivered(said, 'Not sent: $why');
+      if (why != null) _undelivered(said, 'Not sent: $why', transient: true);
     }
   }
 
@@ -2846,7 +2917,12 @@ class ClaudeChat extends ChangeNotifier {
     if (pid != null) {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
-      if (read == null) return;
+      if (read == null) {
+        // Nothing to follow, but what waits for this session is still shown,
+        // with why it cannot go, rather than being left out of sight.
+        unawaited(restoreOutbox());
+        return;
+      }
       final pane = agent.interactive ? await _findPane(agent, pid) : null;
       if (_disposed) return;
       _retarget();
@@ -2937,6 +3013,24 @@ class ClaudeChat extends ChangeNotifier {
     _dropped.clear();
     _pictures = 0;
     _endTurn();
+    // The view is new, and so are the timers' targets: what waited to be
+    // sent again is drawn again from the outbox, and no entry is lost track
+    // of for having been added here.
+    for (final timer in _retryTimers.values) {
+      timer.cancel();
+    }
+    _retryTimers.clear();
+    _retryRuns.clear();
+    _addedHere.clear();
+    if (_resuming) {
+      // The same session on a new connection: its unsent messages are not
+      // "moved off". They stay in the outbox, waiting, and are sent again
+      // once the session is followed, after its transcript is looked in.
+      for (final said in unsent) {
+        said.keepInOutbox = true;
+      }
+      return;
+    }
     for (final said in gone) {
       // Told it was not sent, so it is kept as failed, to be sent again by
       // hand if the user comes back to the session it was written for.
@@ -3118,10 +3212,23 @@ class ClaudeChat extends ChangeNotifier {
   /// chat not yet begun waits for its first message.
   Future<void> resume() async {
     final watching = _watching;
-    if (watching != null) return continueFrom(watching);
-    if (_composing) return;
-    return _ended ? restart() : start();
+    // Same session, new connection: what was waiting to be sent for it is
+    // not left behind (see [_reset]) and goes again as soon as it can.
+    _resuming = true;
+    try {
+      if (watching != null) {
+        await continueFrom(watching);
+      } else if (!_composing) {
+        await (_ended ? restart() : start());
+      }
+    } finally {
+      _resuming = false;
+    }
+    if (!_disposed) _retryNow();
   }
+
+  /// Set while [resume] picks the same session up again on a new connection.
+  bool _resuming = false;
 
   /// Follows [agent]'s transcript from byte [from], starting with [carry] —
   /// the start of a line the history read stopped in the middle of, which the
@@ -3290,7 +3397,9 @@ class ClaudeChat extends ChangeNotifier {
                 'is in its input line at the terminal.'
           : 'Not sent: this chat moved off $name first.',
     );
-    if (_disposed) return;
+    // Left behind by a reconnect, not by moving to another session: it
+    // waits in the outbox, and is drawn again with the session.
+    if (_disposed || said.keepInOutbox) return;
     // Said by [_reset] already, unless this adds what it could not know: that
     // the text was typed into the session's input line.
     if (_toldGone.remove(said) && !typed) return;
@@ -3721,9 +3830,22 @@ class ClaudeChat extends ChangeNotifier {
     _pending.remove(said);
     final recorded = _recorded.remove(said);
     if (recorded != null && !recorded.isCompleted) recorded.complete();
-    unawaited(_outboxFailed(said.outboxKey, said.outboxId, why));
-    if (transient && !_disposed) unawaited(_scheduleRetry(said));
+    // A message left behind by a reconnect's reset is still waiting in the
+    // outbox for the same session: that is not a failure to record.
+    if (!said.keepInOutbox) {
+      unawaited(
+        _outboxFailed(said.outboxKey, said.outboxId, why, transient: transient),
+      );
+      if (transient && !_disposed) unawaited(_scheduleRetry(said));
+    }
     if (!_disposed) notifyListeners();
+  }
+
+  /// Whether the connection to the host is known to be down or being made
+  /// again, as the session says it. Null [connected] knows nothing.
+  bool get _hostDown {
+    final connected = this.connected;
+    return connected != null && !connected();
   }
 
   /// Up to this many characters are typed into the session as keys; more
