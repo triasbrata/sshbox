@@ -295,24 +295,57 @@ class _ChatAskCardState extends State<ChatAskCard> {
         ),
       );
     }
+    // The button is named by its label and nothing else: Android reads a
+    // node's label and hint as one string, so a description given as the
+    // hint made "Red" read "Red, A warm colour." to a screen reader and to
+    // an e2e driver matching its text. What it means is read as words of
+    // its own inside it. TuiCheckboxRow's layout, its box left out, since
+    // the button says whether it is checked.
     return Semantics(
       container: true,
       button: true,
       checked: chosen,
       label: option.label,
-      // Read with it: what the option means is part of choosing it, and the
-      // text under ExcludeSemantics below is not in the tree.
-      hint: option.description.isEmpty ? null : option.description,
       child: InkWell(
         onTap: () => _pick(q, o, !chosen),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
-          child: ExcludeSemantics(
-            child: TuiCheckboxRow(
-              value: chosen,
-              onChanged: (on) => _pick(q, o, on ?? false),
-              child: body,
-            ),
+          child: Row(
+            children: [
+              ExcludeSemantics(
+                child: TuiCheckbox(
+                  value: chosen,
+                  onChanged: (on) => _pick(q, o, on ?? false),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ExcludeSemantics(
+                      child: TuiText(option.label, bold: true, size: 13),
+                    ),
+                    if (option.description.isNotEmpty)
+                      Semantics(
+                        container: true,
+                        child: TuiText(
+                          option.description,
+                          tone: TuiTextTone.muted,
+                          size: 12,
+                        ),
+                      ),
+                    if (option.preview != null && chosen)
+                      ExcludeSemantics(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: _Preview(option.preview!),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -344,6 +377,10 @@ class _KeyButtonState extends State<_KeyButton> {
     final enabled = widget.onPressed != null;
     return FocusableActionDetector(
       enabled: enabled,
+      // No node of its own: an unnamed focusable node around the button is
+      // what a driver or a screen reader would land on instead of it. The
+      // button's own node is named and takes the tap.
+      includeFocusSemantics: false,
       onShowFocusHighlight: (on) => setState(() => _focused = on),
       actions: {
         ActivateIntent: CallbackAction<ActivateIntent>(
