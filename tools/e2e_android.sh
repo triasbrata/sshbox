@@ -1180,6 +1180,132 @@ JSON
   return "$status"
 }
 
+# Chat answers a question a WATCHED session asks (.maestro/chat_ask_watched.yaml):
+# a claude --bg session through `claude attach`, and Claude in a tmux pane, the
+# picks typed into the session's own dialog. The stand-in is
+# tools/e2e_ask_watched.py, whose dialog takes the keys a real 2.1.287 was
+# measured to take and logs every one to ~/.e2e-ask.log. The flow can see only
+# the card; what reached the dialog is read from that log after each run: the
+# keys, how many attaches were opened, whether the session still waits, and
+# that no shell syntax typed as an answer was run.
+ask_pids=()
+ask_check() { # KIND
+  sudo python3 - "/home/$SSH_USER" "$1" <<'PY'
+import json, os, sys
+home, kind = sys.argv[1:3]
+events = [json.loads(l) for l in open(os.path.join(home, '.e2e-ask.log')) if l.strip()]
+n = {'single': 1, 'multi': 2, 'two': 3, 'other': 4, 'perm': 5, 'pane': 6}[kind]
+sid = 'e2e00000-0000-4000-8000-00000000a%03d' % n
+keys = []
+for e in events:
+    if e['ev'] != 'key' or e['sid'] != sid:
+        continue
+    if e['k'] in ('char', 'space'):
+        if keys and keys[-1].startswith('text:'):
+            keys[-1] += e['c']
+        else:
+            keys.append('text:' + e['c'])
+    else:
+        keys.append(e['k'])
+attaches = [e for e in events if e['ev'] == 'attach-id' and e['id'] == 'e2eask%02d' % n]
+answered = [e['answers'] for e in events if e['ev'] == 'answered' and e['sid'] == sid]
+rows = json.load(open(os.path.join(home, '.e2e-agents.json')))
+waiting = next(r.get('waitingFor') for r in rows if r['sessionId'] == sid)
+# Measured on 2.1.287: Down and Enter for a choice, Space, Down and Tab for
+# several (Enter submits the review), the words typed on "Type something."
+want = {
+    'single': (['down', 'enter'], 1, [{'Which fruit?': 'Banana'}], None),
+    'multi': (['space', 'down', 'down', 'space', 'tab', 'enter'], 1,
+              [{'Which colours?': 'Red, Blue'}], None),
+    'two': (['down', 'enter', 'enter', 'enter'], 1,
+            [{'Which size?': 'Large', 'Which shape?': 'Circle'}], None),
+    'other': (['down', 'down', 'text:Lisbon $(touch x)', 'enter'], 1,
+              [{'Which city?': 'Lisbon $(touch x)'}], None),
+    # Nothing typed, no attach opened, still waiting for the permission.
+    'perm': ([], 0, [], 'permission prompt'),
+    # The pane is not an attach: its keys came through tmux.
+    'pane': (['down', 'enter'], 0, [{'Which drink?': 'Coffee'}], None),
+}[kind]
+problems = []
+if keys != want[0]:
+    problems.append(f'the dialog got keys {keys}, not {want[0]}')
+if len(attaches) != want[1]:
+    problems.append(f'{len(attaches)} attaches opened, not {want[1]}')
+if answered != want[2]:
+    problems.append(f'the transcript recorded {answered}, not {want[2]}')
+if waiting != want[3]:
+    problems.append(f'the session is listed waitingFor {waiting!r}, not {want[3]!r}')
+if kind == 'other':
+    for path in ('x', '/x', '/tmp/x'):
+        full = path if path.startswith('/') else os.path.join(home, path)
+        if os.path.exists(full):
+            problems.append(f'{full} exists: the typed $(touch x) ran')
+for p in problems:
+    print('::error::chat_ask_watched ' + kind + ': ' + p)
+print(f'{kind}: keys {keys}, attaches {len(attaches)}, recorded {answered}, waitingFor {waiting!r}')
+sys.exit(1 if problems else 0)
+PY
+}
+
+chat_ask_watched() {
+  local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) log=/home/$SSH_USER/.e2e-ask.log
+  local kind pid pids='' pane
+  chat_stand_in
+  end_live_session
+  if "${as[@]}" tmux has-session -t e2e-ask 2>/dev/null ||
+    sudo find "$home/.claude/sessions" -name '*.json' 2>/dev/null | grep -q .; then
+    echo "::error::the host already has a live session; not starting another" >&2
+    return 1
+  fi
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_ask_watched.py "$home/.e2e-ask-watched.py"
+  put_stand_in <<'SH'
+p=$HOME/.e2e-ask-watched.py
+case "$1" in
+  --version) echo '2.1.287 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  attach) exec env PYTHONIOENCODING=utf-8 python3 "$p" --attach "$2" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  sudo rm -f "$log"
+  "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-transcripts || return 1
+  # The background sessions' processes: a sleep each, as live ones.
+  ask_pids=()
+  for kind in single multi two other perm; do
+    pid=$("${as[@]}" sh -c 'setsid sleep 3600 </dev/null >/dev/null 2>&1 & echo $!')
+    ask_pids+=("$pid")
+    pids="$pids\"$kind\": $pid, "
+  done
+  # The interactive one, in a tmux pane of its own.
+  "${as[@]}" sh -c 'cd && LANG=C.UTF-8 LC_ALL=C.UTF-8 tmux new-session -d -s e2e-ask \
+    -x 120 -y 30 "exec env PYTHONIOENCODING=utf-8 python3 $HOME/.e2e-ask-watched.py --pane $1"' \
+    sh e2e00000-0000-4000-8000-00000000a006 || return 1
+  sleep 1
+  pane=$("${as[@]}" tmux list-panes -t e2e-ask -F '#{pane_pid}')
+  "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-rows "{${pids}\"pane\": $pane}" || return 1
+  echo "ask host: sleeps ${ask_pids[*]}, pane pid $pane"
+  for kind in single multi two other perm pane; do
+    echo "-- chat_ask_watched: $kind"
+    sudo truncate -s 0 "$log" 2>/dev/null
+    flow chat_ask_watched -e "KIND=$kind" -e "SESSION=E2E ask $kind" ||
+      { echo "::error::chat_ask_watched failed at its '$kind' run"; status=1; }
+    echo "the stand-in's log for $kind:"
+    sudo cat "$log" 2>/dev/null
+    ask_check "$kind" || status=1
+    keep_shots 'chat-ask-watched-*.png'
+  done
+  # Only what this started: the tmux session, the sleeps, the stand-in, and
+  # these sessions' transcripts and state file.
+  "${as[@]}" tmux kill-session -t e2e-ask 2>/dev/null
+  for pid in "${ask_pids[@]}"; do sudo kill "$pid" 2>/dev/null; done
+  sudo find "$home/.claude/projects" -name 'e2e00000-0000-4000-8000-00000000a0*.jsonl' -delete 2>/dev/null
+  sudo find "$home/.claude/sessions" -name '*.json' \
+    -exec grep -l '"sessionId":"e2e00000-' {} + 2>/dev/null | xargs -r sudo rm -f
+  sudo rm -f "$home/.e2e-ask-watched.py"
+  stand_in ''
+  return "$status"
+}
+
 # #226: ↑ goes back to the last message (.maestro/chat_edit_previous.yaml),
 # against tools/e2e_edit_claude.py as chat's own `claude -p`. What it was
 # started with is read after the flow: exactly one start with
@@ -1931,6 +2057,10 @@ chat_outbox_reconnect || echo "::warning::chat_outbox_reconnect failed -- report
 
 echo "::group::chat_edit_previous (report only)"
 chat_edit_previous || echo "::warning::chat_edit_previous failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_ask_watched (report only)"
+chat_ask_watched || echo "::warning::chat_ask_watched failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_slash (report only)"
