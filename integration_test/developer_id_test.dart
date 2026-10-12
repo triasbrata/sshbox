@@ -3,9 +3,14 @@
 // build cannot reach, says so once and never loops; with nothing moved it
 // says nothing. Against the job's own sshd (e2e.yml), on the real macOS app.
 //
-// A relaunch is a new run of the app, so this file runs once per phase, each
-// started by e2e.yml with --dart-define=JEANSH_E2E_DEVID, in order, on the
-// same data (preferences, hosts and keychain):
+// A relaunch is the app started again in the same process: this build is one
+// binary with one keychain ACL entry, and a second ad-hoc build of it is a
+// program the keychain does not know, which asks and, on CI, waits for ever.
+// A real relaunch into another binary is exactly what a Developer ID
+// signature fixes, and cannot be driven here. So each phase is a test of its
+// own, in order, on the same data (preferences, hosts and keychain), and starts
+// by forgetting what a process remembers: the secrets kept for the run, the
+// notices already said, the notifier and the preferences read from disk.
 //
 //   add               a host with a password is saved and connected: the saved
 //                     password authenticates, no notice
@@ -33,18 +38,15 @@ import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:xterm2/xterm.dart';
 
-// From the environment, not a --dart-define: a define rebuilds the app, and a
-// rebuilt ad-hoc binary is another program to the keychain, which prompts.
-final _phase = Platform.environment['JEANSH_E2E_DEVID'] ?? '';
+/// The phase under way, set by main() before each test.
+var _phase = '';
 const _movedKey = 'sshbox.secrets.movedToDataProtectionKeychain';
 
 final _user = Platform.environment['SSH_USER'] ?? '';
 final _password = Platform.environment['SSH_PASSWORD'] ?? '';
 final _port = int.tryParse(Platform.environment['SSH_PORT'] ?? '') ?? 22;
 
-String? get _skip => _phase.isEmpty
-    ? 'run by e2e.yml, one phase at a time'
-    : !Platform.isMacOS
+String? get _skip => !Platform.isMacOS
     ? 'the unsigned macOS build'
     : macosKeychainGroup.isNotEmpty
     ? 'this build is signed with a keychain group'
@@ -111,10 +113,31 @@ Future<List<String>> _noted() async {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets(
-    'a secret moved away, on an unsigned build ($_phase)',
-    skip: _skip != null,
-    (tester) async {
+  for (final phase in [
+    'add',
+    'relaunch',
+    'rollback',
+    'rollback-relaunch',
+    'none',
+  ]) {
+    testWidgets(
+      'a secret moved away, on an unsigned build ($phase)',
+      skip: _skip != null,
+      (tester) async {
+        _phase = phase;
+        await _body(tester);
+      },
+    );
+  }
+}
+
+Future<void> _body(WidgetTester tester) async {
+  {
+    {
+      // A relaunch forgets what a process remembers.
+      KeystoreSecretStore.forgetKept();
+      secretNotice.value = null;
+      await (await SharedPreferences.getInstance()).reload();
       final missing = _noSshd;
       if (missing != null) {
         fail("the job's sshd step did not run: no $missing in the environment");
@@ -322,6 +345,14 @@ void main() {
           expect(reconnect.evaluate(), isEmpty);
           debugPrint('STEP PASS (none): the usual missing-password answer');
       }
-    },
-  );
+      // Tabs closed, so the next launch starts from Home with no session.
+      final close = find.byWidgetPredicate(
+        (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+      );
+      for (var i = 0; i < 20 && close.evaluate().isNotEmpty; i++) {
+        await tester.tap(close.first);
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+    }
+  }
 }

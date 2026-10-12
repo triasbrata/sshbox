@@ -203,6 +203,16 @@ class KeystoreSecretStore implements SecretStore {
   @visibleForTesting
   bool get tracksMoves => _moved != null;
 
+  /// What a process remembers of the keychain, forgotten, as at a relaunch:
+  /// the kept reads and the keys already said. The desktop e2e starts the app
+  /// again in one process, which is the only place this is called.
+  @visibleForTesting
+  static void forgetKept() {
+    _shared._kept.clear();
+    _shared._reading.clear();
+    _shared._said.clear();
+  }
+
   /// What the keychain answered, null for no item, by key.
   final _kept = <String, String?>{};
 

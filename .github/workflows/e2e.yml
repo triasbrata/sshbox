@@ -569,16 +569,14 @@ jobs:
             exit 1
           }
 
-      # #286: an unsigned build and a secret a signed one moved away. A
-      # relaunch is a new run, so one run a phase, on the same data. Each run
-      # is a build of its own, so a different ad-hoc binary from the one that
-      # saved an item, which a keychain asks about when it reads it. The runner's
-      # login keychain has a password the job does not know, so the step makes
-      # a keychain of its own with a known one, first in the search list and the
-      # default, so the app's items land there, and opens it to any program
-      # between phases, as a user would click Always Allow. The old default is
-      # put back and the keychain deleted at the end, whatever happened. A
-      # change to the runner, not to the app.
+      # #286: an unsigned build and a secret a signed one moved away, every
+      # phase in one flutter test process, so one binary: a relaunch into a
+      # second ad-hoc build is a program the keychain has no ACL entry for,
+      # which asks and waits for ever on CI, and what a Developer ID signature
+      # fixes cannot be driven here. The step makes a keychain of its own with a
+      # known password, unlocked, first in the search list and the default, so
+      # the app's items land there; the old default is put back and the
+      # keychain deleted at the end, whatever happened.
       - name: Moved secrets on an unsigned build
         timeout-minutes: 20
         if: always()
@@ -594,31 +592,6 @@ jobs:
             security delete-keychain "$kc" || true
           }
           trap restore EXIT
-          # A file-keychain item has an ACL of the apps trusted to read it,
-          # and the next phase's ad-hoc binary is not on it, so it would
-          # prompt. Each item is read (the partition list lets apple-tool),
-          # deleted and added again with -A, any app may read it. Service and
-          # account are read from the keychain, so they are the app's own; a
-          # value is never printed.
-          reopen() {
-            security dump-keychain "$kc" 2>/dev/null | awk '
-              /^keychain:/ { if (a != "") print s "\t" a; s=""; a="" }
-              /"svce"<blob>=/ { split($0, p, "\""); s=p[4] }
-              /"acct"<blob>=/ { split($0, p, "\""); a=p[4] }
-              END { if (a != "") print s "\t" a }' |
-            while IFS=$'\t' read -r svc acct; do
-              if val=$(security find-generic-password -s "$svc" -a "$acct" -w "$kc" 2>&1); then
-                security delete-generic-password -s "$svc" -a "$acct" "$kc" >/dev/null 2>&1
-                if security add-generic-password -U -A -s "$svc" -a "$acct" -w "$val" "$kc" 2>/dev/null; then
-                  echo "re-added $acct for any app"
-                else
-                  echo "could not add $acct again"
-                fi
-              else
-                echo "could not read $acct: $(echo "$val" | head -c 200 | sed 's/-w .*//')"
-              fi
-            done
-          }
           security create-keychain -p "$pw" "$kc"
           security unlock-keychain -p "$pw" "$kc"
           security set-keychain-settings -lut 7200 "$kc"
@@ -627,30 +600,14 @@ jobs:
           security list-keychains -d user -s "$kc" $old_list
           echo "default keychain now: $(security default-keychain -d user)"
           rc=0
-          for phase in add relaunch rollback rollback-relaunch none; do
-            E2E_TESTS=integration_test/developer_id_test.dart \
-              JEANSH_E2E_DEVID=$phase tools/e2e_desktop.sh macos \
-              || { rc=1; break; }
-            # What flutter_secure_storage keeps are generic passwords, not keys.
-            # Its answer is printed: a failure is a reason to read, not hide.
-            if err=$(security set-generic-password-partition-list \
-              -S apple-tool:,apple:,unsigned: -k "$pw" "$kc" 2>&1); then
-              echo "keychain opened to any program after $phase"
-            else
-              echo "set-generic-password-partition-list failed after $phase: $err"
-            fi
-            security dump-keychain "$kc" 2>/dev/null | grep -c 'class: "genp"' \
-              | sed "s/^/generic passwords in the test keychain after $phase: /" || true
-            reopen
-            # Who may read what, with no secret in it, to read if it still hangs.
-            echo "access control lists after $phase:"
-            security dump-keychain -a "$kc" 2>&1 | grep -E 'class:|"svce"|"acct"|description:|applications|authorizations' | head -40 || true
-          done
+          E2E_TESTS=integration_test/developer_id_test.dart \
+            tools/e2e_desktop.sh macos || rc=1
           if [ "$rc" -ne 0 ]; then
             echo "securityd, the last 2 minutes:"
             log show --last 2m --predicate 'process == "securityd" OR subsystem == "com.apple.securityd"' 2>/dev/null | tail -40 || true
           fi
           exit $rc
+
 
       # The native crash and hang scrub (apple/NativeCrashes.swift) against a
       # real sentry-cocoa, which only a Mac can run. Needs the Sentry
