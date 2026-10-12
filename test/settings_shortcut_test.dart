@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -76,9 +77,13 @@ Future<void> _start(WidgetTester tester, _Shell shell) async {
 }
 
 Future<void> _pressCmdComma(WidgetTester tester) async {
-  await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+  final mac = defaultTargetPlatform == TargetPlatform.macOS;
+  final modifier = mac
+      ? LogicalKeyboardKey.metaLeft
+      : LogicalKeyboardKey.controlLeft;
+  await tester.sendKeyDownEvent(modifier);
   await tester.sendKeyEvent(LogicalKeyboardKey.comma);
-  await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+  await tester.sendKeyUpEvent(modifier);
   await _settle(tester);
 }
 
@@ -111,45 +116,125 @@ void main() {
   setUp(() => localTmux.value = (on: false, path: ''));
   tearDown(() => localTmux.value = (on: true, path: ''));
 
-  group('on a Mac, ⌘, opens Settings', () {
-    testWidgets('from Home, once however often it is pressed, and the same '
-        'page Home\'s ⚙ opens', (tester) async {
+  final desktops = TargetPlatformVariant({
+    TargetPlatform.macOS,
+    TargetPlatform.linux,
+    TargetPlatform.windows,
+  });
+
+  NavigatorState navigator(WidgetTester tester) =>
+      tester.state<NavigatorState>(find.byType(Navigator).first);
+
+  group('⌘, on a Mac, Ctrl+, elsewhere, toggles Settings', () {
+    testWidgets('opens it, and again closes it back to Home as it was', (
+      tester,
+    ) async {
       await _start(tester, _Shell());
+      expect(find.text('Local shell'), findsOneWidget);
       expect(_settings, findsNothing);
 
       await _pressCmdComma(tester);
       expect(_settings, findsOneWidget);
 
       await _pressCmdComma(tester);
-      expect(_settings, findsOneWidget);
-
-      // Back to Home, and in through the ⚙ instead: ⌘, finds it open.
-      tester.state<NavigatorState>(find.byType(Navigator).first).pop();
-      await _settle(tester);
       expect(_settings, findsNothing);
-      await tester.tap(find.byTooltip('Settings'));
-      await _settle(tester);
+      expect(find.text('Local shell'), findsOneWidget);
+
+      // And once more: it opens again.
       await _pressCmdComma(tester);
       expect(_settings, findsOneWidget);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+    }, variant: desktops);
 
-    testWidgets('from a terminal holding the focus, and the key never '
-        'reaches the program', (tester) async {
+    testWidgets('closes back to the terminal tab with its state kept, and '
+        'the key never reaches the program', (tester) async {
       final shell = _Shell();
       await _start(tester, shell);
       await _openTerminal(tester, shell);
+      final view = tester.widget<TerminalView>(find.byType(TerminalView));
 
       await _pressCmdComma(tester);
+      expect(_settings, findsOneWidget);
+      await _pressCmdComma(tester);
+      expect(_settings, findsNothing);
+
+      // The very same terminal, never rebuilt from scratch.
+      expect(
+        tester.widget<TerminalView>(find.byType(TerminalView)).terminal,
+        same(view.terminal),
+      );
       // The kitty protocol's ⌘, is ESC [ 44 ; 9 u, 44 being the comma.
       expect(shell.sent.join(), isNot(contains('\x1b[44;')));
+      expect(shell.sent.join(), isNot(contains(',')));
+    }, variant: desktops);
+
+    testWidgets('from a sub-page of Settings it goes all the way out', (
+      tester,
+    ) async {
+      await _start(tester, _Shell());
+      await _pressCmdComma(tester);
+      await _settle(tester);
+      final row = find.bySemanticsLabel('Key bar');
+      await tester.scrollUntilVisible(
+        row,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(row);
+      await _settle(tester);
+      expect(find.byType(KeyBarSettingsPage), findsOneWidget);
+
+      await _pressCmdComma(tester);
+      expect(find.byType(KeyBarSettingsPage), findsNothing);
+      expect(_settings, findsNothing);
+      expect(find.text('Local shell'), findsOneWidget);
+    }, variant: desktops);
+
+    testWidgets('opened by the ⚙ tap, it toggles the same way', (tester) async {
+      await _start(tester, _Shell());
+      await tester.tap(find.byTooltip('Settings'));
+      await _settle(tester);
       expect(_settings, findsOneWidget);
 
       await _pressCmdComma(tester);
-      expect(_settings, findsOneWidget);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+      expect(_settings, findsNothing);
+    }, variant: desktops);
 
-    testWidgets('from the app menu\'s Settings…, which the Mac hands over on '
-        'sshbox/menu', (tester) async {
+    testWidgets('with a field focused in a dialog over Settings it still '
+        'works, and types no comma', (tester) async {
+      await _start(tester, _Shell());
+      await _pressCmdComma(tester);
+      final controller = TextEditingController();
+      final nav = navigator(tester);
+      unawaited(
+        showDialog<void>(
+          context: nav.context,
+          builder: (_) => AlertDialog(
+            content: TextField(controller: controller, autofocus: true),
+          ),
+        ),
+      );
+      await _settle(tester);
+      expect(find.byType(TextField), findsOneWidget);
+
+      await _pressCmdComma(tester);
+      expect(find.byType(TextField), findsNothing);
+      expect(_settings, findsNothing);
+      expect(controller.text, isNot(contains(',')));
+    }, variant: desktops);
+
+    testWidgets('the comma alone does nothing', (tester) async {
+      await _start(tester, _Shell());
+      await tester.sendKeyEvent(LogicalKeyboardKey.comma);
+      await _settle(tester);
+      expect(_settings, findsNothing);
+
+      await _pressCmdComma(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.comma);
+      await _settle(tester);
+      expect(_settings, findsOneWidget);
+    }, variant: desktops);
+
+    testWidgets('the Mac\'s Settings… menu item toggles too', (tester) async {
       await _start(tester, _Shell());
       Future<void> clickMenu() async {
         await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
@@ -164,27 +249,26 @@ void main() {
 
       await clickMenu();
       expect(_settings, findsOneWidget);
-
       await clickMenu();
-      expect(_settings, findsOneWidget);
+      expect(_settings, findsNothing);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
   });
 
   testWidgets(
-    'on Linux and Windows the same keys open nothing',
+    'the other platform\'s chord opens nothing: ⌘, on Linux and Windows, '
+    'Ctrl+, on a Mac',
     (tester) async {
-      final shell = _Shell();
-      await _start(tester, shell);
-      await _pressCmdComma(tester);
-      expect(_settings, findsNothing);
-
-      await _openTerminal(tester, shell);
-      await _pressCmdComma(tester);
+      await _start(tester, _Shell());
+      final mac = defaultTargetPlatform == TargetPlatform.macOS;
+      final wrong = mac
+          ? LogicalKeyboardKey.controlLeft
+          : LogicalKeyboardKey.metaLeft;
+      await tester.sendKeyDownEvent(wrong);
+      await tester.sendKeyEvent(LogicalKeyboardKey.comma);
+      await tester.sendKeyUpEvent(wrong);
+      await _settle(tester);
       expect(_settings, findsNothing);
     },
-    variant: TargetPlatformVariant({
-      TargetPlatform.linux,
-      TargetPlatform.windows,
-    }),
+    variant: desktops,
   );
 }

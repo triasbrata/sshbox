@@ -161,7 +161,7 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_sayIfOpenCommandMissing());
     lastFault.addListener(_offerToReport);
     localTmux.addListener(_noTmux.clear);
-    if (defaultTargetPlatform == TargetPlatform.macOS) {
+    if (isDesktop) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
     }
     if (defaultTargetPlatform != TargetPlatform.iOS) {
@@ -169,7 +169,7 @@ class _SshboxAppState extends State<SshboxApp> {
     }
     if (isDesktop) {
       _menuChannel.setMethodCallHandler((call) async {
-        if (call.method == 'openSettings') _openSettings();
+        if (call.method == 'openSettings') _toggleSettings();
         if (call.method == 'checkForUpdates') _checkFromMenu();
         if (call.method == 'zoomIn') _zoom(1);
         if (call.method == 'zoomOut') _zoom(-1);
@@ -208,11 +208,20 @@ class _SshboxAppState extends State<SshboxApp> {
     if (navigator != null) openSettings(navigator, notifyKeys: _notifyKeys);
   }
 
+  /// The key and the Mac's menu item: open Settings, or, with it showing,
+  /// go back to the page it was opened from.
+  void _toggleSettings() {
+    final navigator = _navigator.currentState;
+    if (navigator != null) {
+      toggleSettings(navigator, notifyKeys: _notifyKeys);
+    }
+  }
+
   /// Whether this ⌘, went down here, so its key-up is taken too.
   bool _settingsKeyDown = false;
 
-  /// ⌘, on a Mac opens Settings, as it does in every Mac app, wherever the
-  /// focus is.
+  /// ⌘, on a Mac, Ctrl+, on Linux and Windows, opens Settings, as it does in
+  /// every Mac app, wherever the focus is; pressed again it closes it.
   ///
   /// An early handler rather than a shortcut at the root: the focus chain
   /// runs from the focused widget up, so a terminal holding the focus would
@@ -230,14 +239,15 @@ class _SshboxAppState extends State<SshboxApp> {
       return KeyEventResult.handled;
     }
     final keys = HardwareKeyboard.instance;
-    if (!keys.isMetaPressed ||
-        keys.isControlPressed ||
-        keys.isAltPressed ||
-        keys.isShiftPressed) {
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final chord = mac
+        ? keys.isMetaPressed && !keys.isControlPressed
+        : keys.isControlPressed && !keys.isMetaPressed;
+    if (!chord || keys.isAltPressed || keys.isShiftPressed) {
       return KeyEventResult.ignored;
     }
     _settingsKeyDown = true;
-    if (event is KeyDownEvent) _openSettings();
+    if (event is KeyDownEvent) _toggleSettings();
     return KeyEventResult.handled;
   }
 
