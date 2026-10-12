@@ -152,7 +152,6 @@ class _SshboxAppState extends State<SshboxApp> {
   void initState() {
     super.initState();
     _keepAlive.attach();
-    WidgetsBinding.instance.addObserver(_resume);
     sessionLog.follow(_sessions);
     unawaited(_restoreTabs());
     unawaited(_startNotifications());
