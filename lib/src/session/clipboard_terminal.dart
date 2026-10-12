@@ -46,7 +46,7 @@ class ClipboardTerminal extends Terminal {
   /// menu and a share alike: its amount is logged, never the text.
   @override
   void paste(String text) {
-    logPaste('terminal', 'text', text.length);
+    logPaste('terminal', 'text', sizeBucket(text.length));
     pasting = true;
     try {
       super.paste(text);

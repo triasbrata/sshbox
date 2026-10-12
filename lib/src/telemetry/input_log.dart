@@ -186,7 +186,7 @@ class InputLog {
   /// A paste: where it went, what kind and how much. [amount] is characters
   /// for text and a count for pictures and files. A paste the app does not do
   /// itself has none: the clipboard is never read for the log.
-  void paste(String where, String kind, [int? amount]) {
+  void paste(String where, String kind, [Object? amount]) {
     flush();
     log.add('paste $kind${amount == null ? '' : ' $amount'} ($where)');
   }
@@ -195,10 +195,20 @@ class InputLog {
 /// The app's one.
 final inputLog = InputLog(appLog);
 
+/// A length as a bucket, never the exact count: the length of a pasted
+/// password is part of the password.
+String sizeBucket(int length) => length < 50
+    ? '<50'
+    : length < 500
+    ? '<500'
+    : length < 5000
+    ? '<5000'
+    : '5000+';
+
 var _muted = 0;
 
 /// Records a paste, unless inside [mutePasteLog].
-void logPaste(String where, String kind, [int? amount]) {
+void logPaste(String where, String kind, [Object? amount]) {
   if (_muted == 0) inputLog.paste(where, kind, amount);
 }
 

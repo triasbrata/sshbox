@@ -15,12 +15,13 @@ class _Keychain implements FlutterSecureStorage {
   int writes = 0;
   int deletes = 0;
   bool deny = false;
-  bool failWrite = false;
+  bool failWrites = false;
   bool failDelete = false;
 
   /// Set, what every read answers instead of what is there.
   String? garble;
   Completer<void>? hold;
+  Completer<void>? writeHold;
 
   @override
   Future<String?> read({
@@ -53,7 +54,8 @@ class _Keychain implements FlutterSecureStorage {
     WindowsOptions? wOptions,
   }) async {
     writes++;
-    if (failWrite) throw PlatformException(code: 'write refused');
+    await writeHold?.future;
+    if (failWrites) throw PlatformException(code: 'write refused');
     values[key] = value!;
   }
 
@@ -109,12 +111,56 @@ void main() {
     expect(keychain.reads, 1);
   });
 
-  test('a host edited then connected reads the new value afresh', () async {
+  test('a host edited then connected uses the value just written', () async {
     await store.read(password);
     await store.write(password, 'changed');
     expect(keychain.writes, 1);
     expect(await store.read(password), 'changed');
+    expect(await store.read(password), 'changed');
+    expect(keychain.reads, 1);
+  });
+
+  test('a secret a first connect makes and writes is not read back', () async {
+    final key = SecretKeys.openSecret('h1');
+    // First connect: none yet, so one is made and written.
+    expect(await store.read(key), isNull);
+    await store.write(key, 'made-on-first-connect');
+    expect(keychain.reads, 1);
+    expect(keychain.writes, 1);
+    // Reconnects: the same secret, from no keychain call at all.
+    expect(await store.read(key), 'made-on-first-connect');
+    expect(await store.read(key), 'made-on-first-connect');
+    expect(keychain.reads, 1);
+    expect(keychain.writes, 1);
+  });
+
+  test('a write that fails keeps nothing, and is read afresh', () async {
+    await store.read(password);
+    keychain.failWrites = true;
+    await expectLater(
+      store.write(password, 'changed'),
+      throwsA(isA<PlatformException>()),
+    );
+    keychain.failWrites = false;
+    expect(await store.read(password), 'hunter2-secret');
     expect(keychain.reads, 2);
+  });
+
+  test('a read started during a write cannot put the old value back', () async {
+    await store.read(password);
+    final writeHold = keychain.writeHold = Completer();
+    final writing = store.write(password, 'changed');
+    await Future<void>.delayed(Duration.zero);
+    // The keychain still holds the old value as this read starts, and
+    // answers only after the write is done.
+    final readHold = keychain.hold = Completer();
+    final during = store.read(password);
+    keychain.hold = null;
+    keychain.writeHold = null;
+    writeHold.complete();
+    await writing;
+    readHold.complete();
+    expect(await during, 'hunter2-secret');
     expect(await store.read(password), 'changed');
     expect(keychain.reads, 2);
   });
@@ -317,7 +363,7 @@ void main() {
     });
 
     test('a refused write keeps the old item, uses it, and says so', () async {
-      protected.failWrite = true;
+      protected.failWrites = true;
       expect(await signed.read(password), 'hunter2-secret');
       expect(login.values[password], 'hunter2-secret');
       expect(login.deletes, 0);
@@ -349,7 +395,7 @@ void main() {
     test(
       'a failure is said once a key a run, however often it is read',
       () async {
-        protected.failWrite = true;
+        protected.failWrites = true;
         final passphrase = SecretKeys.passphrase('h1');
         login.values[passphrase] = 'words';
         final uncached = KeystoreSecretStore.over(
@@ -370,6 +416,40 @@ void main() {
       await signed.write(password, 'changed');
       expect(protected.values[password], 'changed');
       expect(login.values, isEmpty);
+    });
+
+    test('a written secret is kept: the old copy deleted does not drop it, '
+        'and nothing reads it back', () async {
+      await signed.write(password, 'changed');
+      // The write's own read moved the old copy first, so it is gone twice.
+      expect(login.values, isEmpty);
+      expect(login.deletes, 2);
+      final reads = protected.reads + login.reads;
+      expect(await signed.read(password), 'changed');
+      expect(await signed.read(password), 'changed');
+      expect(protected.reads + login.reads, reads);
+    });
+
+    test('a moved secret then written is kept as written', () async {
+      expect(await signed.read(password), 'hunter2-secret');
+      await signed.write(password, 'changed');
+      final reads = protected.reads + login.reads;
+      expect(await signed.read(password), 'changed');
+      expect(protected.reads + login.reads, reads);
+      expect(protected.values[password], 'changed');
+      expect(login.values, isEmpty);
+    });
+
+    test('a refused delete of the old copy keeps nothing stale', () async {
+      login.failDelete = true;
+      await expectLater(
+        signed.write(password, 'changed'),
+        throwsA(isA<PlatformException>()),
+      );
+      login.failDelete = false;
+      // Not kept: the next read asks the keychain, which has the new value.
+      expect(await signed.read(password), 'changed');
+      expect(protected.values[password], 'changed');
     });
 
     test(
