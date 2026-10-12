@@ -69,7 +69,7 @@ sums() {
 }
 say "== sha256 before"
 sums | tee -a "$RESULTS"
-say "claude: $(timeout 20 claude --version </dev/null 2>&1 | head -n 1)"
+say "claude: $(CLAUDE_CONFIG_DIR="$CFG" timeout 20 claude --version </dev/null 2>&1 | head -n 1)"
 say "tmux: $(tmux -V)"
 
 t() { tmux -L "$SOCK" "$@"; }
@@ -119,7 +119,8 @@ wait_screen() {
 answers() {
   i=0
   while [ "$i" -lt "$STEP_WAIT" ]; do
-    found=$(find "$CFG/projects" -name '*.jsonl' 2>/dev/null | head -n 1)
+    # The transcript holding the question, not whatever file comes first.
+    found=$(grep -rl --include='*.jsonl' '"toolUseResult"' "$CFG/projects" 2>/dev/null | head -n 1)
     if [ -n "$found" ] && grep -q '"toolUseResult"' "$found"; then
       say "== recorded result"
       # The answers when there are some; a decline is a string instead.

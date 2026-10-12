@@ -4964,17 +4964,12 @@ class ClaudeChat extends ChangeNotifier {
     return identical(newest, ask);
   }
 
-  /// The keys that answer [ask] with [picks] in Claude Code's own question
-  /// dialog, or null when they are not known.
+  /// Between one key of an answer and the next, for the dialog to redraw:
+  /// Enter on a question moves the dialog on to the next one.
   ///
-  /// ponytail: not measured yet, so none are known and every answer typed
-  /// at a session's dialog is refused, out loud, before a key is sent: a
-  /// guessed key in a dialog answers something else, and a digit alone
-  /// answers a permission prompt.
-  static List<AskStep>? dialogKeys(ChatAsk ask, List<AskPick> picks) => null;
-
-  /// Between one step of an answer and the next, for the dialog to redraw.
-  static const _askStepGap = Duration(milliseconds: 150);
+  /// ponytail: the probe left a second between keys; this is shorter, with
+  /// the post-check in [answerAtTerminal] catching a key read too early.
+  static const _askStepGap = Duration(milliseconds: 400);
 
   /// Answers [ask], a question the session this chat watches is waiting on,
   /// with [picks], by typing them into the session's own dialog: through
@@ -5037,8 +5032,9 @@ class ClaudeChat extends ChangeNotifier {
     }
     final steps = askKeys(ask, picks);
     if (steps == null || steps.isEmpty) {
-      return fail('Jeansh does not know the keys of this Claude Code\'s '
-          'question dialog yet, so nothing was typed. Answer it at $where.');
+      return fail('Jeansh cannot type this answer into Claude Code\'s '
+          'question dialog — words of your own beside several choices — so '
+          'nothing was typed. Answer it at $where.');
     }
     final settled = _askWaits.putIfAbsent(ask, Completer.new);
     final typed = now.interactive
@@ -5267,7 +5263,7 @@ class ClaudeChat extends ChangeNotifier {
         r'"$t" load-buffer -b "$b" - && '
         r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
         r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
-        'no paste; }; sleep 0.15; ',
+        'no paste; }; sleep 0.4; ',
       );
     }
     return 'sh -c '

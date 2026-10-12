@@ -158,6 +158,9 @@ class _Shell
   /// What was typed into each terminal opened on the host.
   final typed = <List<String>>[];
 
+  /// What a terminal opened on the host draws first.
+  String attachScreen = ' ❯ ';
+
   /// Every file put on the host, by name; the first [failUploads] of them
   /// fail, as a disk that is full does.
   final uploaded = <String>[];
@@ -197,8 +200,9 @@ class _Shell
     final keys = <String>[];
     typed.add(keys);
     final screen = StreamController<Uint8List>();
-    // `claude attach` drawing its input line.
-    scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(' ❯ '))));
+    // `claude attach` drawing its input line, or what a test says it shows.
+    final draws = attachScreen;
+    scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(draws))));
     return (
       output: screen.stream,
       write: (Uint8List data) {
@@ -1496,9 +1500,9 @@ void main() {
     });
   });
 
-  testWidgets('a question in a session being watched can be answered from '
-      'the card; while the dialog\'s keys are unknown it says so, out loud, '
-      'and types nothing', (tester) async {
+  testWidgets('a question in a session being watched is answered from the '
+      'card, typed into its dialog; a session no longer asking is said out '
+      'loud and gets no keys', (tester) async {
     const input = {
       'questions': [
         {
@@ -1562,26 +1566,70 @@ void main() {
     expect(find.text('Ship it.'), findsOneWidget);
     // Answerable here, and with nothing to dismiss it by at its dialog.
     expect(find.bySemanticsLabel('Dismiss'), findsNothing);
-    await tester.tap(find.bySemanticsLabel('Yes'));
+    await tester.tap(find.bySemanticsLabel('No'));
     await tester.pump();
-    await tester.tap(find.bySemanticsLabel('Send answers'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
 
-    // On the card and in a toast, never taken for answered.
+    // The host's side answers in real time, and the pauses between keys are
+    // the test's own clock: both go on, a round of each [rounds] times, well
+    // inside a toast's 5 s.
+    Future<void> wait(int rounds) async {
+      for (var turn = 0; turn < rounds; turn++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+    }
+
+    // The session has moved on to a permission prompt: on the card and in a
+    // toast, nothing opened or typed, never taken for answered.
+    final asking = shell.listing!;
+    shell.listing = asking.replaceAll('input needed', 'permission prompt');
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await wait(4);
     expect(
-      find.textContaining('Not answered: Jeansh does not know the keys'),
+      find.textContaining('Not answered: “the deploy” is not waiting for an '
+          'answer but for permission prompt'),
       findsNWidgets(2),
     );
-    expect(
-      find.textContaining('Answer it at `claude attach 81badf4a`'),
-      findsNWidgets(2),
-    );
+    expect(shell.typed, isEmpty);
     expect(find.text('→ '), findsNothing);
-    expect(find.bySemanticsLabel('Send answers'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+
+    // Asking again, its dialog on screen: the keys the dialog takes for No,
+    // and answered once the session's transcript says so.
+    shell
+      ..listing = asking
+      ..attachScreen =
+          'Deploy now?\r\n❯ 1. Yes\r\n  2. No\r\n'
+          'Enter to select · ↑/↓ to navigate · Esc to cancel\r\n';
+    await tester.tap(find.bySemanticsLabel('Send answers'));
+    await wait(12);
+    expect(shell.typed.single, ['\x1b[B', '\r']);
+    expect(find.bySemanticsLabel('Typing the answer…'), findsOneWidget);
+    shell.adds({
+      'type': 'user',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_result',
+            'tool_use_id': 'toolu_ask',
+            'content': 'The user answered.',
+          },
+        ],
+      },
+      'toolUseResult': {
+        'questions': input['questions'],
+        'answers': {'Deploy now?': 'No'},
+      },
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('→ '), findsOneWidget);
+    expect(find.textContaining('Not answered'), findsNothing);
+    expect(find.bySemanticsLabel('Send answers'), findsNothing);
     expect(shell.written, isEmpty);
     expect(shell.paneTyped, isEmpty);
-    await tester.pump(const Duration(seconds: 6));
   });
 
   testWidgets('a host that cannot list its sessions says what it said', (

@@ -3553,7 +3553,7 @@ void main() {
           pid: pid,
           lengths: [1, 3, 14],
         );
-        final paste = const AskPaste('a \$(touch x)').bytes;
+        final paste = const AskText('a \$(touch x)').bytes;
 
         // Told no: nothing typed.
         var answer = await host(command, 'n');
@@ -8469,20 +8469,23 @@ void main() {
     };
     // A dialog as a terminal draws it, the question wrapped across lines.
     const dialog =
-        '\x1b[2J☐ Colours  ☐ Size  ✔ Submit\r\n\r\nWhich\r\n'
-        'colours?\r\n\r\n❯ 1. [ ] Red\r\n  2. [ ] Blue\r\n';
-    // Keys a test stands in for the measured ones with.
-    const keys = <AskStep>[
-      AskKeys(' '),
-      AskKeys('\x1b[B'),
-      AskPaste('Medium, please'),
-      AskKeys('\r'),
+        '\x1b[2J←  ☐ Colours  ☐ Size  ✔ Submit  →\r\n\r\nWhich\r\n'
+        'colours?\r\n\r\n❯ 1. [ ] Red\r\n  2. [ ] Blue\r\n'
+        'Enter to select · Tab/Arrow keys to navigate · Esc to cancel\r\n';
+    // [picks] as the dialog takes them, measured: Red and Blue ticked with
+    // Space and Tab on; Down past Small and Large to "Type something.", the
+    // words, Enter; Enter on the review's Submit answers.
+    const keys = [
+      ' ', '\x1b[B', ' ', '\t',
+      '\x1b[B', '\x1b[B', 'Medium, please', '\r',
+      '\r',
     ];
+    // Typed a key at a time, the dialog given time to redraw after each.
+    const typing = Duration(seconds: 5);
 
     Future<(ClaudeChat, _LiveHost, ChatAsk)> watch({
       bool interactive = false,
       String? waitingFor = 'input needed',
-      bool known = true,
       Duration deliveryTimeout = const Duration(seconds: 2),
     }) async {
       final text = jsonEncode(call);
@@ -8496,7 +8499,6 @@ void main() {
         open: host.open,
         openTerminal: host.openTerminal,
         deliveryTimeout: deliveryTimeout,
-        askKeys: known ? (ask, picks) => keys : ClaudeChat.dialogKeys,
       );
       addTearDown(chat.dispose);
       await chat.continueFrom(interactive ? _interactive : _live);
@@ -8560,34 +8562,34 @@ void main() {
       expect(idle.canAnswerAtTerminal(ask), isFalse);
     });
 
-    test('the keys of the dialog are not known yet: it says so, and opens '
+    test('an answer whose keys were never measured says so, and opens '
         'nothing and types nothing', () async {
-      final (chat, host, ask) = await watch(known: false);
-      final why = await chat.answerAtTerminal(ask, picks);
-      expect(why, startsWith('Not answered: Jeansh does not know the keys'));
+      final (chat, host, ask) = await watch();
+      // Words of one's own beside choices, on a question that takes several.
+      const unmeasured = <AskPick>[
+        (options: [0], other: 'Pink'),
+        (options: [1], other: ''),
+      ];
+      expect(dialogKeys(ask, unmeasured), isNull);
+      final why = await chat.answerAtTerminal(ask, unmeasured);
+      expect(why, startsWith('Not answered: Jeansh cannot type this answer'));
       expect(why, contains('claude attach ${_live.id}'));
       expect(ask.failure, why);
       expect(ask.sending, isFalse);
       expect(ask.open, isTrue);
       expect(host.terminals, isEmpty);
-      expect(ClaudeChat.dialogKeys(ask, picks), isNull);
     });
 
-    test('a background session: the keys go into its attach once its '
-        'screen shows the question, and it counts once the transcript has '
-        'those answers', () async {
+    test('a background session: the measured keys go into its attach once '
+        'its screen shows the question, and it counts once the transcript '
+        'has those answers', () async {
       final (chat, host, ask) = await watch();
       final going = chat.answerAtTerminal(ask, picks);
       expect(ask.sending, isTrue);
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      await Future<void>.delayed(typing);
       final terminal = host.terminals.single;
       expect(terminal.command, contains('attach'));
-      expect(terminal.typed, [
-        ' ',
-        '\x1b[B',
-        '\x1b[200~Medium, please\x1b[201~',
-        '\r',
-      ]);
+      expect(terminal.typed, keys);
       expect(terminal.closed.single, isTrue);
       // Typed, and still not answered until the session says so.
       expect(ask.sending, isTrue);
@@ -8620,7 +8622,7 @@ void main() {
         'at all are each said, never taken for answered', () async {
       var (chat, host, ask) = await watch();
       var going = chat.answerAtTerminal(ask, picks);
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      await Future<void>.delayed(typing);
       host.adds(recorded({'Which colours?': 'Red', 'Which size?': 'Small'}));
       expect(await going, contains('recorded “Red”, “Small”, not what was '
           'picked'));
@@ -8628,7 +8630,7 @@ void main() {
 
       (chat, host, ask) = await watch();
       going = chat.answerAtTerminal(ask, picks);
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      await Future<void>.delayed(typing);
       host.adds({
         'type': 'user',
         'message': {
@@ -8667,19 +8669,24 @@ void main() {
       var (chat, host, ask) = await watch(interactive: true);
       expect(chat.canAnswerAtTerminal(ask), isTrue);
       host.typedAnswer =
-          'sshbox:screen\nWhich colours?\n  1. Red\nsshbox:screen-end\n'
+          'sshbox:screen\nWhich colours?\n  1. Red\n'
+          'Enter to select · ↑/↓ to navigate\nsshbox:screen-end\n'
           'sshbox:typed %3\n';
       var going = chat.answerAtTerminal(ask, picks);
       await Future<void>.delayed(const Duration(milliseconds: 200));
-      final typing = host.paneTyping.single;
-      expect(typing.command, contains('input needed'));
-      expect(typing.stdin.single,
-          'y \x1b[B\x1b[200~Medium, please\x1b[201~\r');
+      final pane = host.paneTyping.single;
+      expect(pane.command, contains('input needed'));
+      // A key a piece, each read by its own length, after the go.
+      expect(pane.stdin.single, 'y${keys.join()}');
+      for (final key in keys) {
+        expect(pane.command, contains('count=${utf8.encode(key).length} '));
+      }
       host.adds(recorded(picked));
       expect(await going, isNull);
 
+      // The question's text, but no dialog: in the conversation above.
       (chat, host, ask) = await watch(interactive: true);
-      host.typedAnswer = 'sshbox:screen\n❯ \nsshbox:screen-end\n';
+      host.typedAnswer = 'sshbox:screen\n❯ Which colours?\nsshbox:screen-end\n';
       expect(await chat.answerAtTerminal(ask, picks),
           contains('not on its screen'));
       expect(host.paneTyping.single.stdin.single, 'n');
@@ -8736,20 +8743,68 @@ void main() {
       }
     });
 
-    test('words of the user\'s own go as one paste nothing in which a '
-        'terminal acts on', () {
-      const paste = AskPaste(' a\nb\tc\x1b[201~rm -rf\x07\x9b ');
-      expect(paste.clean, 'a b c [201~rm -rf');
-      expect(paste.bytes, '\x1b[200~a b c [201~rm -rf\x1b[201~');
-      expect('\x1b'.allMatches(paste.bytes), hasLength(2));
+    test('words of the user\'s own are typed as text, nothing in which a '
+        'terminal acts on as a key', () {
+      const words = AskText(' a\nb\tc\x1b[201~rm -rf\r\x07\x9b ');
+      expect(words.clean, 'a b c [201~rm -rf');
+      // Not a bracketed paste: the dialog's field shows its markers.
+      expect(words.bytes, 'a b c [201~rm -rf');
+      expect(RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(words.bytes), isFalse);
       expect(const AskKeys('\r').bytes, '\r');
     });
 
-    test('a dialog shows a question wrapped across lines; another, or '
-        'none, does not', () {
+    test('the measured keys: one question answered by Enter, several or a '
+        'question taking several ending on the review\'s Submit', () {
+      const down = '\x1b[B';
+      List<String>? keys(ChatAsk ask, List<AskPick> picks) =>
+          dialogKeys(ask, picks)?.map((step) => step.bytes).toList();
+      final one = ChatAsk.parse('o', {
+        'questions': [
+          {
+            'question': 'Which fruit?',
+            'options': [
+              {'label': 'Apple'},
+              {'label': 'Banana'},
+              {'label': 'Cherry'},
+            ],
+          },
+        ],
+      })!;
+      // As the probe answered Banana, and nothing after: an Enter more
+      // lands in the input line once the dialog has gone.
+      expect(keys(one, const [(options: [1], other: '')]), [down, '\r']);
+      expect(keys(one, const [(options: [0], other: '')]), ['\r']);
+      expect(keys(one, const [(options: [], other: 'Fig')]), [
+        down, down, down, 'Fig', '\r',
+      ]);
+      // A choice then several: Enter moves on, Space ticks, Tab moves on,
+      // and the review's Submit answers takes Enter.
+      expect(keys(ask, const [
+        (options: [1], other: ''),
+        (options: [0, 1], other: ''),
+      ]), [down, '\r', ' ', down, ' ', '\t', '\r']);
+      expect(keys(ask, const [
+        (options: [], other: 'C'),
+        (options: [1], other: ''),
+      ]), [down, down, 'C', '\r', down, ' ', '\t', '\r']);
+      // Not measured: words of one's own beside a question's choices.
+      expect(keys(ask, const [
+        (options: [0], other: ''),
+        (options: [0], other: 'Z'),
+      ]), isNull);
+      expect(keys(ask, const [(options: [0], other: '')]), isNull);
+    });
+
+    test('a dialog shows a question wrapped across lines, under its own '
+        'footer; another, the text alone, or none, does not', () {
+      const footer = 'Enter to select · ↑/↓ to navigate · Esc to cancel';
       final question = ask.questions.first;
-      expect(dialogShows(['  1. A', 'Pick', ' one?'], question), isTrue);
-      expect(dialogShows(['Pick two?'], question), isFalse);
+      expect(
+        dialogShows(['  1. A', 'Pick', ' one?', footer], question),
+        isTrue,
+      );
+      expect(dialogShows(['❯ Pick one?'], question), isFalse);
+      expect(dialogShows(['Pick two?', footer], question), isFalse);
       expect(dialogShows(const [], question), isFalse);
       final long = AskQuestion(
         question: 'w' * 300,
@@ -8757,7 +8812,7 @@ void main() {
         options: const [],
         multiSelect: false,
       );
-      expect(dialogShows(['w' * 150], long), isTrue);
+      expect(dialogShows(['w' * 150, footer], long), isTrue);
       final blank = AskQuestion(
         question: ' ',
         header: '',

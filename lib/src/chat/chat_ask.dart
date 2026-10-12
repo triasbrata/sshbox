@@ -217,8 +217,8 @@ sealed class AskStep {
   String get bytes;
 }
 
-/// Keys, as a terminal sends them: an arrow, Enter, a space. Never text of
-/// the user's or Claude's: that is an [AskPaste].
+/// Keys, as a terminal sends them: an arrow, Enter, a space, Tab. Never text
+/// of the user's or Claude's: that is an [AskText].
 class AskKeys extends AskStep {
   const AskKeys(this.keys);
 
@@ -228,13 +228,15 @@ class AskKeys extends AskStep {
   String get bytes => keys;
 }
 
-/// Words of the user's own, for an "Other" answer: one bracketed paste, so
-/// none of it is taken for the dialog's own keys, which include single
-/// letters. Every control character goes, newline and tab included, each
-/// becoming a space: the answer is one line, and an ESC left in it could
-/// close the paste early and have the rest typed as keys.
-class AskPaste extends AskStep {
-  const AskPaste(this.text);
+/// Words of the user's own, for an "Other" answer, typed into the dialog's
+/// "Type something." field once the cursor is on it, where text is text.
+///
+/// As it is, not as a bracketed paste: measured on 2.1.287, the field takes
+/// the markers of one literally, as `^[[200~` in the answer. So every control
+/// character goes, newline and tab included, each becoming a space: the
+/// answer is one line, and an ESC, a CR or a Tab left in it would be a key.
+class AskText extends AskStep {
+  const AskText(this.text);
 
   final String text;
 
@@ -244,17 +246,77 @@ class AskPaste extends AskStep {
   String get clean => text.replaceAll(_controls, ' ').trim();
 
   @override
-  String get bytes => '\x1b[200~$clean\x1b[201~';
+  String get bytes => clean;
 }
 
-/// Whether a session's screen, as [lines], shows [question]'s dialog: its
-/// text there, compared with all white space taken out of both, so a
-/// question the dialog wraps across lines still matches. Only the first 120
-/// characters are looked for, as a long question may be cut on screen.
+/// Whether a session's screen, as [lines], shows [question]'s dialog: the
+/// dialog's own footer, `Enter to select`, and the question's text, compared
+/// with all white space taken out of both, so a question the dialog wraps
+/// across lines still matches. Only the first 120 characters are looked for,
+/// as a long question may be cut on screen.
+///
+/// The footer as well, since the question's text can be on screen without
+/// the dialog: in the conversation above it, measured.
 bool dialogShows(List<String> lines, AskQuestion question) {
   String bare(String text) => text.replaceAll(RegExp(r'\s+'), '');
   final wanted = bare(question.question);
   if (wanted.isEmpty) return false;
   final head = wanted.length > 120 ? wanted.substring(0, 120) : wanted;
-  return bare(lines.join()).contains(head);
+  final screen = bare(lines.join());
+  return screen.contains('Entertoselect') && screen.contains(head);
+}
+
+/// The keys that answer [ask] with [picks] in Claude Code's question dialog,
+/// as measured on 2.1.287 in a terminal (`tools/probe_ask_dialog.sh`); or
+/// null where they are not known, so nothing is typed.
+///
+/// What was measured, the cursor starting on a question's first option:
+/// - Down moves it one row; options are rows 1 to N, then "Type something.".
+/// - A single choice: Enter picks the row under the cursor. With one question
+///   that answers it at once; with several it moves on to the next.
+/// - Several choices: Space ticks the row under the cursor — Enter ticks it
+///   too, so it is not used to pick — and Tab moves on to the next question,
+///   or to the review.
+/// - Words of the user's own: on "Type something." text goes into the field,
+///   and Enter takes it.
+/// - With several questions, or any of several choices, a review comes last,
+///   its cursor on "1. Submit answers", and Enter sends it.
+/// - Esc declines the whole question.
+///
+/// Not measured, so null: words of one's own beside choices of a question
+/// that takes several.
+List<AskStep>? dialogKeys(ChatAsk ask, List<AskPick> picks) {
+  if (answersFor(ask, picks) == null) return null;
+  const down = AskKeys('\x1b[B');
+  const enter = AskKeys('\r');
+  final steps = <AskStep>[];
+  var review = ask.questions.length > 1;
+  for (var i = 0; i < picks.length; i++) {
+    final question = ask.questions[i];
+    final pick = picks[i];
+    final own = pick.other.trim();
+    if (question.multiSelect) {
+      if (own.isNotEmpty) return null;
+      review = true;
+      var at = 0;
+      for (final option in pick.options.toList()..sort()) {
+        steps
+          ..addAll(List.filled(option - at, down))
+          ..add(const AskKeys(' '));
+        at = option;
+      }
+      steps.add(const AskKeys('\t'));
+    } else if (own.isNotEmpty) {
+      steps
+        ..addAll(List.filled(question.options.length, down))
+        ..add(AskText(own))
+        ..add(enter);
+    } else {
+      steps
+        ..addAll(List.filled(pick.options.single, down))
+        ..add(enter);
+    }
+  }
+  if (review) steps.add(enter);
+  return steps;
 }
