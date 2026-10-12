@@ -168,6 +168,9 @@ void main() {
     // The install's answer, as a toast, and the secret that went on stdin.
     await _until(tester, find.textContaining('was left alone'));
     expect(box.secrets.single, hasLength(greaterThan(20)));
+    // It stays up long enough to read and act on: still there after 4 s.
+    await tester.pump(const Duration(seconds: 4));
+    expect(find.textContaining('was left alone'), findsOneWidget);
 
     // A right request whose path is not UTF-8.
     box.out.add(
