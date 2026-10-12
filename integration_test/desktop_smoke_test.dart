@@ -4025,6 +4025,9 @@ touch '${done.path}'
     (tester) async {
       addTearDown(_logKeys('terminal'));
       await _launch(tester);
+      // A font an earlier test picked is saved, and Settings then names it
+      // where this test looks for "Installed on this computer…".
+      await terminalSettings.choose(family: terminalFonts.first.family);
       final view = await _localShell(tester);
       // A program that shows what reached it: ^[ for an escape, no more.
       _run(view, 'seq 1 300; cat -v');
@@ -4192,11 +4195,23 @@ touch '${done.path}'
       await keys('ctrl+comma');
       await settingsUp('before the font picker');
       final fonts = find.textContaining('Installed on this computer');
-      await tester.scrollUntilVisible(
-        fonts,
-        300,
-        scrollable: await settingsList(),
-      );
+      final fontList = await settingsList();
+      // From the top, in case Settings opens where it was left.
+      tester.state<ScrollableState>(fontList).position.jumpTo(0);
+      await tester.pump(const Duration(milliseconds: 300));
+      try {
+        await tester.scrollUntilVisible(fonts, 300, scrollable: fontList);
+      } catch (_) {
+        final texts = find
+            .byType(Text)
+            .evaluate()
+            .map((e) => (e.widget as Text).data)
+            .whereType<String>()
+            .take(80)
+            .join(' | ');
+        debugPrint('Font row not found; Settings shows: $texts');
+        rethrow;
+      }
       await _until(
         tester,
         () => find
