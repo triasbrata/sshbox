@@ -81,6 +81,14 @@ class ChatAsk {
   /// Whether the question was dismissed without an answer.
   bool declined = false;
 
+  /// While an answer is being typed into the dialog of a session this chat
+  /// watches, see `ClaudeChat.answerAtTerminal`.
+  bool sending = false;
+
+  /// Why the last answer typed at a session's dialog did not land, said on
+  /// the card until another goes or the question is settled.
+  String? failure;
+
   /// Whether this chat can answer it now: the CLI is waiting on it, and it
   /// has not been answered or dismissed. Two questions with one text share
   /// an answer, which is how the CLI files them; better that than leaving it
@@ -168,4 +176,85 @@ class ChatAsk {
     if (!question.multiSelect) return own.isNotEmpty ? own : labels.first;
     return [...labels, if (own.isNotEmpty) own].join(', ');
   }
+}
+
+/// What the user picked for one question: the options by index, and words
+/// of their own, empty when none.
+typedef AskPick = ({List<int> options, String other});
+
+/// The answers [picks] make for [ask], by question text, as the CLI files
+/// them; or null when they are not an answer to it: a pick for each question
+/// and no more, each in range and none twice, a single choice one option or
+/// words of its own, every question answered.
+Map<String, String>? answersFor(ChatAsk ask, List<AskPick> picks) {
+  if (picks.length != ask.questions.length) return null;
+  final answers = <String, String>{};
+  for (var i = 0; i < picks.length; i++) {
+    final question = ask.questions[i];
+    final pick = picks[i];
+    final options = pick.options.toSet().toList()..sort();
+    if (options.length != pick.options.length) return null;
+    if (options.any((at) => at < 0 || at >= question.options.length)) {
+      return null;
+    }
+    final own = pick.other.trim().isNotEmpty;
+    if (options.isEmpty && !own) return null;
+    if (!question.multiSelect && options.length + (own ? 1 : 0) != 1) {
+      return null;
+    }
+    answers[question.question] = ChatAsk.answerOf(question, [
+      for (final at in options) question.options[at].label,
+    ], pick.other);
+  }
+  return answers;
+}
+
+/// One step of typing an answer into a session's own question dialog.
+sealed class AskStep {
+  const AskStep();
+
+  /// What is written to the session's terminal for it.
+  String get bytes;
+}
+
+/// Keys, as a terminal sends them: an arrow, Enter, a space. Never text of
+/// the user's or Claude's: that is an [AskPaste].
+class AskKeys extends AskStep {
+  const AskKeys(this.keys);
+
+  final String keys;
+
+  @override
+  String get bytes => keys;
+}
+
+/// Words of the user's own, for an "Other" answer: one bracketed paste, so
+/// none of it is taken for the dialog's own keys, which include single
+/// letters. Every control character goes, newline and tab included, each
+/// becoming a space: the answer is one line, and an ESC left in it could
+/// close the paste early and have the rest typed as keys.
+class AskPaste extends AskStep {
+  const AskPaste(this.text);
+
+  final String text;
+
+  static final _controls = RegExp(r'[\x00-\x1f\x7f-\x9f]');
+
+  /// [text] as it goes in, with nothing in it a terminal would act on.
+  String get clean => text.replaceAll(_controls, ' ').trim();
+
+  @override
+  String get bytes => '\x1b[200~$clean\x1b[201~';
+}
+
+/// Whether a session's screen, as [lines], shows [question]'s dialog: its
+/// text there, compared with all white space taken out of both, so a
+/// question the dialog wraps across lines still matches. Only the first 120
+/// characters are looked for, as a long question may be cut on screen.
+bool dialogShows(List<String> lines, AskQuestion question) {
+  String bare(String text) => text.replaceAll(RegExp(r'\s+'), '');
+  final wanted = bare(question.question);
+  if (wanted.isEmpty) return false;
+  final head = wanted.length > 120 ? wanted.substring(0, 120) : wanted;
+  return bare(lines.join()).contains(head);
 }

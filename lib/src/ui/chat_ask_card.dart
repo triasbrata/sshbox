@@ -21,11 +21,18 @@ class ChatAskCard extends StatefulWidget {
     required this.onAnswer,
     required this.onDecline,
     this.hint,
+    this.onAnswerAtTerminal,
   });
 
   final ChatAsk ask;
   final bool Function(ChatAsk ask, Map<String, String> answers) onAnswer;
   final bool Function(ChatAsk ask) onDecline;
+
+  /// Answers a question no process of this chat's own asked, by typing it
+  /// into the dialog of the session that did; null where that cannot be.
+  /// Its future gives why it did not land, or null once it did.
+  final Future<String?> Function(ChatAsk ask, List<AskPick> picks)?
+  onAnswerAtTerminal;
 
   /// Shown instead of the buttons when this chat cannot answer an open
   /// question: where to.
@@ -72,8 +79,23 @@ class _ChatAskCardState extends State<ChatAskCard> {
     }
   });
 
+  /// Whether this card types its answer into the session's own dialog.
+  bool get _atTerminal =>
+      !widget.ask.answerable &&
+      widget.ask.open &&
+      widget.onAnswerAtTerminal != null;
+
   void _send() {
     final questions = widget.ask.questions;
+    if (_atTerminal) {
+      final picks = <AskPick>[
+        for (var i = 0; i < questions.length; i++)
+          (options: _picked[i].toList()..sort(), other: _other[i].text),
+      ];
+      // What comes of it is on the ask, which the chat redraws.
+      widget.onAnswerAtTerminal!(widget.ask, picks);
+      return;
+    }
     final answers = <String, String>{};
     for (var i = 0; i < questions.length; i++) {
       final labels = [
@@ -94,7 +116,11 @@ class _ChatAskCardState extends State<ChatAskCard> {
     final p = TermulThemeData.of(context).palette;
     final ask = widget.ask;
     final answered = ask.answers;
-    final asking = ask.answerable;
+    final atTerminal = _atTerminal;
+    final asking = ask.answerable || atTerminal;
+    final sending = ask.sending;
+    final failure = ask.failure;
+    final ready = _complete && !sending;
     final footer = asking || answered != null
         ? null
         : ask.declined
@@ -124,13 +150,15 @@ class _ChatAskCardState extends State<ChatAskCard> {
                 runSpacing: 8,
                 children: [
                   _KeyButton(
-                    onPressed: _complete ? _send : null,
+                    onPressed: ready ? _send : null,
                     child: TuiButton(
-                      label: 'Send answers', logName: 'Send answers',
-                      onPressed: _complete ? _send : null,
+                      label: sending ? 'Typing the answer…' : 'Send answers',
+                      logName: 'Send answers',
+                      onPressed: ready ? _send : null,
                     ),
                   ),
-                  _KeyButton(
+                  // Dismissing at the session's own dialog is not known.
+                  if (!atTerminal) _KeyButton(
                     onPressed: () => widget.onDecline(ask),
                     child: TuiButton(
                       label: 'Dismiss', logName: 'Dismiss',
@@ -139,6 +167,14 @@ class _ChatAskCardState extends State<ChatAskCard> {
                     ),
                   ),
                 ],
+              ),
+            ],
+            if (failure != null) ...[
+              const SizedBox(height: 8),
+              Semantics(
+                container: true,
+                liveRegion: true,
+                child: TuiText(failure, tone: TuiTextTone.red, size: 12),
               ),
             ],
             if (footer != null) ...[

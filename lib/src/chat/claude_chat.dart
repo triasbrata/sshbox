@@ -805,6 +805,7 @@ class ClaudeChat extends ChangeNotifier {
     this.hostKey,
     this.outbox,
     this.backoff = outboxBackoff,
+    this.askKeys = dialogKeys,
   }) : _parent = null,
        _sub = null,
        _subRunning = null;
@@ -827,6 +828,7 @@ class ClaudeChat extends ChangeNotifier {
        hostKey = null,
        outbox = null,
        backoff = outboxBackoff,
+       askKeys = dialogKeys,
        // ignore: prefer_initializing_formals
        _parent = parent,
        _sub = agent,
@@ -872,6 +874,10 @@ class ClaudeChat extends ChangeNotifier {
   /// How long to wait before automatic retry number n, null once spent;
   /// a test shortens it.
   final Duration? Function(int attempt) backoff;
+
+  /// The keys that answer a question in a session's own dialog, for
+  /// [answerAtTerminal]: [dialogKeys], which a test replaces.
+  final List<AskStep>? Function(ChatAsk ask, List<AskPick> picks) askKeys;
 
   /// How long a picture pasted into a session's input line has to become
   /// its `[Image #N]` before the text after it is typed. Measured on
@@ -4669,7 +4675,13 @@ class ClaudeChat extends ChangeNotifier {
     } else {
       ask.declined = true;
     }
+    final waiting = _askWaits.remove(ask);
+    if (waiting != null && !waiting.isCompleted) waiting.complete();
   }
+
+  /// Answers typed at a session's dialog, waiting for its transcript to say
+  /// what was taken: see [answerAtTerminal].
+  final Map<ChatAsk, Completer<void>> _askWaits = {};
 
   /// The only tool this chat ever allows, matched by exactly this name.
   static const askTool = 'AskUserQuestion';
@@ -4813,6 +4825,351 @@ class ClaudeChat extends ChangeNotifier {
       ..answers = Map.of(answers);
     notifyListeners();
     return true;
+  }
+
+  /// Whether [ask] can be answered from here by typing into the dialog of
+  /// the session this chat watches: it is still open, no process of this
+  /// chat's own asked it (that one is [answer]ed), it is the newest open
+  /// question, and the session is not one there is no way into.
+  bool canAnswerAtTerminal(ChatAsk ask) {
+    if (_watching == null || readOnly != null) return false;
+    if (!ask.open || ask.requestId != null) return false;
+    final newest = _entries
+        .whereType<ChatQuestion>()
+        .map((question) => question.ask)
+        .where((ask) => ask.open)
+        .lastOrNull;
+    return identical(newest, ask);
+  }
+
+  /// The keys that answer [ask] with [picks] in Claude Code's own question
+  /// dialog, or null when they are not known.
+  ///
+  /// ponytail: not measured yet, so none are known and every answer typed
+  /// at a session's dialog is refused, out loud, before a key is sent: a
+  /// guessed key in a dialog answers something else, and a digit alone
+  /// answers a permission prompt.
+  static List<AskStep>? dialogKeys(ChatAsk ask, List<AskPick> picks) => null;
+
+  /// Between one step of an answer and the next, for the dialog to redraw.
+  static const _askStepGap = Duration(milliseconds: 150);
+
+  /// Answers [ask], a question the session this chat watches is waiting on,
+  /// with [picks], by typing them into the session's own dialog: through
+  /// `claude attach` for a background session, into its tmux pane for an
+  /// interactive one. Null once the session's transcript records exactly
+  /// those answers; otherwise why not, which is also left on [ask] for its
+  /// card to say.
+  ///
+  /// Nothing is typed unless the session says this moment it waits for an
+  /// answer and its screen shows this question; and an answer counts only
+  /// once the transcript has it. Anything else is "Not answered", never a
+  /// quiet success.
+  Future<String?> answerAtTerminal(ChatAsk ask, List<AskPick> picks) async {
+    if (ask.sending) return 'An answer to it is being typed already.';
+    final agent = _watching;
+    final name = '“${agent?.name ?? 'The session'}”';
+    String fail(String why) {
+      final said = 'Not answered: $why';
+      ask
+        ..sending = false
+        ..failure = said;
+      if (!_disposed) notifyListeners();
+      return said;
+    }
+
+    if (agent == null || !canAnswerAtTerminal(ask)) {
+      return fail('this chat is not watching a session waiting on it.');
+    }
+    final answers = answersFor(ask, picks);
+    if (answers == null) {
+      return fail('each question needs one answer, or for a question that '
+          'takes several, at least one.');
+    }
+    final target = _target;
+    ask
+      ..sending = true
+      ..failure = null;
+    notifyListeners();
+    final ClaudeAgent? now;
+    try {
+      now = (await agents())
+          .where((row) => row.sessionId == agent.sessionId)
+          .firstOrNull;
+    } catch (error) {
+      return fail('could not check on $name first: $error');
+    }
+    if (!_current(target)) {
+      return fail('the chat moved to another session first.');
+    }
+    if (now == null || !now.live) return fail('$name is no longer running.');
+    final where = now.interactive
+        ? 'its terminal'
+        : now.id == null
+        ? 'its terminal'
+        : '`claude attach ${now.id}`';
+    if (!now.asking) {
+      return fail('$name is not waiting for an answer'
+          '${now.waitingText == null ? '' : ' but for ${now.waitingText}'}, '
+          'so nothing was typed.');
+    }
+    final steps = askKeys(ask, picks);
+    if (steps == null || steps.isEmpty) {
+      return fail('Jeansh does not know the keys of this Claude Code\'s '
+          'question dialog yet, so nothing was typed. Answer it at $where.');
+    }
+    final settled = _askWaits.putIfAbsent(ask, Completer.new);
+    final typed = now.interactive
+        ? await _askIntoPane(ask, now, steps)
+        : await _askIntoAttach(ask, now, steps, target);
+    if (typed != null) {
+      _askWaits.remove(ask);
+      return fail(typed);
+    }
+    try {
+      await settled.future.timeout(deliveryTimeout);
+    } on TimeoutException {
+      _askWaits.remove(ask);
+      return fail('$name did not record an answer within '
+          '${deliveryTimeout.inSeconds} s. Look at it at $where.');
+    }
+    final got = ask.answers;
+    if (got == null) {
+      return fail('$name recorded the question as dismissed.');
+    }
+    if (!mapEquals(got, answers)) {
+      return fail('$name recorded '
+          '${got.values.map((value) => '“$value”').join(', ')}, not what '
+          'was picked.');
+    }
+    ask.sending = false;
+    if (!_disposed) notifyListeners();
+    return null;
+  }
+
+  /// Types [steps] into the dialog of [now], a background session, through
+  /// `claude attach`, once its screen shows [ask]'s first question. Null
+  /// when they were all written; why not otherwise.
+  Future<String?> _askIntoAttach(
+    ChatAsk ask,
+    ClaudeAgent now,
+    List<AskStep> steps,
+    int target,
+  ) async {
+    final openTerminal = this.openTerminal;
+    if (openTerminal == null) {
+      return 'this connection cannot open a terminal on the host, which '
+          'answering needs.';
+    }
+    final id = now.id;
+    if (id == null || !_sessionIdShape.hasMatch(id)) {
+      return 'this session has no id that can be attached to.';
+    }
+    final CommandChannel terminal;
+    try {
+      terminal = await openTerminal(attachCommand(id));
+    } catch (error) {
+      return 'could not open it on the host: $error';
+    }
+    final shown = Terminal(maxLines: 200)..resize(120, 40);
+    final shows = Completer<void>();
+    final screen = const Utf8Decoder(allowMalformed: true)
+        .bind(terminal.output)
+        .listen(
+          (chunk) {
+            shown.write(chunk);
+            if (!shows.isCompleted &&
+                dialogShows(_screenLines(shown), ask.questions.first)) {
+              shows.complete();
+            }
+          },
+          onDone: () {
+            if (!shows.isCompleted) shows.completeError('closed');
+          },
+          onError: (Object _) {},
+        );
+    try {
+      try {
+        await shows.future.timeout(deliveryTimeout);
+      } catch (_) {
+        return 'its question did not come up on its screen, so nothing was '
+            'typed. Answer it with `claude attach $id`.';
+      }
+      for (final (index, step) in steps.indexed) {
+        await Future<void>.delayed(_askStepGap);
+        if (!_current(target)) {
+          return index == 0
+              ? 'the chat moved to another session first.'
+              : 'the chat moved to another session while it was typed; '
+                    'what was typed is in the dialog at `claude attach $id`.';
+        }
+        terminal.write(Uint8List.fromList(utf8.encode(step.bytes)));
+      }
+      // For the last key to be read before the attach goes.
+      await Future<void>.delayed(_askStepGap);
+      return null;
+    } finally {
+      await screen.cancel();
+      terminal.close();
+    }
+  }
+
+  /// Types [steps] into the tmux pane [now], an interactive session, runs
+  /// in, through [askPaneCommand]: the host shows the pane's screen first,
+  /// and the keys go only if it shows [ask]'s first question. Null when they
+  /// were all typed; why not otherwise.
+  Future<String?> _askIntoPane(
+    ChatAsk ask,
+    ClaudeAgent now,
+    List<AskStep> steps,
+  ) async {
+    final pieces = [for (final step in steps) utf8.encode(step.bytes)];
+    final CommandChannel channel;
+    try {
+      channel = await open(
+        askPaneCommand(
+          now.sessionId,
+          pid: now.pid!,
+          lengths: [for (final piece in pieces) piece.length],
+        ),
+      );
+    } catch (error) {
+      return 'could not reach its pane: $error';
+    }
+    final lines = <String>[];
+    var ended = false;
+    var heard = Completer<void>();
+    final listening = const Utf8Decoder(allowMalformed: true)
+        .bind(channel.output)
+        .transform(const LineSplitter())
+        .listen(
+          (line) {
+            lines.add(line);
+            if (!heard.isCompleted) heard.complete();
+          },
+          onDone: () {
+            ended = true;
+            if (!heard.isCompleted) heard.complete();
+          },
+          onError: (Object _) {},
+        );
+    // Until a line [stop] takes turns up, or the host is done.
+    Future<String?> until(bool Function(String line) stop) async {
+      final deadline = DateTime.now().add(deliveryTimeout);
+      var at = 0;
+      while (true) {
+        for (; at < lines.length; at++) {
+          if (stop(lines[at])) return lines[at];
+        }
+        if (ended) return null;
+        final left = deadline.difference(DateTime.now());
+        if (left <= Duration.zero) return null;
+        heard = Completer<void>();
+        await heard.future.timeout(left, onTimeout: () {});
+      }
+    }
+
+    String refused(String? line) {
+      final code = line?.startsWith('sshbox:no ') ?? false
+          ? line!.substring(10).trim()
+          : null;
+      return switch (code) {
+        'terminal' || 'pane' => '“${now.name}” is no longer in a tmux pane '
+            'here.',
+        'gone' => '“${now.name}” is no longer running.',
+        'asking' => '“${now.name}” is no longer waiting for an answer.',
+        'foreground' => 'something is in front of “${now.name}” in its '
+            'pane.',
+        'paste' => 'its pane would not take the keys.',
+        _ => 'its pane did not answer. Look at it there.',
+      };
+    }
+
+    try {
+      final top = await until(
+        (line) => line == 'sshbox:screen' || line.startsWith('sshbox:no '),
+      );
+      if (top != 'sshbox:screen') return refused(top);
+      final from = lines.length;
+      final end = await until((line) => line == 'sshbox:screen-end');
+      if (end == null) return refused(null);
+      final screen = lines.sublist(from, lines.indexOf(end, from));
+      if (!dialogShows(screen, ask.questions.first)) {
+        channel.write(Uint8List.fromList(const [0x6e])); // n
+        return 'its question is not on its screen, so nothing was typed. '
+            'Answer it at its terminal.';
+      }
+      channel.write(
+        Uint8List.fromList([0x79, for (final piece in pieces) ...piece]), // y
+      );
+      final done = await until(
+        (line) => line.startsWith('sshbox:typed') ||
+            line.startsWith('sshbox:no '),
+      );
+      if (done == null || !done.startsWith('sshbox:typed')) {
+        return refused(done);
+      }
+      return null;
+    } finally {
+      await listening.cancel();
+      channel.close();
+    }
+  }
+
+  /// What the host runs to answer a question in the dialog of an
+  /// interactive session — process [pid], session [sessionId] — in its tmux
+  /// pane: found as [paneCommand] finds it, and only while the session's
+  /// own state file says it waits for an answer and Claude is the
+  /// foreground of its terminal.
+  ///
+  /// It prints the pane's screen between `sshbox:screen` and
+  /// `sshbox:screen-end` and then reads one byte: `y` to go on, anything
+  /// else to stop with nothing typed. Then it reads each of [lengths] bytes
+  /// in turn from stdin and pastes them into that one pane with
+  /// `paste-buffer -r`, as [paneCommand] types a message — never on the
+  /// command line, never through `send-keys` — checking again before each.
+  /// [pid] is a number and [sessionId] quoted once for sh, the whole script
+  /// once more.
+  static String askPaneCommand(
+    String sessionId, {
+    required int pid,
+    required List<int> lengths,
+  }) {
+    final pieces = StringBuffer();
+    for (final length in lengths) {
+      pieces.write(
+        'ready; dd bs=1 count=$length 2>/dev/null | '
+        r'"$t" load-buffer -b "$b" - && '
+        r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+        r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
+        'no paste; }; sleep 0.15; ',
+      );
+    }
+    return 'sh -c '
+        '${_shellQuote('${TmuxSession.findTmux}'
+            'p=$pid; s=${_shellQuote(sessionId)}; '
+            r'no() { echo "sshbox:no $1"; exit 0; }; '
+            r'y=$(ps -o tty= -p $p </dev/null 2>/dev/null | tr -d " "); '
+            r'case $y in ""|"?"|"??") no terminal;; esac; '
+            r'w=$("$t" list-panes -a -F "#{pane_tty} #{pane_id}" </dev/null '
+            r'2>/dev/null | awk -v y="/dev/$y" '
+            r"'$1 == y { n++; w = $2 } END { if (n == 1) print w }'); "
+            r'[ -n "$w" ] || no pane; '
+            r'j="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$p.json"; '
+            'ready() { '
+            r'grep -q "\"sessionId\":\"$s\"" "$j" </dev/null 2>/dev/null '
+            '|| no gone; '
+            r'grep -q "\"waitingFor\":\"input needed\"" "$j" </dev/null '
+            '|| no asking; '
+            r'set -- $(ps -o pgid=,tpgid= -p $p </dev/null 2>/dev/null); '
+            r'[ -n "$1" ] && [ "$1" = "$2" ] || no foreground; }; '
+            'ready; echo sshbox:screen; '
+            r'"$t" -u capture-pane -p -t "$w" </dev/null 2>/dev/null; '
+            'echo; echo sshbox:screen-end; '
+            r'g=$(dd bs=1 count=1 2>/dev/null); [ "$g" = y ] || no stopped; '
+            r'b=sshbox-ask-$$; '
+            '$pieces'
+            r'echo "sshbox:typed $w"')}';
   }
 
   /// Dismisses [ask] without an answer, and tells Claude so.
