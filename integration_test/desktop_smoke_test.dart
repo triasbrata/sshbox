@@ -36,6 +36,8 @@ import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/files/local_file_browser.dart';
+import 'package:sshbox/src/files/html_site.dart' show HtmlSite;
+import 'package:sshbox/src/ui/web_page.dart' show WebPage;
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/ui/chat_page.dart' show ChatPage;
 import 'package:sshbox/src/files/transfers.dart'
@@ -1353,6 +1355,167 @@ Future<Future<void> Function(String path)> _opener() async {
   };
 }
 
+/// One HTTP request to 127.0.0.1:[port] on a raw socket, so nothing
+/// normalises the path (`..` stays `..`) and the Host can be any text.
+Future<({int status, String body})> _rawRequest(
+  int port,
+  String path, {
+  String method = 'GET',
+  String? host,
+}) async {
+  final socket = await Socket.connect('127.0.0.1', port);
+  socket.write(
+    '$method $path HTTP/1.1\r\nHost: ${host ?? '127.0.0.1:$port'}\r\n'
+    'Connection: close\r\n\r\n',
+  );
+  final bytes = <int>[];
+  await socket.forEach(bytes.addAll).timeout(const Duration(seconds: 15));
+  socket.destroy();
+  final text = latin1.decode(bytes);
+  final split = text.indexOf('\r\n\r\n');
+  return (
+    status: int.parse(text.split(' ')[1]),
+    body: split < 0 ? '' : text.substring(split + 4),
+  );
+}
+
+/// What a served HTML file's address must and must not give, over real
+/// sockets: the page and its css and js to a request that is right, and a
+/// refusal, never the page or the secret, to every request that is not.
+Future<void> _assertSiteConfined(
+  Uri url, {
+  required String secret,
+  required bool link,
+}) async {
+  final port = url.port;
+  final token = url.pathSegments.first;
+  // A real HTTP client's GET, then the files the page loads.
+  final client = HttpClient();
+  try {
+    final response = await (await client.getUrl(url)).close();
+    final body = await utf8.decodeStream(response);
+    expect(response.statusCode, 200);
+    expect(body, contains('app.js'));
+  } finally {
+    client.close(force: true);
+  }
+  final css = await _rawRequest(port, '/$token/style.css');
+  expect(css.status, 200);
+  expect(css.body, contains('e2e-css'));
+  final js = await _rawRequest(port, '/$token/app.js');
+  expect(js.status, 200);
+  expect(js.body, contains('Jeansh e2e js ran'));
+
+  // Refused, each one: a status of 403 or 404, with neither the page nor
+  // what is outside the folder in what comes back.
+  Future<void> refused(
+    String what,
+    Future<({int status, String body})> request, {
+    List<int> statuses = const [403, 404],
+  }) async {
+    final r = await request;
+    expect(statuses, contains(r.status), reason: '$what gave ${r.status}');
+    expect(r.body, isNot(contains(secret)), reason: '$what leaked the secret');
+    expect(r.body, isNot(contains('app.js')), reason: '$what gave the page');
+  }
+
+  await refused('a ..', _rawRequest(port, '/$token/../secret.txt'));
+  await refused(
+    'an escaped ..',
+    _rawRequest(port, '/$token/%2e%2e/secret.txt'),
+  );
+  await refused(
+    'a separator in an escape',
+    _rawRequest(port, '/$token/%2e%2e%2fsecret.txt'),
+  );
+  await refused(
+    'a wrong token',
+    _rawRequest(port, '/${'0' * 32}/page.html'),
+    statuses: const [404],
+  );
+  await refused(
+    'no token',
+    _rawRequest(port, '/page.html'),
+    statuses: const [404],
+  );
+  await refused(
+    'a Host that is not this machine (DNS rebinding)',
+    _rawRequest(port, '/$token/page.html', host: 'rebind.example:$port'),
+    statuses: const [403],
+  );
+  await refused(
+    'a POST',
+    _rawRequest(port, '/$token/page.html', method: 'POST'),
+    statuses: const [405],
+  );
+  if (link) {
+    await refused(
+      'a link out of the folder',
+      _rawRequest(port, '/$token/link.txt'),
+      statuses: const [403],
+    );
+  }
+}
+
+/// The files a served page loads, in a folder of the test's own, with a
+/// secret beside it that nothing may serve. Returns the page's path.
+({String page, String secret}) _htmlSite(Directory dir, {required bool link}) {
+  final site = Directory('${dir.path}/site')..createSync();
+  final secret = 'SECRET-${dir.path.hashCode}';
+  File('${dir.path}/secret.txt').writeAsStringSync(secret);
+  File('${site.path}/page.html').writeAsStringSync(
+    '<!doctype html><title>js did not run</title>'
+    '<link rel="stylesheet" href="style.css">'
+    '<p id="out">hello</p><script src="app.js"></script>\n',
+  );
+  File('${site.path}/style.css').writeAsStringSync('/* e2e-css */ p{}\n');
+  File('${site.path}/app.js')
+      .writeAsStringSync("document.title = 'Jeansh e2e js ran';\n");
+  File('${site.path}/note.txt').writeAsStringSync('not html\n');
+  if (link) Link('${site.path}/link.txt').createSync('../secret.txt');
+  return (page: '${site.path}/page.html', secret: secret);
+}
+
+/// The drawer of a Local shell, opened and walked down to [dir]'s `site`
+/// folder, which it lists.
+Future<void> _drawerAtSite(WidgetTester tester, Directory dir) async {
+  await _localShell(tester);
+  await tester.tap(find.byTooltip('Browse files'));
+  final folder = find.text(dir.path.split('/').last);
+  await _until(
+    tester,
+    () => folder.evaluate().isNotEmpty,
+    "the drawer to list the test's folder in the home",
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  await tester.tap(folder);
+  final site = find.text('site');
+  await _until(
+    tester,
+    () => site.evaluate().isNotEmpty,
+    'the drawer to list the site folder',
+  );
+  await tester.tap(site);
+  await _until(
+    tester,
+    () => find.text('page.html').evaluate().isNotEmpty,
+    'the drawer to list the page',
+  );
+}
+
+/// Selects [name] in the drawer with a right-click, and shuts the menu that
+/// opens, so the header's Open in browser tab is for it.
+Future<void> _selectInDrawer(WidgetTester tester, String name) async {
+  await tester.tapAt(
+    tester.getCenter(find.text(name)),
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryMouseButton,
+  );
+  await tester.pump(const Duration(milliseconds: 600));
+  await _escape(tester);
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2432,6 +2595,204 @@ touch '${done.path}'
     },
   );
 
+  // #272, every desktop: the site an HTML file is served from. Over real
+  // sockets: its folder's files to a request that is right, and a refusal to
+  // `..`, a wrong token, another Host and a link, and nothing listening once
+  // it is closed. The same class a tab and the outside dialog serve with.
+  _test('an HTML file is served to its own folder, to this machine, and only '
+      'while it is open', (tester) async {
+    final dir = Directory(
+      Platform.environment['HOME'] ?? Platform.environment['USERPROFILE']!,
+    ).createTempSync('0-jeansh-e2e-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    // Creating a link on Windows needs a privilege a runner may not have.
+    final made = _htmlSite(dir, link: !Platform.isWindows);
+    final browser = Platform.isWindows
+        ? LocalFileBrowser(
+            process: (command) => Process.start('cmd', ['/c', command]),
+            windows: true,
+          )
+        : LocalFileBrowser(
+            process: (command) => Process.start('/bin/sh', ['-c', command]),
+            home: () async => dir.path,
+          );
+    final site = await HtmlSite.start(
+      browser: browser,
+      htmlPath: made.page.replaceAll(r'\', '/'),
+    );
+    var closed = false;
+    addTearDown(() async {
+      if (!closed) await site.close();
+    });
+    await _assertSiteConfined(
+      site.url,
+      secret: made.secret,
+      link: !Platform.isWindows,
+    );
+    final port = site.url.port;
+    await site.close();
+    closed = true;
+    await expectLater(
+      Socket.connect('127.0.0.1', port, timeout: const Duration(seconds: 5)),
+      throwsA(isA<SocketException>()),
+      reason: 'the port still answers after the site was closed',
+    );
+  });
+
+  // #272, Linux: no web view, so Open in browser tab hands the page to the
+  // machine's browser, with the dialog, and no tab opens. The browser is the
+  // run's own stand-in, a handler for http that notes the address it is
+  // given (CI only: elsewhere the machine's own browser would open).
+  _test(
+    'Open in browser tab on Linux opens outside Jeansh, serves the page to '
+    'its folder alone, and stops serving at Done',
+    skip: !Platform.isLinux
+        ? 'a Mac has a web tab, and a Windows Local shell has no drawer'
+        : Platform.environment['CI'] != 'true'
+        ? "off CI the machine's own browser would open"
+        : null,
+    (tester) async {
+      final data = Platform.environment['XDG_DATA_HOME']!;
+      final opened = File('$data/e2e-opened-html')
+        ..writeAsStringSync('', flush: true);
+      final browser = File('$data/e2e-html-browser')
+        ..writeAsStringSync(
+          '#!/bin/sh\nprintf "%s\\n" "\$1" >> \'${opened.path}\'\n',
+        );
+      Process.runSync('chmod', ['755', browser.path]);
+      Directory('$data/applications').createSync(recursive: true);
+      File('$data/applications/e2e-html-browser.desktop').writeAsStringSync(
+        '[Desktop Entry]\nType=Application\nName=e2e html browser\n'
+        'NoDisplay=true\nExec=${browser.path} %u\n'
+        'MimeType=x-scheme-handler/http;x-scheme-handler/https;\n',
+      );
+      File('$data/applications/mimeapps.list').writeAsStringSync(
+        '[Default Applications]\n'
+        'x-scheme-handler/http=e2e-html-browser.desktop\n'
+        'x-scheme-handler/https=e2e-html-browser.desktop\n',
+      );
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final made = _htmlSite(dir, link: true);
+
+      await _launch(tester);
+      await _drawerAtSite(tester, dir);
+      await _selectInDrawer(tester, 'page.html');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      final dialog = find.byWidgetPredicate(
+        (w) =>
+            w is Text &&
+            (w.data ?? '').toLowerCase().contains('opens outside jeansh'),
+      );
+      await _until(
+        tester,
+        () => dialog.evaluate().isNotEmpty,
+        'the dialog that says the page opens outside Jeansh',
+      );
+      // The launcher was handed this site's address, and only it.
+      final address = RegExp(
+        r'^http://127\.0\.0\.1:(\d+)/([0-9a-f]{32})/page\.html$',
+      );
+      await _until(
+        tester,
+        () => opened.readAsStringSync().trim().isNotEmpty,
+        'the browser to be handed the page',
+      );
+      final given = opened.readAsStringSync().trim().split('\n');
+      expect(given, hasLength(1));
+      expect(
+        address.hasMatch(given.single),
+        isTrue,
+        reason: 'the launcher got ${given.single}',
+      );
+      // Absent: a tab of Jeansh's own.
+      expect(find.byType(WebPage), findsNothing, reason: 'a web tab opened');
+      await _assertSiteConfined(
+        Uri.parse(given.single),
+        secret: made.secret,
+        link: true,
+      );
+      final port = Uri.parse(given.single).port;
+      await tester.tap(_label('Done'));
+      await _until(tester, () async {
+        try {
+          final s = await Socket.connect(
+            '127.0.0.1',
+            port,
+            timeout: const Duration(seconds: 2),
+          );
+          s.destroy();
+          return false;
+        } on SocketException {
+          return true;
+        }
+      }, 'the port to refuse connections after Done');
+      // Popped by Done (the port refused above only once it had been); the
+      // route is gone once its closing animation has run.
+      await _until(
+        tester,
+        () => dialog.evaluate().isEmpty,
+        "the dialog to close after Done",
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #272, macOS: a web tab, drawn by WKWebView, runs the page's script from
+  // the file beside it (it sets the page's title, which names the tab), and a
+  // text file has no such button's effect: no tab.
+  _test(
+    'Open in browser tab on a Mac opens a tab that runs the page, and a text '
+    'file gets none',
+    skip: !Platform.isMacOS
+        ? 'only the Mac draws a web tab here: Linux has none, and a Windows '
+              'Local shell has no drawer'
+        : null,
+    (tester) async {
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      _htmlSite(dir, link: true);
+      await _launch(tester);
+      await _drawerAtSite(tester, dir);
+
+      // A text file: the button does nothing.
+      await _selectInDrawer(tester, 'note.txt');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.byType(WebPage), findsNothing, reason: 'a .txt got a tab');
+
+      // The page: a tab, and its script ran.
+      await _selectInDrawer(tester, 'page.html');
+      await tester.tap(find.byTooltip('Open in browser tab'));
+      await _until(
+        tester,
+        () => find.byType(WebPage).evaluate().isNotEmpty,
+        'a web tab for the page',
+      );
+      // Two steps, so a failure says which: the web view finishing the load
+      // (its Stop button, drawn while it loads, goes), and then the title.
+      await _until(
+        tester,
+        () => find.byTooltip('Stop').evaluate().isEmpty,
+        'the web view to finish loading the page (Stop is drawn while it loads)',
+        timeout: const Duration(seconds: 60),
+      );
+      await _until(
+        tester,
+        () => find.textContaining('Jeansh e2e js ran').evaluate().isNotEmpty,
+        "the tab to carry the title the page's script set",
+        timeout: const Duration(seconds: 60),
+      );
+      expect(
+        find.textContaining('js did not run'),
+        findsNothing,
+        reason: "the page's script did not run",
+      );
+      await _closeTabs(tester);
+    },
+  );
   // #127: chat in a Local shell runs Claude beside it as a process, found and
   // quoted as over an exec channel. Never this machine's own Claude: a
   // stand-in is put where the finder looks only where none is installed —
