@@ -1516,6 +1516,30 @@ Future<void> _selectInDrawer(WidgetTester tester, String name) async {
   await tester.pump(const Duration(milliseconds: 300));
 }
 
+/// A Mac's window made 1000 wide through System Events, as a hand would drag
+/// it, and put back to its own size when the test ends. The window opens 800
+/// wide, which is narrower than a layout that wants 840 dp.
+Future<void> _macWidenWindow(WidgetTester tester) async {
+  Future<String> mac(String command) async {
+    final done = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh" to $command',
+    ]);
+    expect(done.exitCode, 0, reason: 'System Events: ${done.stderr}');
+    return '${done.stdout}'.trim();
+  }
+
+  final was = (await mac('get size of window 1')).split(RegExp(r',\s*'));
+  addTearDown(() => mac('set size of window 1 to {${was[0]}, ${was[1]}}'));
+  await mac('set size of window 1 to {1000, 760}');
+  await _until(
+    tester,
+    () => tester.view.physicalSize.width / tester.view.devicePixelRatio >= 900,
+    'the window to be wider than 900 dp',
+  );
+  await tester.pump(const Duration(milliseconds: 500));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2072,6 +2096,14 @@ touch '${done.path}'
         () => tabs.evaluate().length == before + 1,
         'a second Local shell',
       );
+      // Its shell up and its prompt drawn before anything is typed: the tab
+      // exists as soon as it is duplicated, but its pty is wired a moment
+      // later, and a command typed in between is dropped without a trace
+      // (the Mac run's terminal held a bare prompt and no command).
+      await _until(tester, () {
+        final now = shown().where((e) => e.focusNode?.hasFocus ?? false);
+        return now.isNotEmpty && _text(now.first).isNotEmpty;
+      }, 'the second shell to draw its prompt');
 
       // A program reading the mouse: a plain right-click still opens the
       // menu and the program hears nothing of it; Shift+right-click is the
@@ -2866,6 +2898,11 @@ touch '${done.path}'
       final list = find.byType(TuiChatSessionList);
 
       await _launch(tester);
+      // The sessions sit in a sidebar, and fold to a rail, from 840 dp wide.
+      // A Mac's window opens 800 wide (MainMenu.xib), where the chat has the
+      // drawer only; Linux's Xvfb window is 1280. So the Mac's is widened
+      // for the test, as a person would drag it, and put back after.
+      if (Platform.isMacOS) await _macWidenWindow(tester);
       await _localShell(tester);
       await tester.tap(find.byTooltip('Chat with Claude'));
       await _until(
@@ -3966,7 +4003,11 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 600));
       await tester.tapAt(const Offset(4, 4));
       await tester.pump(const Duration(milliseconds: 600));
-      expect(find.text('Downloading Jeansh 9.9.9'), findsNothing);
+      await _until(
+        tester,
+        () => find.text('Downloading Jeansh 9.9.9').evaluate().isEmpty,
+        'the dialog to close after a click outside it',
+      );
       final going = find.text('Jeansh 9.9.9 is downloading');
       if (check.evaluate().isEmpty) await _settings(tester);
       await tester.scrollUntilVisible(

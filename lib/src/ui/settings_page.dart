@@ -550,7 +550,11 @@ class LocalOpenCommandSetting extends ValueNotifier<bool> {
   LocalOpenCommandSetting({this.home}) : super(installOpenCommandDefault);
 
   /// Where `~` is, when a test says; otherwise HOME.
-  final String? home;
+  String? home;
+
+  /// Why the command could not be put back at start, for the app to say once
+  /// it is on screen; null when it went in or the switch is off.
+  String? startupProblem;
 
   static const _key = 'sshbox.terminal.localOpenCommand';
 
@@ -559,17 +563,18 @@ class LocalOpenCommandSetting extends ValueNotifier<bool> {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     value = prefs.getBool(_key) ?? installOpenCommandDefault;
-    if (value) installOpenCommandInHome(home);
+    startupProblem = value ? installOpenCommandInHome(home) : null;
   }
 
-  /// Saves the choice and, turned on, installs now. False when the install
-  /// found something there that is not Jeansh's own: the switch stays on, the
+  /// Saves the choice and, turned on, installs now. Null when it went in, else
+  /// what to tell the user, as when something is there that is not Jeansh's
+  /// own: the switch stays on, the
   /// file is left alone.
-  Future<bool> choose(bool on) async {
+  Future<String?> choose(bool on) async {
     value = on;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key, on);
-    return !on || installOpenCommandInHome(home);
+    return on ? installOpenCommandInHome(home) : null;
   }
 }
 
@@ -1229,13 +1234,13 @@ class _TerminalSectionState extends State<_TerminalSection> {
                     label: 'Add the jeansh command to this computer', logName: 'Add the jeansh command to this computer',
                     value: on,
                     onChanged: (value) async {
-                      final ok = await localOpenCommand.choose(value);
-                      if (!ok && context.mounted) {
+                      final problem = await localOpenCommand.choose(value);
+                      if (problem != null && context.mounted) {
                         showToast(
                           context,
-                          '~/.local/bin/jeansh is not the app\'s own, so it '
-                          'was left alone.',
+                          problem,
                           type: TuiToastType.warning,
+                          duration: const Duration(seconds: 5),
                         );
                       }
                     },
