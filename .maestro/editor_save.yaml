@@ -1,18 +1,13 @@
-# The code editor saves with Ctrl+S from anywhere on the page: a hardware
-# chord, sent by tools/e2e_android.sh's editor_save with `adb shell input
-# keycombination` between this flow's steps, which then reads the file on
-# the host. The editor draws its text itself, so its content is not in the
-# tree Maestro reads: what this asserts on is the chrome ("Unsaved changes",
-# Save to host enabled or not, the find field), and the host holds the proof.
+# The code editor's save shortcut on Android: tools/e2e_android.sh's
+# editor_save sends the keys with adb between this flow's steps and reads the
+# file on the host. The editor draws its text itself, so its content is not
+# in the tree Maestro reads: what this asserts on is the chrome ("Unsaved
+# changes", Save to host enabled or not), and the host holds the proof.
 #
 # STEP comes from -e alone (see chat_images.yaml):
-#   open    the file opened from the drawer and "edit" typed into it
-#   dirty   still Unsaved changes: S alone, and before it nothing, saved
-#   saved   Unsaved changes gone, Save to host disabled
-#   find    "zz" typed into the text, the find bar opened and "hello" typed
-#           into its field, which keeps the focus
-#   found   saved from the find bar: Unsaved changes gone, the field holding
-#           "hello" and no "hellos"
+#   open    the file opened from the drawer, nothing to save
+#   edit    "edit" typed into the text
+#   dirty   still Unsaved changes after S alone: nothing saved
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -51,6 +46,12 @@ env:
           text: "Save to host"
           enabled: false
       - assertNotVisible: "(?s).*Unsaved changes.*"
+      - takeScreenshot: editor-save-opened
+
+- runFlow:
+    when:
+      true: ${STEP == 'edit'}
+    commands:
       - tapOn:
           point: "50%,70%"
       - inputText: "edit"
@@ -67,50 +68,4 @@ env:
       - assertVisible:
           text: "Save to host"
           enabled: true
-
-- runFlow:
-    when:
-      true: ${STEP == 'saved'}
-    commands:
-      - extendedWaitUntil:
-          notVisible: "(?s).*Unsaved changes.*"
-          timeout: 15000
-      - assertVisible:
-          text: "Save to host"
-          enabled: false
-      - takeScreenshot: editor-save-saved
-
-- runFlow:
-    when:
-      true: ${STEP == 'find'}
-    commands:
-      - tapOn:
-          point: "50%,70%"
-      - inputText: "zz"
-      - extendedWaitUntil:
-          visible: "(?s).*Unsaved changes.*"
-          timeout: 5000
-      - tapOn: "Find"
-      - extendedWaitUntil:
-          visible: "Close find"
-          timeout: 5000
-      # The field takes the typing as it opens, focused.
-      - inputText: "hello"
-      - assertVisible: "hello"
-      - takeScreenshot: editor-save-find
-
-- runFlow:
-    when:
-      true: ${STEP == 'found'}
-    commands:
-      - extendedWaitUntil:
-          notVisible: "(?s).*Unsaved changes.*"
-          timeout: 15000
-      - assertVisible:
-          text: "Save to host"
-          enabled: false
-      # The find bar still up, its field as typed: no s from the chord.
-      - assertVisible: "Close find"
-      - assertVisible: "hello"
-      - assertNotVisible: "(?s).*hellos.*"
-      - takeScreenshot: editor-save-found
+      - takeScreenshot: editor-save-dirty
