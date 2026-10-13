@@ -8472,7 +8472,19 @@ touch '${done.path}'
         text: _EditorSave.original,
       );
       await tester.tap(_label('source'));
-      await tester.pump(const Duration(milliseconds: 600));
+      // Source by a click hands the text the focus (_setPreview), so typing
+      // after it lands there, as after opening a plain file.
+      try {
+        await _until(
+          tester,
+          () => k.code().focusNode?.hasPrimaryFocus ?? false,
+          'Source to give the text the focus',
+          timeout: const Duration(seconds: 5),
+        );
+      } on TestFailure {
+        debugPrint('The focus: ${FocusManager.instance.primaryFocus}');
+        rethrow;
+      }
       await k.edit();
       await tester.tap(_label('preview'));
       await tester.pump(const Duration(milliseconds: 600));
@@ -8595,11 +8607,18 @@ class _EditorSave {
   /// [mark] typed into the text, which must hold the focus.
   Future<void> edit() async {
     await type(mark);
-    await _until(
-      tester,
-      () => text() == edited && unsaved.evaluate().isNotEmpty,
-      '$name to take the typing and say Unsaved changes',
-    );
+    try {
+      await _until(
+        tester,
+        () => text() == edited && unsaved.evaluate().isNotEmpty,
+        '$name to take the typing and say Unsaved changes',
+      );
+    } on TestFailure {
+      // Where the typing went instead: the text as it stands, and the focus.
+      debugPrint('The text: ${jsonEncode(text())}');
+      debugPrint('The focus: ${FocusManager.instance.primaryFocus}');
+      rethrow;
+    }
   }
 
   /// Saved: the file on disk is what was typed and no more, Saved shown,
