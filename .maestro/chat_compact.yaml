@@ -61,32 +61,31 @@ env:
     text: "Send"
     waitToSettleTimeoutMs: 500
 - extendedWaitUntil:
-    visible: "(?s).*Compact answer: done.*"
-    timeout: 20000
-- extendedWaitUntil:
-    visible: "Conversation compacted\\. Show summary"
+    visible: "(?s)Conversation compacted\\. Show summary.*"
     timeout: 20000
 - assertNotVisible: "(?s).*This session is being continued.*"
 - assertNotVisible: "(?s).*E2E compact summary.*"
+# A summary drawn as a bubble would push the turn's answer off screen.
+- assertVisible: "(?s).*Compact answer: done.*"
 - assertVisible: "(?s).*Context compacted, counted at the next reply.*"
 - assertNotVisible: "(?s).*Context 85%.*"
 - takeScreenshot: chat-compact-2-marker
 
 # A tap shows the summary, drawn as Claude's answer; another hides it.
-- tapOn: "Conversation compacted\\. Show summary"
+- tapOn: "(?s)Conversation compacted\\. Show summary.*"
 - extendedWaitUntil:
     visible: "(?s).*E2E compact summary: the ring was fixed.*"
     timeout: 5000
 - assertVisible: "(?s).*This session is being continued.*"
-- assertVisible: "Conversation compacted\\. Hide summary"
-- assertNotVisible: "Conversation compacted\\. Show summary"
+- assertVisible: "(?s)Conversation compacted\\. Hide summary.*"
+- assertNotVisible: "(?s)Conversation compacted\\. Show summary.*"
 - takeScreenshot: chat-compact-3-open
-- tapOn: "Conversation compacted\\. Hide summary"
+- tapOn: "(?s)Conversation compacted\\. Hide summary.*"
 - extendedWaitUntil:
     notVisible: "(?s).*E2E compact summary.*"
     timeout: 5000
 - assertNotVisible: "(?s).*This session is being continued.*"
-- assertVisible: "Conversation compacted\\. Show summary"
+- assertVisible: "(?s)Conversation compacted\\. Show summary.*"
 
 # The next reply's usage counts the context again.
 - tapOn: "Message “E2E live session”…"
