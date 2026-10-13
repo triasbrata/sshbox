@@ -1,0 +1,71 @@
+# The code editor's save shortcut on Android: tools/e2e_android.sh's
+# editor_save sends the keys with adb between this flow's steps and reads the
+# file on the host. The editor draws its text itself, so its content is not
+# in the tree Maestro reads: what this asserts on is the chrome ("Unsaved
+# changes", Save to host enabled or not), and the host holds the proof.
+#
+# STEP comes from -e alone (see chat_images.yaml):
+#   open    the file opened from the drawer, nothing to save
+#   edit    "edit" typed into the text
+#   dirty   still Unsaved changes after S alone: nothing saved
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+  FILE: "jeansh-e2e-save.txt"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 20000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - inputText: "jeansh-e2e-save"
+      # \W*: the redesign draws a glyph before each name in the tree.
+      - tapOn: "(?s)\\W*${FILE}"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      # Opened, not edited: nothing to save.
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      - assertNotVisible: "(?s).*Unsaved changes.*"
+      - takeScreenshot: editor-save-opened
+
+- runFlow:
+    when:
+      true: ${STEP == 'edit'}
+    commands:
+      - tapOn:
+          point: "50%,70%"
+      - inputText: "edit"
+      - extendedWaitUntil:
+          visible: "(?s).*Unsaved changes.*"
+          timeout: 5000
+      - takeScreenshot: editor-save-edited
+
+- runFlow:
+    when:
+      true: ${STEP == 'dirty'}
+    commands:
+      - assertVisible: "(?s).*Unsaved changes.*"
+      - assertVisible:
+          text: "Save to host"
+          enabled: true
+      - takeScreenshot: editor-save-dirty

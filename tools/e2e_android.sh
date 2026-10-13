@@ -35,8 +35,8 @@ UNITS=(smoke connect_and_keybar
   folder_zip chat_outbox chat_outbox_reconnect
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
-  # Last but one, since it leaves its session's tab open; text_size last of all.
-  file_editor text_size)
+  # Near the end, since they leave their session's tab open; text_size last.
+  editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -489,6 +489,61 @@ file_editor() {
   sudo od -c "$file" | head -8
   [ "$(sudo grep -o maestro "$file" | wc -l)" -ge 2 ] &&
     [ "$(sudo grep -c $'\r$' "$file")" -eq "$(sudo wc -l <"$file")" ]
+}
+
+# The code editor's save shortcut on Android (.maestro/editor_save.yaml): what
+# holds, read off the host. A hardware key sent with `input keyevent` or
+# `input keycombination` (API 33 and later; the emulator is 34) is taken by
+# Gboard before Flutter sees it: Ctrl+S reaches the app as a committed "s",
+# with no key event, so Ctrl+S cannot save here yet (a follow-up). Asserted:
+# Ctrl+S with nothing edited writes nothing, and S alone types an s and
+# writes nothing. Ctrl+S after an edit is logged as a baseline, not asserted.
+# The file's mtime is put back to 2020 first, so any write at all shows.
+editor_save() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-save.txt old=1577836800
+  mtime() { sudo stat -c %Y "$file"; }
+  chord() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_S; }
+  # Nothing written in the 3 s after a key.
+  unwritten() {
+    sleep 3
+    [ "$(mtime)" = "$old" ]
+  }
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::editor_save: $what"
+      status=1
+    fi
+  }
+  printf 'hello e2e\n' | sudo -u "$SSH_USER" tee "$file" >/dev/null
+  sudo touch -d "@$old" "$file"
+  flow editor_save -e STEP=open || return 1
+
+  # Ctrl+S with nothing edited: nothing written.
+  chord
+  check 'Ctrl+S unedited wrote nothing' unwritten
+  check 'Ctrl+S unedited left the file as it was' \
+    [ "$(sudo cat "$file")" = 'hello e2e' ]
+
+  # S alone after an edit: an s typed, nothing written.
+  flow editor_save -e STEP=edit || status=1
+  adb shell input keyevent KEYCODE_S
+  check 'S alone wrote nothing' unwritten
+  check 'S alone left the file as it was' \
+    [ "$(sudo cat "$file")" = 'hello e2e' ]
+  flow editor_save -e STEP=dirty || status=1
+
+  # Baseline for the follow-up, not asserted: what Ctrl+S does after an edit.
+  chord
+  sleep 3
+  if [ "$(mtime)" = "$old" ]; then
+    echo "baseline: Ctrl+S after an edit wrote nothing (Gboard takes the chord)"
+  else
+    echo "baseline: Ctrl+S after an edit WROTE the file:"
+    sudo od -c "$file" | head -4
+  fi
+  return "$status"
 }
 
 # #253: an .html file opens rendered in a web tab, and a .txt file still opens
@@ -2848,6 +2903,7 @@ done
 # Not swipe_cursor, which reads the shell's working directory off the tab's
 # title: a saved host's tab now shows its label, so it never sees a `cd`
 # land, on main or in the redesign. It wants its checks moved to this host.
+u_editor_save() { report editor_save editor_save; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.

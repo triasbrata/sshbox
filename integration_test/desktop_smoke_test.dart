@@ -63,6 +63,7 @@ import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart'
     show TuiChatBubble, TuiChatSessionList;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
+import 'package:sshbox/src/ui/termul/tui_code_editor.dart' show TuiFindBar;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 import 'package:sshbox/src/ui/settings_page.dart'
     show
@@ -75,6 +76,7 @@ import 'package:sshbox/src/ui/settings_page.dart'
 import 'package:sshbox/src/ui/termul/tui_slider.dart' show TuiSlider;
 import 'package:sshbox/src/ui/termul/tui_switch.dart' show TuiSwitch;
 import 'package:sshbox/src/ui/text_size.dart';
+import 'package:re_editor/re_editor.dart' show CodeEditor;
 import 'package:xterm2/xterm.dart';
 
 /// Where [_shot] writes, from `--dart-define=JEANSH_SHOTS=folder`; empty, as
@@ -8354,4 +8356,310 @@ touch '${done.path}'
       await tester.pump(const Duration(milliseconds: 600));
     },
   );
+
+  // The file editor saves with the platform's command key and S from
+  // anywhere on the page: the text, the find bar's field, a toolbar button,
+  // and a Markdown file's preview. Real keys, through X on Linux and System
+  // Events on a Mac, a test a case so each has a verdict of its own. A 2x2:
+  // the command key saves, the file on disk changing, Saved shown and no s
+  // typed; the other modifier, or the command key with nothing edited,
+  // writes nothing, the file's text and mtime as they were and no s typed.
+  const editorKeys =
+      'the keys go through xdotool on Linux and System Events '
+      'on a Mac';
+  final editorSkip = Platform.isLinux || Platform.isMacOS ? null : editorKeys;
+  final save = Platform.isMacOS ? 'cmd' : 'ctrl';
+  final other = Platform.isMacOS ? 'ctrl' : 'super';
+
+  _test(
+    'editor save: $save+S in the text saves, $other+S writes nothing',
+    skip: editorSkip,
+    (tester) async {
+      final k = await _EditorSave.start(tester, 'plain.txt');
+      await k.edit();
+      await k.chord(other);
+      await k.untouched('$other+S in the text', text: k.edited);
+      expect(k.unsaved, findsOneWidget, reason: '$other+S cleared Unsaved');
+      await k.chord(save);
+      await k.saved('$save+S in the text');
+      await _closeTabs(tester);
+    },
+  );
+
+  _test(
+    'editor save: $save+S with nothing edited writes nothing',
+    skip: editorSkip,
+    (tester) async {
+      final k = await _EditorSave.start(tester, 'idle.txt');
+      await k.chord(save);
+      await k.untouched('$save+S unedited', text: _EditorSave.original);
+      expect(k.unsaved, findsNothing, reason: 'unedited, yet Unsaved shown');
+      await _closeTabs(tester);
+    },
+  );
+
+  // The find bar's field focused: it saves, and the field keeps the focus
+  // and exactly what was typed into it.
+  _test('editor save: $save+S in the find bar saves', skip: editorSkip, (
+    tester,
+  ) async {
+    final k = await _EditorSave.start(tester, 'find.txt');
+    await k.edit();
+    await tester.tap(find.byTooltip('Find'));
+    final bar = find.byType(TuiFindBar);
+    TuiFindBar findBar() => tester.widget<TuiFindBar>(bar);
+    await _until(
+      tester,
+      () =>
+          bar.evaluate().isNotEmpty &&
+          (findBar().findFocusNode?.hasPrimaryFocus ?? false),
+      'the find bar to open with its field focused',
+    );
+    await k.type('hello');
+    await _until(
+      tester,
+      () => findBar().findController.text == 'hello',
+      'the find field to take the typing',
+    );
+    await k.chord(save);
+    await k.saved('$save+S in the find bar');
+    expect(findBar().findController.text, 'hello', reason: 'an s typed');
+    expect(
+      findBar().findFocusNode?.hasPrimaryFocus,
+      isTrue,
+      reason: 'the find field lost the focus',
+    );
+    await _closeTabs(tester);
+  });
+
+  // A toolbar button focused: it saves, and the button is not pressed,
+  // which would ask about the unsaved edit.
+  _test('editor save: $save+S on a toolbar button saves', skip: editorSkip, (
+    tester,
+  ) async {
+    final k = await _EditorSave.start(tester, 'button.txt');
+    await k.edit();
+    final reload = Focus.of(
+      tester.element(
+        find.descendant(
+          of: find.byTooltip('Reload from host'),
+          matching: find.byType(Icon),
+        ),
+      ),
+    );
+    reload.requestFocus();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(reload.hasPrimaryFocus, isTrue, reason: 'Reload not focused');
+    await k.chord(save);
+    await k.saved('$save+S on a toolbar button');
+    expect(find.byType(TuiDialog), findsNothing, reason: 'Reload pressed');
+    await _closeTabs(tester);
+  });
+
+  // A Markdown file opens rendered: the command key with nothing edited
+  // writes nothing; edited in Source and back in the preview, where no text
+  // holds the focus, it saves.
+  _test(
+    'editor save: $save+S in a Markdown preview saves, and unedited writes '
+    'nothing',
+    skip: editorSkip,
+    (tester) async {
+      final k = await _EditorSave.start(tester, 'notes.md');
+      expect(_label('preview'), findsOneWidget, reason: 'no Preview toggle');
+      await k.chord(save);
+      await k.untouched(
+        '$save+S in an unedited preview',
+        text: _EditorSave.original,
+      );
+      await tester.tap(_label('source'));
+      // Source by a click hands the text the focus (_setPreview), so typing
+      // after it lands there, as after opening a plain file.
+      try {
+        await _until(
+          tester,
+          () => k.code().focusNode?.hasPrimaryFocus ?? false,
+          'Source to give the text the focus',
+          timeout: const Duration(seconds: 5),
+        );
+      } on TestFailure {
+        debugPrint('The focus: ${FocusManager.instance.primaryFocus}');
+        rethrow;
+      }
+      await k.edit();
+      await tester.tap(_label('preview'));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        k.code().focusNode?.hasFocus,
+        isFalse,
+        reason: 'the text kept the focus behind the preview',
+      );
+      await k.chord(save);
+      await k.saved('$save+S in the preview');
+      await _closeTabs(tester);
+    },
+  );
+}
+
+/// One file in the editor, opened from a Local shell's drawer, with the
+/// real keys that type into it and save it: xdotool on Linux, System Events
+/// on a Mac.
+class _EditorSave {
+  _EditorSave._(this.tester, this.file);
+
+  final WidgetTester tester;
+  final File file;
+
+  static const original = 'hello e2e\n';
+
+  /// Old enough that a write of any kind moves it.
+  static final past = DateTime(2020);
+
+  /// What is typed: no s in it, so one appearing is a chord's own S.
+  static final mark = 'edit-${DateTime.now().millisecondsSinceEpoch % 100000}-';
+
+  String get edited => '$mark$original';
+  String get name => file.uri.pathSegments.last;
+
+  /// The text, kept built behind a Markdown preview, so found offstage too.
+  final editor = find.byType(CodeEditor, skipOffstage: false);
+  final unsaved = find.text('Unsaved changes');
+  CodeEditor code() => tester.widget<CodeEditor>(editor);
+  String text() => code().controller!.text;
+
+  /// The app launched and [name], a file of [original] with an old mtime in
+  /// a folder of the test's own in the home, opened from the drawer.
+  static Future<_EditorSave> start(WidgetTester tester, String name) async {
+    addTearDown(_logKeys('editor'));
+    // A digit first, so the drawer draws it without a scroll.
+    final dir = Directory(Platform.environment['HOME']!)
+        .createTempSync('0-jeansh-e2e-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/$name')
+      ..writeAsStringSync(original)
+      ..setLastModifiedSync(past);
+    final k = _EditorSave._(tester, file);
+    await _launch(tester);
+    await _localShell(tester);
+    await tester.tap(find.byTooltip('Browse files'));
+    final folder = find.text(dir.path.split('/').last);
+    await _until(
+      tester,
+      () => folder.evaluate().isNotEmpty,
+      "the drawer to list the test's folder in the home",
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.tap(folder);
+    final entry = find.text(name);
+    await _until(
+      tester,
+      () => entry.evaluate().isNotEmpty,
+      'the drawer to list $name',
+    );
+    await tester.tap(entry);
+    await _until(
+      tester,
+      () =>
+          find.byType(FileEditorPage).evaluate().length == 1 &&
+          k.editor.evaluate().length == 1 &&
+          k.text() == original,
+      '$name to open in the editor',
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    return k;
+  }
+
+  Future<void> _osascript(String line) async {
+    final done = await Process.run('osascript', [
+      '-e',
+      'tell application "System Events" to tell process "Jeansh"',
+      '-e',
+      'set frontmost to true',
+      '-e',
+      line,
+      '-e',
+      'end tell',
+    ]);
+    expect(done.exitCode, 0, reason: 'System Events: ${done.stderr}');
+  }
+
+  /// [mod]+S: ctrl, super or cmd.
+  Future<void> chord(String mod) async {
+    if (Platform.isMacOS) {
+      final using = mod == 'cmd' ? 'command down' : 'control down';
+      await _osascript('keystroke "s" using $using');
+    } else {
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['key', '--clearmodifiers', '$mod+s']);
+    }
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  Future<void> type(String text) async {
+    if (Platform.isMacOS) {
+      await _osascript('keystroke "$text"');
+    } else {
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['type', '--delay', '30', text]);
+    }
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  /// [mark] typed into the text, which must hold the focus.
+  Future<void> edit() async {
+    await type(mark);
+    try {
+      await _until(
+        tester,
+        () => text() == edited && unsaved.evaluate().isNotEmpty,
+        '$name to take the typing and say Unsaved changes',
+      );
+    } on TestFailure {
+      // Where the typing went instead: the text as it stands, and the focus.
+      debugPrint('The text: ${jsonEncode(text())}');
+      debugPrint('The focus: ${FocusManager.instance.primaryFocus}');
+      rethrow;
+    }
+  }
+
+  /// Saved: the file on disk is what was typed and no more, Saved shown,
+  /// Unsaved changes gone, the mtime moved, and no s typed.
+  Future<void> saved(String when) async {
+    await _until(
+      tester,
+      () => file.readAsStringSync() == edited,
+      '$when: to write $name',
+      timeout: const Duration(seconds: 8),
+    );
+    await _until(
+      tester,
+      () => find.textContaining('Saved $name').evaluate().isNotEmpty,
+      '$when: the Saved $name toast',
+      timeout: const Duration(seconds: 5),
+    );
+    await _until(
+      tester,
+      () => unsaved.evaluate().isEmpty,
+      '$when: Unsaved changes to go',
+    );
+    expect(text(), edited, reason: '$when: an s typed');
+    expect(
+      file.lastModifiedSync().isAfter(past),
+      isTrue,
+      reason: '$when: the mtime did not move',
+    );
+  }
+
+  /// Nothing written: the file and its mtime as they were, no Saved toast,
+  /// and the text as [text], with no s typed.
+  Future<void> untouched(String when, {required String text}) async {
+    await tester.pump(const Duration(seconds: 2));
+    expect(file.readAsStringSync(), original, reason: '$when: written');
+    expect(file.lastModifiedSync(), past, reason: '$when: mtime moved');
+    expect(
+      find.textContaining('Saved $name'),
+      findsNothing,
+      reason: '$when: Saved shown',
+    );
+    expect(this.text(), text, reason: '$when: the text changed');
+  }
 }
