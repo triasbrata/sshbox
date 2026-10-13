@@ -145,7 +145,7 @@ env:
     when:
       true: ${STEP == 'watch'}
     commands:
-      - tapOn: "Sessions on this host"
+      - runFlow: common/sessions.yaml
       - extendedWaitUntil:
           visible: "(?s)\\W*${SESSION}.*"
           timeout: 20000

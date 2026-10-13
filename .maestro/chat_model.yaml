@@ -1,8 +1,9 @@
 # #214: the model chip in chat's composer. A new chat's model is picked before
 # the first message and reaches `claude --bg` as --model; once chat's own
 # Claude is up for a finished session, picking another sends it set_model and
-# the chip follows its answer; a session watched on the host only says how to
-# change its model there, and nothing is sent.
+# the chip follows its answer; a session watched live in a tmux pane is typed
+# /model <alias>; one only watched, read-only, says how to change its model
+# there, and nothing is sent.
 #
 # The host's stand-in (tools/e2e_android.sh's chat_model) keeps the --bg
 # arguments and every set_model it is sent, which the runner checks after the
@@ -66,8 +67,12 @@ env:
 - assertNotVisible: "Model Opus 5.5.*"
 - takeScreenshot: chat-model-haiku
 
-# A watched session: the chip says how, and changes nothing.
-- tapOn: "Sessions on this host"
+# A session watched live in its tmux pane: the chip picks for it too. Haiku
+# is typed into the pane as /model haiku, which the stand-in answers as
+# 2.1.287 does, "Set model to Haiku 4.5", and the chip follows that record.
+# The runner checks the pane got exactly that one line. A session's own
+# model is not chat's, so the chip starts over: no Haiku from above.
+- runFlow: common/sessions.yaml
 - extendedWaitUntil:
     visible: "(?s)\\W*E2E live session.*"
     timeout: 20000
@@ -75,12 +80,42 @@ env:
 - extendedWaitUntil:
     visible: "(?s).*in tmux pane.*"
     timeout: 20000
+- assertNotVisible: "Model Haiku.*"
+- assertNotVisible: "(?s).*Read-only from here.*"
 - tapOn: "Model.*"
 - extendedWaitUntil:
-    visible: "(?s).*in its own terminal with /model.*"
+    visible: "Haiku"
     timeout: 5000
-- assertNotVisible: "Sonnet"
+- assertVisible: "Sonnet"
+- tapOn: "Haiku"
+- extendedWaitUntil:
+    visible: "Model Haiku.*"
+    timeout: 30000
+- assertVisible: "(?s).*Set model to Haiku 4\\.5.*"
+- assertNotVisible: "Model Opus 5.5.*"
+- assertNotVisible: "(?s).*Read-only from here.*"
 - takeScreenshot: chat-model-watched
+
+# A session at a terminal outside tmux, only watched: read-only, and its chip
+# with it. A tap says so and opens no picker; nothing is typed into it (the
+# runner checks its transcript holds no /model).
+- runFlow: common/sessions.yaml
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E terminal session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E terminal session.*"
+- extendedWaitUntil:
+    visible: "(?s).*read-only: it runs in a terminal outside tmux.*"
+    timeout: 20000
+- assertNotVisible: "(?s).*in tmux pane.*"
+- tapOn: "Model.*"
+- extendedWaitUntil:
+    visible: "(?s).*Read-only from here: change its model in its own terminal with /model.*"
+    timeout: 5000
+- assertNotVisible: "Haiku"
+- assertNotVisible: "Sonnet"
+- assertNotVisible: "Model Haiku.*"
+- takeScreenshot: chat-model-read-only
 
 - tapOn: "(?s)Close .*Claude.*"
 - tapOn: "Close ${HOST_LABEL}.*"

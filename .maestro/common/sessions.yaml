@@ -1,0 +1,11 @@
+# Opens chat's sessions drawer on a narrow screen. An empty chat tab has its
+# own "Sessions on this host" button; once a session is picked the composer
+# has none, and the drawer is the ⋮ "Chat settings" menu's item.
+appId: cloud.brata.terminal
+---
+- runFlow:
+    when:
+      notVisible: "Sessions on this host"
+    commands:
+      - tapOn: "Chat settings"
+- tapOn: "Sessions on this host"
