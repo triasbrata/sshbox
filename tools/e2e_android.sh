@@ -636,7 +636,7 @@ SH
   # Its flow leaves a shell and a chat tab open and the folder chip on
   # e2e-cont/other, just deleted: the next chat_version found the chat tab
   # restored, and every new chat after it was "Not started" there.
-  app_fresh
+  : app_fresh
   stand_in ''
   return "$status"
 }
@@ -731,7 +731,7 @@ PY
 chat_version_case() {
   local label=$1 answer=$2 expect=$3 shot=chat-version-$1 found status=0
   echo "::group::chat_version: $label (report only)"
-  app_fresh
+  : app_fresh
   stand_in "$answer"
   # Said here, from the host, so a run that finds no toast shows whether the
   # stand-in was in place or the toast simply came and went unseen.
