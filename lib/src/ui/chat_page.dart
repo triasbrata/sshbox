@@ -3803,6 +3803,9 @@ class _UsageChipState extends State<_UsageChip> {
 
   static String _count(int tokens) => ChatProgress.count(tokens);
 
+  /// What the popup keeps from the screen's edges.
+  static const double _margin = 8;
+
   @override
   Widget build(BuildContext context) {
     final context_ = widget.chat.context!;
@@ -3816,15 +3819,39 @@ class _UsageChipState extends State<_UsageChip> {
       link: _link,
       child: OverlayPortal(
         controller: _portal,
-        overlayChildBuilder: (_) => CompositedTransformFollower(
-          link: _link,
-          targetAnchor: Alignment.topRight,
-          followerAnchor: Alignment.bottomRight,
-          child: Align(
-            alignment: Alignment.bottomRight,
-            child: _UsagePopup(chat: widget.chat, local: _local, count: _count),
-          ),
-        ),
+        overlayChildBuilder: (overlay) {
+          // Over the gauge, its right edge on the gauge's, and moved right as
+          // far as it takes to stay on screen: on a phone the gauge sits near
+          // the middle, and the popup ran off the left edge.
+          final screen = MediaQuery.sizeOf(overlay).width;
+          final width = math.min(_UsagePopup.maxWidth, screen - 2 * _margin);
+          final box = context.findRenderObject() as RenderBox?;
+          var shift = 0.0;
+          if (box != null && box.hasSize) {
+            final right = box.localToGlobal(Offset(box.size.width, 0)).dx;
+            shift = math.min(
+              math.max(0.0, _margin - (right - width)),
+              math.max(0.0, screen - _margin - right),
+            );
+          }
+          return CompositedTransformFollower(
+            link: _link,
+            targetAnchor: Alignment.topRight,
+            followerAnchor: Alignment.bottomRight,
+            offset: Offset(shift, 0),
+            child: Align(
+              alignment: Alignment.bottomRight,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: width),
+                child: _UsagePopup(
+                  chat: widget.chat,
+                  local: _local,
+                  count: _count,
+                ),
+              ),
+            ),
+          );
+        },
         child: TapRegion(
           onTapOutside: (_) {
             if (_pinned) {
@@ -4472,6 +4499,9 @@ class _UsagePopup extends StatelessWidget {
   final String Function(DateTime, DateTime) local;
   final String Function(int) count;
 
+  /// Its widest, on a screen with room for it.
+  static const double maxWidth = 300;
+
   /// Redrawn every second while it is open, so how old the plan's reading is
   /// keeps up with the clock without the page behind it being redrawn.
   @override
@@ -4510,7 +4540,7 @@ class _UsagePopup extends StatelessWidget {
       );
       final age = quota == null ? null : now.difference(quota.asOf);
       return ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 300),
+        constraints: const BoxConstraints(maxWidth: maxWidth),
         child: TuiBox(
           expanded: false,
           title: 'Usage',

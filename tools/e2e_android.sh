@@ -421,7 +421,10 @@ file_editor() {
 html_tab() {
   app_fresh
   local home=/home/$SSH_USER
-  printf '<h1>Jeansh e2e heading</h1>\n' |
+  # A title of its own: the tab is named after it, and untitled it was named
+  # after the loopback address, a chip wider than the 320 dp emulator's strip
+  # that had its ✕ behind the + button.
+  printf '<title>E2E page</title>\n<h1>Jeansh e2e heading</h1>\n' |
     sudo -u "$SSH_USER" tee "$home/jeansh-e2e-page.html" >/dev/null
   printf 'Jeansh e2e plain note\n' |
     sudo -u "$SSH_USER" tee "$home/jeansh-e2e-notes.txt" >/dev/null

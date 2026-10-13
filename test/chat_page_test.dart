@@ -8510,6 +8510,45 @@ void main() {
       );
     });
 
+    // The gauge sits near the middle of a phone's composer, and a popup with
+    // its right edge on the gauge's ran off the left of the screen there, its
+    // context line cut to "00k (85%)". On a wide screen it stays where it was.
+    for (final phone in [true, false]) {
+      testWidgets(
+        phone
+            ? 'on a phone the popup stays on screen'
+            : 'on a wide screen the popup ends where the gauge does',
+        (tester) async {
+          final screen = phone ? const Size(320, 640) : const Size(1280, 800);
+          // Picked where the sessions are a panel, then narrowed.
+          await watching(tester, tokens: 170000);
+          tester.view.physicalSize = screen;
+          await _frames(tester);
+          await tester.tap(find.byType(ContextGauge));
+          await _frames(tester);
+          final popup = tester.getRect(
+            find
+                .ancestor(
+                  of: find.textContaining('Usage'),
+                  matching: find.byType(TuiBox),
+                )
+                .first,
+          );
+          final gauge = tester.getRect(find.byType(ContextGauge));
+          expect(find.text('Context  170k / 200k (85%)'), findsOneWidget);
+          expect(popup.left, greaterThanOrEqualTo(0));
+          expect(popup.right, lessThanOrEqualTo(screen.width));
+          if (phone) {
+            // Moved right off the gauge's edge to fit.
+            expect(gauge.right - 300, lessThan(0));
+            expect(popup.left, greaterThanOrEqualTo(8));
+          } else {
+            expect(popup.right, moreOrLessEquals(gauge.right, epsilon: 24));
+          }
+        },
+      );
+    }
+
     for (final shown in [true, false]) {
       testWidgets('a turn ending ${shown ? 'on a chat on show asks' : 'in a '
           'chat nobody is looking at does not ask'} for the plan\'s usage', (
