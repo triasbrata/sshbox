@@ -2893,27 +2893,61 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// Gives up after [listingTimeout]: a listing that never answers would
   /// otherwise hold [checkState]'s look for the rest of the turn, and a turn
-  /// whose end was missed would spin for ever.
-  Future<List<ClaudeAgent>> agents({bool all = false}) async {
-    final clock = Stopwatch()..start();
-    final opening = open(agentsCommand(all: all));
-    final CommandChannel channel;
-    try {
-      channel = await opening.timeout(listingTimeout);
-    } on TimeoutException {
-      // Opened after all, too late: closed, so nothing is left on the host.
-      unawaited(opening.then((late) => late.close(), onError: (_) {}));
-      rethrow;
+  /// whose end was missed would spin for ever. Gives up as well once [until]
+  /// completes: a page that asked and has gone, while the chat stays.
+  Future<List<ClaudeAgent>> agents({
+    bool all = false,
+    Future<void>? until,
+  }) async {
+    // One timer for opening and reading together, in [_timers] so that a
+    // chat disposed meanwhile leaves none behind.
+    final expired = Completer<Never>();
+    late final Timer timer;
+    void giveUp(Object why) {
+      timer.cancel();
+      _timers.remove(timer);
+      if (!expired.isCompleted) expired.completeError(why);
     }
+
+    timer = Timer(
+      listingTimeout,
+      () => giveUp(
+        TimeoutException(
+          'The host did not list its Claude sessions in time.',
+          listingTimeout,
+        ),
+      ),
+    );
+    _timers.add(timer);
+    expired.future.ignore();
+    unawaited(
+      until?.then(
+        (_) => giveUp(StateError('Nobody waits for the listing any more.')),
+      ),
+    );
     final String output;
     try {
-      final left = listingTimeout - clock.elapsed;
-      output = await utf8.decoder
-          .bind(channel.output)
-          .join()
-          .timeout(left.isNegative ? Duration.zero : left);
+      final opening = open(agentsCommand(all: all));
+      final CommandChannel channel;
+      try {
+        channel = await Future.any([opening, expired.future]);
+      } catch (_) {
+        if (!expired.isCompleted) rethrow;
+        // Opened after all, too late: closed, so nothing is left on the host.
+        unawaited(opening.then((late) => late.close(), onError: (_) {}));
+        rethrow;
+      }
+      try {
+        output = await Future.any([
+          utf8.decoder.bind(channel.output).join(),
+          expired.future,
+        ]);
+      } finally {
+        channel.close();
+      }
     } finally {
-      channel.close();
+      timer.cancel();
+      _timers.remove(timer);
     }
     // The listing, then the pins after a line of their own: see
     // [agentsCommand].

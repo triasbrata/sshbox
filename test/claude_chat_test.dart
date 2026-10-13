@@ -4862,6 +4862,61 @@ void main() {
       await hangsOnce('open');
     });
 
+    // Under the widget binding, which fails a test that leaves a timer
+    // pending, as chat_page_test's do.
+    testWidgets('a chat disposed while it lists leaves no timer behind', (
+      tester,
+    ) async {
+      final chat = ClaudeChat(
+        open: (_) => Completer<CommandChannel>().future,
+      );
+      unawaited(chat.agents().then((_) {}, onError: (_) {}));
+      await tester.pump();
+      chat.dispose();
+    });
+
+    testWidgets('a listing nobody waits for any more gives up, its timer and '
+        'its channel gone, while the chat stays', (tester) async {
+      final closed = <bool>[];
+      final open = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => open.future);
+      addTearDown(chat.dispose);
+      final gone = Completer<void>();
+      Object? why;
+      unawaited(
+        chat
+            .agents(until: gone.future)
+            .then((_) {}, onError: (Object e) => why = e),
+      );
+      await tester.pump();
+      gone.complete();
+      await tester.pump();
+      expect(why, isA<StateError>());
+      // Opened after it gave up: closed at once.
+      open.complete((
+        output: const Stream<Uint8List>.empty(),
+        write: (Uint8List data) {},
+        close: () => closed.add(true),
+      ));
+      await tester.pump();
+      expect(closed, [true]);
+    });
+
+    testWidgets('a listing that answers leaves no timer behind', (
+      tester,
+    ) async {
+      final chat = ClaudeChat(
+        open: (_) async => (
+          output: Stream.value(Uint8List.fromList(utf8.encode('[]'))),
+          write: (Uint8List data) {},
+          close: () {},
+        ),
+      );
+      addTearDown(chat.dispose);
+      final listed = await tester.runAsync(chat.agents);
+      expect(listed, isEmpty);
+    });
+
     test('a listing that answers in time is read whole', () async {
       final (chat, host) = await watch();
       host.adds(prompt());
