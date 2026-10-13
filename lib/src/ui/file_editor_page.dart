@@ -313,8 +313,12 @@ class _TextFileTabState extends State<_TextFileTab> {
           defaultTargetPlatform == TargetPlatform.macOS ||
           defaultTargetPlatform == TargetPlatform.iOS;
       final typed = event.character;
+      // X11 reports the key as Super, which Flutter does not count as meta.
+      final superDown =
+          keys.isMetaPressed ||
+          keys.logicalKeysPressed.contains(LogicalKeyboardKey.superKey);
       if (!apple &&
-          keys.isMetaPressed &&
+          superDown &&
           event is! KeyUpEvent &&
           typed != null &&
           typed.isNotEmpty &&
