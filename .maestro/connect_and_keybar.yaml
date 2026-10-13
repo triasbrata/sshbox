@@ -66,3 +66,7 @@ env:
 - tapOn:
     text: "Close ${HOST_LABEL}.*"
     optional: true
+
+# MUTATION, never to merge: a gating flow that fails in one shard (4 of 5)
+# must fail the whole of e2e.
+- assertVisible: "e2e shard mutation: this text is never on screen"
