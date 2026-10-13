@@ -13,7 +13,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderParagraph, RenderRepaintBoundary;
+    show DebugSemanticsDumpOrder, RenderParagraph, RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownBody;
 import 'package:flutter_test/flutter_test.dart';
@@ -8591,6 +8591,24 @@ void main() {
       await tester.tap(find.byType(ContextGauge));
       await tester.pump();
       await tester.pump(const Duration(seconds: 2));
+      // Android's bridge builds its tree from each node's children in
+      // traversal order, not from the tree a finder walks: the rows must be
+      // reached that way too. The portal's link to its popup once merged into
+      // a neighbour's node, and they were not.
+      final exported = <String>[];
+      void walk(dynamic node) {
+        exported.add(node.label as String);
+        for (final child in node.debugListChildrenInOrder(
+          DebugSemanticsDumpOrder.traversalOrder,
+        )) {
+          walk(child);
+        }
+      }
+
+      walk(tester.binding.pipelineOwner.semanticsOwner!.rootSemanticsNode);
+      expect(exported, contains('Context  170k / 200k (85%)'));
+      expect(exported, contains('claude-opus-5-5'));
+      expect(exported, contains('Context 85% used. Usage details'));
       for (final label in ['Context  170k / 200k (85%)', 'claude-opus-5-5']) {
         final finder = find.bySemanticsLabel(label);
         expect(finder, findsOneWidget, reason: label);

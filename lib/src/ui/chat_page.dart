@@ -3815,111 +3815,121 @@ class _UsageChipState extends State<_UsageChip> {
     final label = context_.recounting
         ? 'Context compacted, counted at the next reply'
         : 'Context $percent%';
-    return CompositedTransformTarget(
-      link: _link,
-      child: OverlayPortal(
-        controller: _portal,
-        overlayChildBuilder: (overlay) {
-          // Over the gauge, its right edge on the gauge's, and moved right as
-          // far as it takes to stay on screen: on a phone the gauge sits near
-          // the middle, and the popup ran off the left edge.
-          final screen = MediaQuery.sizeOf(overlay).width;
-          final width = math.min(_UsagePopup.maxWidth, screen - 2 * _margin);
-          final box = context.findRenderObject() as RenderBox?;
-          var shift = 0.0;
-          if (box != null && box.hasSize) {
-            final right = box.localToGlobal(Offset(box.size.width, 0)).dx;
-            shift = math.min(
-              math.max(0.0, _margin - (right - width)),
-              math.max(0.0, screen - _margin - right),
-            );
-          }
-          return CompositedTransformFollower(
-            link: _link,
-            targetAnchor: Alignment.topRight,
-            followerAnchor: Alignment.bottomRight,
-            offset: Offset(shift, 0),
-            child: Align(
-              alignment: Alignment.bottomRight,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: width),
-                child: _UsagePopup(
-                  chat: widget.chat,
-                  local: _local,
-                  count: _count,
+    // A node of its own around the portal: the popup's rows are its children
+    // in traversal order, the order Android exports. Without one, the portal's
+    // link to its popup merged into a neighbour's node, and on Android the
+    // popup was drawn but missing from the accessibility tree.
+    return Semantics(
+      container: true,
+      explicitChildNodes: true,
+      child: CompositedTransformTarget(
+        link: _link,
+        child: OverlayPortal(
+          controller: _portal,
+          overlayChildBuilder: (overlay) {
+            // Over the gauge, its right edge on the gauge's, and moved right as
+            // far as it takes to stay on screen: on a phone the gauge sits near
+            // the middle, and the popup ran off the left edge.
+            final screen = MediaQuery.sizeOf(overlay).width;
+            final width = math.min(_UsagePopup.maxWidth, screen - 2 * _margin);
+            final box = context.findRenderObject() as RenderBox?;
+            var shift = 0.0;
+            if (box != null && box.hasSize) {
+              final right = box.localToGlobal(Offset(box.size.width, 0)).dx;
+              shift = math.min(
+                math.max(0.0, _margin - (right - width)),
+                math.max(0.0, screen - _margin - right),
+              );
+            }
+            return CompositedTransformFollower(
+              link: _link,
+              targetAnchor: Alignment.topRight,
+              followerAnchor: Alignment.bottomRight,
+              offset: Offset(shift, 0),
+              child: Align(
+                alignment: Alignment.bottomRight,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: width),
+                  child: _UsagePopup(
+                    chat: widget.chat,
+                    local: _local,
+                    count: _count,
+                  ),
                 ),
               ),
-            ),
-          );
-        },
-        child: TapRegion(
-          onTapOutside: (_) {
-            if (_pinned) {
-              _pinned = false;
-              _sync();
-            }
+            );
           },
-          child: MouseRegion(
-            onEnter: (_) {
-              _hover = true;
-              _sync();
+          child: TapRegion(
+            onTapOutside: (_) {
+              if (_pinned) {
+                _pinned = false;
+                _sync();
+              }
             },
-            onExit: (_) {
-              _hover = false;
-              _sync();
-            },
-            child: FocusableActionDetector(
-              onShowFocusHighlight: (on) => setState(() => _ring = on),
-              // Enter and Space open and close the popup, as a tap does.
-              actions: {
-                ActivateIntent: CallbackAction<ActivateIntent>(
-                  onInvoke: (_) {
-                    _pinned = !_pinned;
-                    _sync();
-                    return null;
-                  },
-                ),
-              },
-              child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                _pinned = !_pinned;
+            child: MouseRegion(
+              onEnter: (_) {
+                _hover = true;
                 _sync();
               },
-              child: Semantics(
-                container: true,
-                button: true,
-                label: context_.recounting
-                    ? '$label. Usage details'
-                    : '$label used. Usage details',
-                excludeSemantics: true,
-                child: TuiTooltip(
-                  message: label,
-                  excludeFromSemantics: true,
-                  child: DecoratedBox(
-                    key: const ValueKey('gauge-focus'),
-                    // Where keyboard focus is, in termul's accent.
-                    decoration: BoxDecoration(
-                      border: _ring
-                          ? Border.all(
-                              color: TermulThemeData.of(context).palette.accent,
-                            )
-                          : null,
-                    ),
-                    child: SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: Center(
-                      child: ContextGauge(
-                        fraction: context_.fraction,
-                        warn: warn,
+              onExit: (_) {
+                _hover = false;
+                _sync();
+              },
+              child: FocusableActionDetector(
+                onShowFocusHighlight: (on) => setState(() => _ring = on),
+                // Enter and Space open and close the popup, as a tap does.
+                actions: {
+                  ActivateIntent: CallbackAction<ActivateIntent>(
+                    onInvoke: (_) {
+                      _pinned = !_pinned;
+                      _sync();
+                      return null;
+                    },
+                  ),
+                },
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    _pinned = !_pinned;
+                    _sync();
+                  },
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    label: context_.recounting
+                        ? '$label. Usage details'
+                        : '$label used. Usage details',
+                    excludeSemantics: true,
+                    child: TuiTooltip(
+                      message: label,
+                      excludeFromSemantics: true,
+                      child: DecoratedBox(
+                        key: const ValueKey('gauge-focus'),
+                        // Where keyboard focus is, in termul's accent.
+                        decoration: BoxDecoration(
+                          border: _ring
+                              ? Border.all(
+                                  color: TermulThemeData.of(context)
+                                      .palette
+                                      .accent,
+                                )
+                              : null,
+                        ),
+                        child: SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: Center(
+                            child: ContextGauge(
+                              fraction: context_.fraction,
+                              warn: warn,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                  ),
                 ),
               ),
-            ),
             ),
           ),
         ),
