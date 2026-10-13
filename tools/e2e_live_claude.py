@@ -37,6 +37,14 @@ A line starting `late:` is read and then not recorded for 45 seconds, past the
 chat's 30 s wait, while the pane looks like one with something typed in it; a
 `late:` line read again is recorded at once.
 
+The working-line backstop's flows (chat_working_backstop) add three more, also
+matched without regard to case: a turn whose end is never written, no
+stop_reason and no turn_duration, so only the listing can end it. `missed:`
+leaves the listing idle and has the next `claude agents` hang, by creating
+~/.e2e-agents-hang, which the stand-in claude takes on its next listing;
+`missedbusy:` does the same but leaves the listing busy; `missedplain:` leaves
+it idle with no hang.
+
     python3 e2e_live_claude.py SESSION_ID
 
 tools/e2e_android.sh runs it on the runner's throwaway host user only.
@@ -459,6 +467,21 @@ def late_turn(text):
     sys.stdout.write(answer + '\n')
 
 
+def missed_turn(text, status, hang):
+    """A turn whose end the transcript never says: the prompt and half an
+    answer, with no stop_reason and no turn_duration after it."""
+    if hang:
+        open(os.path.join(os.environ['HOME'], '.e2e-agents-hang'), 'w').close()
+    listed_as(status)
+    record({'type': 'user', 'timestamp': now(), 'uuid': str(uuid.uuid4()),
+            'message': {'role': 'user', 'content': text}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_missed', 'role': 'assistant', 'stop_reason': None,
+        'usage': {'output_tokens': 9},
+        'content': [{'type': 'text', 'text': 'Missed answer: half'}]}})
+    sys.stdout.write('Missed answer: half\n')
+
+
 def prompt():
     sys.stdout.write('❯ ')
     sys.stdout.flush()
@@ -472,7 +495,13 @@ while True:
     text = line.rstrip('\n')
     log_line(text)
     lower = text.lower()
-    if lower.startswith('hold:'):
+    if lower.startswith('missed:'):
+        missed_turn(text, 'idle', True)
+    elif lower.startswith('missedbusy:'):
+        missed_turn(text, 'busy', True)
+    elif lower.startswith('missedplain:'):
+        missed_turn(text, 'idle', False)
+    elif lower.startswith('hold:'):
         hold_turn(text)
     elif lower.startswith('ask:'):
         ask_turn(text)
