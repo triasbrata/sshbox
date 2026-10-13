@@ -838,8 +838,17 @@ backstop_case() { # CASE WORD SID
   sudo rm -f "$home/.e2e-agents-hang" "$home/.e2e-agents-hung" "$home/.e2e-pane-lines.log"
   live_session
   flow chat_working_backstop -e "CASE=$1" -e "WORD=$2" || status=1
-  echo "lines that reached the pane in $1:"
-  sudo cat "$home/.e2e-pane-lines.log" 2>/dev/null
+  echo "lines that reached the pane in $1 (meant: '$2: go'), $(sudo cat \
+    "$home/.e2e-pane-lines.log" 2>/dev/null | wc -l) of them:"
+  sudo cat "$home/.e2e-pane-lines.log" 2>/dev/null | sed 's/^/  > /'
+  # The case's own word, and no other case's, or it tested something else.
+  if ! sudo grep -qix "$2: go" "$home/.e2e-pane-lines.log" 2>/dev/null; then
+    echo "::error::$1: '$2: go' never reached the pane"
+    status=1
+  elif sudo grep -vix "$2: go" "$home/.e2e-pane-lines.log" 2>/dev/null | grep -qi '^missed'; then
+    echo "::error::$1: another case's word reached the pane"
+    status=1
+  fi
   # Whether a listing hung, as the case asked: else it proved nothing.
   if [ "$1" = plain ]; then
     if sudo test -e "$home/.e2e-agents-hung"; then
