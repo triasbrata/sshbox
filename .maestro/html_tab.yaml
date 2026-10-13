@@ -43,5 +43,5 @@ env:
 - assertNotVisible: "Save to host"
 
 # The selected tab is the page; closing it lands on the shell.
-- tapOn: "(?s)Close .*"
+- tapOn: "Close E2E page"
 - tapOn: "Close ${HOST_LABEL}.*"

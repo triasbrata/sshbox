@@ -13,7 +13,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderParagraph, RenderRepaintBoundary;
+    show DebugSemanticsDumpOrder, RenderParagraph, RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownBody;
 import 'package:flutter_test/flutter_test.dart';
@@ -8432,6 +8432,7 @@ void main() {
       WidgetTester tester, {
       int tokens = 90000,
       String usage = '',
+      Widget Function(Widget page)? around,
     }) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
@@ -8455,8 +8456,9 @@ void main() {
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
+      final page = ChatPage(session: session);
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(home: Scaffold(body: around?.call(page) ?? page)),
       );
       await _frames(tester);
       await tester.tap(find.text('the nightly build'));
@@ -8508,6 +8510,129 @@ void main() {
         shell.commands.where((c) => c.contains('/usage')),
         hasLength(1),
       );
+    });
+
+    // The gauge sits near the middle of a phone's composer, and a popup with
+    // its right edge on the gauge's ran off the left of the screen there, its
+    // context line cut to "00k (85%)". On a wide screen it stays where it was.
+    for (final phone in [true, false]) {
+      testWidgets(
+        phone
+            ? 'on a phone the popup stays on screen'
+            : 'on a wide screen the popup ends where the gauge does',
+        (tester) async {
+          final screen = phone ? const Size(320, 640) : const Size(1280, 800);
+          // Picked where the sessions are a panel, then narrowed.
+          await watching(tester, tokens: 170000);
+          tester.view.physicalSize = screen;
+          await _frames(tester);
+          await tester.tap(find.byType(ContextGauge));
+          await _frames(tester);
+          final popup = tester.getRect(
+            find
+                .ancestor(
+                  of: find.textContaining('Usage'),
+                  matching: find.byType(TuiBox),
+                )
+                .first,
+          );
+          final gauge = tester.getRect(find.byType(ContextGauge));
+          expect(find.text('Context  170k / 200k (85%)'), findsOneWidget);
+          // What an e2e or a screen reader is given: the row, whole, alone.
+          final semantics = tester.ensureSemantics();
+          await tester.pump();
+          expect(
+            find.bySemanticsLabel('Context  170k / 200k (85%)'),
+            findsOneWidget,
+          );
+          semantics.dispose();
+          expect(popup.left, greaterThanOrEqualTo(0));
+          expect(popup.right, lessThanOrEqualTo(screen.width));
+          if (phone) {
+            // Moved right off the gauge's edge to fit.
+            expect(gauge.right - 300, lessThan(0));
+            expect(popup.left, greaterThanOrEqualTo(8));
+          } else {
+            expect(popup.right, moreOrLessEquals(gauge.right, epsilon: 24));
+          }
+        },
+      );
+    }
+
+    // As on the e2e's emulator, where semantics are on before anything is
+    // tapped, the pixel ratio is 2.75 and Gboard is up: the popup's rows are
+    // in the semantics tree, not hidden, and on screen in physical pixels, as
+    // Android's bridge is given them. (The e2e found the popup drawn and its
+    // rows missing from uiautomator's tree; this holds Flutter's half.)
+    testWidgets('the popup is in the semantics tree a device reads', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      // Held as the tab shell holds a page: one of an IndexedStack's children.
+      await watching(
+        tester,
+        tokens: 170000,
+        around: (page) => IndexedStack(
+          index: 1,
+          children: [
+            const SizedBox(),
+            TickerMode(
+              enabled: true,
+              child: ExcludeFocus(excluding: false, child: page),
+            ),
+          ],
+        ),
+      );
+      tester.view
+        ..physicalSize = const Size(880, 1760)
+        ..devicePixelRatio = 2.75
+        ..viewInsets = const FakeViewPadding(bottom: 660);
+      await _frames(tester);
+      await tester.tap(find.byType(ContextGauge));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      // Android's bridge builds its tree from each node's children in
+      // traversal order, not from the tree a finder walks: the rows must be
+      // reached that way too. The portal's link to its popup once merged into
+      // a neighbour's node, and they were not.
+      final exported = <String>[];
+      void walk(dynamic node) {
+        exported.add(node.label as String);
+        for (final child in node.debugListChildrenInOrder(
+          DebugSemanticsDumpOrder.traversalOrder,
+        )) {
+          walk(child);
+        }
+      }
+
+      // From the root of the tree the gauge's node is in.
+      walk(
+        tester.getSemantics(find.byType(ContextGauge)).owner!.rootSemanticsNode,
+      );
+      expect(exported, contains('Context  170k / 200k (85%)'));
+      expect(exported, contains('claude-opus-5-5'));
+      expect(exported, contains('Context 85% used. Usage details'));
+      for (final label in ['Context  170k / 200k (85%)', 'claude-opus-5-5']) {
+        final finder = find.bySemanticsLabel(label);
+        expect(finder, findsOneWidget, reason: label);
+        dynamic node = tester.getSemantics(finder);
+        var rect = node.rect as Rect;
+        var hidden = false;
+        while (node != null) {
+          hidden = hidden || node.flagsCollection.isHidden == true;
+          if (node.transform != null) {
+            rect = MatrixUtils.transformRect(node.transform as Matrix4, rect);
+          }
+          node = node.parent;
+        }
+        expect(hidden, isFalse, reason: label);
+        expect(rect.top, greaterThanOrEqualTo(0), reason: '$label at $rect');
+        expect(rect.left, greaterThanOrEqualTo(0), reason: '$label at $rect');
+        expect(rect.bottom, lessThanOrEqualTo(1760), reason: '$label at $rect');
+        expect(rect.right, lessThanOrEqualTo(880), reason: '$label at $rect');
+        expect(rect.top, greaterThan(275), reason: 'below the tab strip, $rect');
+      }
+      semantics.dispose();
     });
 
     for (final shown in [true, false]) {
