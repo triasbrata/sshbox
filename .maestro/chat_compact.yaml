@@ -77,9 +77,17 @@ env:
     visible: "(?s).*E2E compact summary: the ring was fixed.*"
     timeout: 5000
 - assertVisible: "(?s).*This session is being continued.*"
+- takeScreenshot: chat-compact-3-open
+# Following the end, the opened summary pushes the marker above the list's top.
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: "(?s)Conversation compacted\\. Hide summary.*"
+    direction: UP
+    timeout: 15000
 - assertVisible: "(?s)Conversation compacted\\. Hide summary.*"
 - assertNotVisible: "(?s)Conversation compacted\\. Show summary.*"
-- takeScreenshot: chat-compact-3-open
+- takeScreenshot: chat-compact-3-marker-open
 - tapOn: "(?s)Conversation compacted\\. Hide summary.*"
 - extendedWaitUntil:
     notVisible: "(?s).*E2E compact summary.*"
