@@ -8383,6 +8383,128 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('after a compaction the ring is empty and says it is counted '
+        'at the next reply, which counts it', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final shell = await watching(tester, tokens: 170000);
+      shell.adds({
+        'type': 'system',
+        'subtype': 'compact_boundary',
+        'compactMetadata': {'trigger': 'manual', 'postTokens': 7000},
+      });
+      await _settlePickUp(tester);
+      var gauge = tester.widget<ContextGauge>(find.byType(ContextGauge));
+      expect(gauge.fraction, 0);
+      expect(gauge.warn, isFalse);
+      expect(
+        find.bySemanticsLabel(
+          'Context compacted, counted at the next reply. Usage details',
+        ),
+        findsOneWidget,
+      );
+      expect(find.bySemanticsLabel(RegExp('^Context 85%')), findsNothing);
+      await tester.tap(find.byType(ContextGauge));
+      await tester.pump();
+      expect(find.text('Context  compacted'), findsOneWidget);
+      expect(find.text('Counted again at the next reply'), findsOneWidget);
+      expect(find.textContaining('/ 200k'), findsNothing);
+      await tester.tapAt(const Offset(40, 300));
+      await tester.pump();
+
+      shell.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm2',
+          'model': 'claude-opus-5-5',
+          'stop_reason': 'end_turn',
+          'usage': {'input_tokens': 2, 'cache_creation_input_tokens': 42000},
+          'content': [
+            {'type': 'text', 'text': 'Back.'},
+          ],
+        },
+      });
+      await _settlePickUp(tester);
+      gauge = tester.widget<ContextGauge>(find.byType(ContextGauge));
+      expect(gauge.fraction, closeTo(0.21, 0.01));
+      expect(
+        find.bySemanticsLabel(RegExp('^Context 21% used')),
+        findsOneWidget,
+      );
+      expect(find.bySemanticsLabel(RegExp('^Context compacted')), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('a compaction is a marker, its summary shown only when asked '
+        'and never as the user\'s bubble', (tester) async {
+      final semantics = tester.ensureSemantics();
+      const summary =
+          'This session is being continued from a previous conversation '
+          'that ran out of context.\n\nSummary:\n1. Fix the ring.';
+      final shell = await watching(tester);
+      shell
+        ..adds({
+          'type': 'system',
+          'subtype': 'compact_boundary',
+          'compactMetadata': {'trigger': 'manual'},
+        })
+        ..adds({
+          'type': 'user',
+          'isVisibleInTranscriptOnly': true,
+          'isCompactSummary': true,
+          'message': {'role': 'user', 'content': summary},
+        })
+        ..adds({
+          'type': 'system',
+          'subtype': 'compact_boundary',
+          'compactMetadata': {'trigger': 'auto'},
+        });
+      await _settlePickUp(tester);
+
+      expect(find.text('Conversation compacted ▸'), findsOneWidget);
+      // The second has no summary yet, so nothing to open.
+      expect(
+        find.text('Conversation compacted automatically'),
+        findsOneWidget,
+      );
+      expect(
+        find.bySemanticsLabel('Conversation compacted automatically'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Fix the ring', findRichText: true),
+        findsNothing,
+      );
+      // The history's own question is the only bubble.
+      expect(find.byType(TuiChatBubble), findsOneWidget);
+      expect(
+        find.bySemanticsLabel('Conversation compacted. Show summary'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Conversation compacted ▸'));
+      await _frames(tester);
+      expect(find.text('Conversation compacted ▾'), findsOneWidget);
+      final shown = find.textContaining('Fix the ring', findRichText: true);
+      expect(shown, findsOneWidget);
+      expect(
+        find.ancestor(of: shown, matching: find.byType(TuiChatBubble)),
+        findsNothing,
+      );
+      expect(find.byType(TuiChatBubble), findsOneWidget);
+      expect(
+        find.bySemanticsLabel('Conversation compacted. Hide summary'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Conversation compacted ▾'));
+      await _frames(tester);
+      expect(
+        find.textContaining('Fix the ring', findRichText: true),
+        findsNothing,
+      );
+      semantics.dispose();
+    });
+
     testWidgets('a plan reading that is old says how old', (tester) async {
       var now = DateTime(2026, 10, 2, 12, 0);
       final real = chatNow;
