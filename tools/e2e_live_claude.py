@@ -373,6 +373,9 @@ def recount_turn(text):
 
 
 pane_lines = os.path.join(os.environ['HOME'], '.e2e-pane-lines.log')
+# The aliases /model takes, and the names the CLI says it set.
+MODELS = {'default': 'Default', 'opus': 'Opus 5.5', 'sonnet': 'Sonnet 5.5',
+          'fable': 'Fable 5.1', 'haiku': 'Haiku 4.5'}
 release = os.path.join(os.environ['HOME'], '.e2e-release')
 # While this file is there, an echoed turn carries a uuid and a time.
 stamped = os.path.join(os.environ['HOME'], '.e2e-stamped')
@@ -507,6 +510,9 @@ while True:
                 f'<command-message>{name}</command-message>\n'
                 f'<command-args>{args.strip()}</command-args>'})
         printed = f'Context Usage: 12k/200k tokens (6%) from /{name}'
+        # /model <alias>, as 2.1.287 answers it with no dialog.
+        if name == 'model' and args.strip() in MODELS:
+            printed = f'Set model to {MODELS[args.strip()]}'
         record({'type': 'system', 'subtype': 'local_command', 'content':
                 f'<local-command-stdout>{printed}</local-command-stdout>'})
         sys.stdout.write(printed + '\n')

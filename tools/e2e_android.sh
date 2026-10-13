@@ -316,6 +316,24 @@ chat_code_copy_alone() {
   chat_code_copy
 }
 
+# chat_scroll alone, for E2E_ONLY: the stand-in's sessions first.
+chat_scroll_alone() {
+  chat_stand_in
+  flow chat_scroll
+}
+
+# For E2E_ONLY, one run: the model chip's picks, and every flow that opens the
+# sessions drawer once a session is picked, now from the ⋮ menu.
+chat_ui_cleanup() {
+  local status=0 name
+  for name in chat_model chat_code_copy_alone chat_scroll_alone \
+    chat_session_status chat_images; do
+    echo "--- $name"
+    "$name" || { echo "::error::$name failed"; status=1; }
+  done
+  return "$status"
+}
+
 # chat_mermaid alone, for E2E_ONLY: the stand-in's sessions first.
 chat_mermaid() {
   chat_stand_in
@@ -855,26 +873,44 @@ chat_compact() {
 
 # #214: the model chip over chat's box. A new chat started on Sonnet runs
 # `claude --bg --model sonnet`; chat's own claude, continuing a finished
-# session, is sent set_model and its chip follows the answer; a watched session
-# only says how to change its model. Against the stand-in's --bg and -p, which
-# keep what they were sent in ~/.e2e-bg-args and ~/.e2e-model-requests.
+# session, is sent set_model and its chip follows the answer; a session
+# watched live in a tmux pane is typed /model haiku; one at a terminal outside
+# tmux, read-only, only says how to change its model. Against the stand-in's
+# --bg and -p, which keep what they were sent in ~/.e2e-bg-args and
+# ~/.e2e-model-requests, the live pane's ~/.e2e-pane-lines.log, and a
+# read-only session that is a bare process with no terminal.
+RO_SID=e2e0000a-bbbb-4000-8000-00000000b001
 chat_model() {
-  local status=0 home=/home/$SSH_USER
+  local status=0 home=/home/$SSH_USER ro_pid lines
+  local projects=/home/$SSH_USER/.claude/projects/-home-$SSH_USER
   chat_stand_in
   end_live_session
   live_session
-  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests"
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests" "$home/.e2e-pane-lines.log"
   sudo -u "$SSH_USER" touch "$home/.e2e-model"
+  # Interactive, outside tmux: a process of the user's with no terminal, so
+  # chat finds no pane for it and watches it read-only.
+  ro_pid=$(sudo -u "$SSH_USER" sh -c 'setsid sleep 900 </dev/null >/dev/null 2>&1 & echo $!')
   # The session `--bg` names, which the agents list must hold (an id of 8
   # characters or more): a finished one, so chat continues it as its own.
-  sudo -u "$SSH_USER" HOME="$home" python3 - <<'PY'
-import json, os
-path = os.path.join(os.environ['HOME'], '.e2e-agents.json')
+  sudo -u "$SSH_USER" HOME="$home" python3 - "$RO_SID" "$ro_pid" <<'PY'
+import json, os, sys
+home, sid, pid = os.environ['HOME'], sys.argv[1], int(sys.argv[2])
+path = os.path.join(home, '.e2e-agents.json')
 rows = json.load(open(path))
-rows.append({'id': 'e2e0newc', 'cwd': os.environ['HOME'], 'kind': 'background',
+rows.append({'id': 'e2e0newc', 'cwd': home, 'kind': 'background',
              'startedAt': 1790000000100, 'sessionId': 'e2e00002-0000-4000-8000-000000000002',
              'name': 'New chat', 'state': 'done'})
+rows.append({'kind': 'interactive', 'pid': pid, 'sessionId': sid,
+             'name': 'E2E terminal session', 'cwd': home, 'status': 'idle',
+             'startedAt': 1790000000200})
 json.dump(rows, open(path, 'w'))
+d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+with open(os.path.join(d, sid + '.jsonl'), 'w') as f:
+    for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'At the desk'}},
+              {'type': 'assistant', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': 'Answered at the desk'}]}}):
+        f.write(json.dumps(e) + '\n')
 PY
   # With the emulator's animations off a toast is gone at once.
   adb shell settings put global animator_duration_scale 1
@@ -891,9 +927,28 @@ PY
     status=1
   fi
   echo "set_model requests: $(sudo cat "$home/.e2e-model-requests" 2>/dev/null)"
+  # The live pane got exactly one line, /model haiku, and its record has it.
+  lines=$(sudo cat "$home/.e2e-pane-lines.log" 2>/dev/null)
+  echo "lines typed into the live pane: ${lines:-none}"
+  if [ "$lines" != '/model haiku' ]; then
+    echo "::error::the live pane was not typed exactly /model haiku" >&2
+    status=1
+  fi
+  if ! sudo grep -q 'command-name>/model<' "$projects/$LIVE_SID.jsonl" 2>/dev/null; then
+    echo "::error::the live session's record holds no /model" >&2
+    status=1
+  fi
+  # The read-only session: its record as it was written, nothing added.
+  if sudo grep -q 'model' "$projects/$RO_SID.jsonl" 2>/dev/null ||
+    [ "$(sudo wc -l <"$projects/$RO_SID.jsonl")" != 2 ]; then
+    echo "::error::something reached the read-only session" >&2
+    status=1
+  fi
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-model-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
-  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests" "$home/.e2e-model"
+  [ -n "$ro_pid" ] && sudo kill "$ro_pid" 2>/dev/null
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests" "$home/.e2e-model" \
+    "$home/.e2e-pane-lines.log" "$projects/$RO_SID.jsonl"
   end_live_session
   stand_in ''
   return "$status"

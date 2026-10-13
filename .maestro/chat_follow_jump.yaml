@@ -39,7 +39,7 @@ env:
     timeout: 20000
 - tapOn: "(?s)\\W*E2E live session.*"
 - extendedWaitUntil:
-    visible: "(?s).*typed into that pane.*"
+    visible: "(?s).*in tmux pane.*"
     timeout: 20000
 
 # 1. Never scrolled: each answer is followed to its end, the sixth's end in

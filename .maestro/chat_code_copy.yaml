@@ -86,7 +86,7 @@ env:
     commands:
       - eraseText: 40
       - hideKeyboard
-      - tapOn: "Sessions on this host"
+      - runFlow: common/sessions.yaml
       - extendedWaitUntil:
           visible: "(?s)\\W*E2E code reply.*"
           timeout: 20000
