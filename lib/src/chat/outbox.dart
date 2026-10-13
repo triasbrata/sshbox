@@ -320,7 +320,7 @@ class OutboxStore {
       var base = uploadName(source);
       if (dots.hasMatch(base)) base = uploadName(name);
       if (dots.hasMatch(base)) base = 'picture';
-      var copy = File('${dir.path}/$base');
+      var copy = File('${dir.path}/${_safe(name)}');
       for (var n = 2; copy.existsSync(); n++) {
         copy = File('${dir.path}/$n-$base');
       }
