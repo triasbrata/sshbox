@@ -4215,9 +4215,14 @@ touch '${done.path}'
           titles,
           reason: 'no "Sessions on this host" in a wide window\'s ⋮ menu',
         );
-        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-        await tester.pumpAndSettle();
-        expect(find.text('Restart Claude'), findsNothing);
+        // Closed as its route, picking nothing: an Escape sent here never
+        // reached the menu under the real-input binding.
+        Navigator.of(tester.element(find.text('Restart Claude'))).pop();
+        await _until(
+          tester,
+          () => find.text('Restart Claude').evaluate().isEmpty,
+          'the ⋮ menu to close',
+        );
       }
 
       await noComposerButton();
