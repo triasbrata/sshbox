@@ -22,7 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # The units a whole run takes, in order: the flows and blocks at the end of
-# this file, each a function u_<name> there. smoke and connect_and_keybar gate;
+# this file, each a function u_<name> there. Those in GATING_UNITS gate;
 # every other one only reports. E2E_UNITS=list prints them and runs nothing,
 # for e2e.yml's plan and for a check that the shards' union is all of them.
 UNITS=(smoke connect_and_keybar
@@ -756,11 +756,11 @@ PY
 }
 
 # The chat button's Claude Code check, UAT issue #22: one flow, three hosts, the
-# stand-in swapped between them. Report-only until it has earned the gate. Each
+# stand-in swapped between them. It gates the release (GATING_UNITS). Each
 # expected toast is the app's own wording (ClaudeChat.versionRefusal).
 chat_version_case() {
   local label=$1 answer=$2 expect=$3 shot=chat-version-$1 found status=0
-  echo "::group::chat_version: $label (report only)"
+  echo "::group::chat_version: $label (gating)"
   app_fresh
   stand_in "$answer"
   # Said here, from the host, so a run that finds no toast shows whether the
@@ -771,7 +771,7 @@ chat_version_case() {
   # own directory, and this one gets moved into the evidence folder after.
   flow chat_version -e "EXPECT=$expect" -e "SHOT=$shot" || {
     status=1
-    echo "::warning::chat_version ($label) failed -- report only, not gating"
+    echo "::error::chat_version ($label) failed -- gating"
   }
   # Where Maestro puts a bare-named screenshot is not documented to be one place:
   # the working directory, the flow's own, or its own results folder. Look in all.
@@ -2682,7 +2682,29 @@ gating() {
   flow "$1" || echo "$1" >>"$FAILED"
   echo "::endgroup::"
 }
-GATING_UNITS=(smoke connect_and_keybar)
+# gate NAME CMD...: a block that gates, in a group of its own: its failure is
+# recorded, and fails the shard and the release, as a gating flow's does.
+gate() {
+  local name=$1
+  shift
+  echo "::group::$name (gating)"
+  "$@" || { echo "$name" >>"$FAILED"; echo "::error::$name failed -- gating"; }
+  echo "::endgroup::"
+}
+
+# gate_bare NAME CMD...: the same, for a block whose steps are groups of their
+# own in the job log.
+gate_bare() {
+  local name=$1
+  shift
+  "$@" || { echo "$name" >>"$FAILED"; echo "::error::$name failed -- gating"; }
+}
+
+# What gates a release. smoke and connect_and_keybar from the start; then, in
+# October 2026, the blocks that were green in two whole sharded runs once
+# every unit started from a fresh app (#305): chat_version's three hosts,
+# html_tab and chat_edit_previous.
+GATING_UNITS=(smoke connect_and_keybar chat_version html_tab chat_edit_previous)
 
 # Their screenshots are evidence, wherever Maestro put them: see chat_version.
 # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
@@ -2715,7 +2737,7 @@ u_jeansh_open() { report jeansh_open jeansh_open; }
 u_share_text() { report share_text share_text; }
 u_share_chat() { report share_chat share_chat; }
 u_chat_continue_cwd() { report chat_continue_cwd chat_continue_cwd; }
-u_chat_version() { chat_version || true; }
+u_chat_version() { gate_bare chat_version chat_version; }
 u_chat_code_copy() { report chat_code_copy chat_code_copy_alone; }
 u_chat_scroll() { report chat_scroll stand_in_flow chat_scroll; }
 u_chat_tool_rows() { report chat_tool_rows stand_in_flow chat_tool_rows; }
@@ -2756,7 +2778,7 @@ u_chat_two_way() {
   stand_in ''
 }
 
-u_html_tab() { report html_tab html_tab; }
+u_html_tab() { gate html_tab html_tab; }
 u_html_site() { report_bare html_site html_site; }
 for name in chat_session_status chat_progress chat_working_backstop chat_images \
   chat_subagents chat_usage chat_compact chat_model chat_cwd; do
@@ -2765,7 +2787,8 @@ done
 u_folder_zip() { report_bare folder_zip folder_zip; }
 u_chat_outbox() { report_bare chat_outbox chat_outbox; }
 u_chat_outbox_reconnect() { report_bare chat_outbox_reconnect chat_outbox_reconnect; }
-for name in chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump \
+u_chat_edit_previous() { gate chat_edit_previous chat_edit_previous; }
+for name in chat_ask_watched chat_slash chat_ask chat_follow_jump \
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace; do
   eval "u_$name() { report $name $name; }"
 done
