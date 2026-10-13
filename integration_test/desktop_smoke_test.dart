@@ -236,10 +236,17 @@ Future<TerminalView> _localShell(
       .where((each) => each.focusNode?.hasFocus ?? false)
       .firstOrNull;
   try {
-    await _until(tester, () {
-      final shown = view();
-      return shown != null && _text(shown).isNotEmpty;
-    }, 'the Local shell to open, take focus and draw its prompt');
+    await _until(
+      tester,
+      () {
+        final shown = view();
+        return shown != null && _text(shown).isNotEmpty;
+      },
+      'the Local shell to open, take focus and draw its prompt',
+      // A first PowerShell on a fresh Windows runner took past 20 s to
+      // draw its prompt in v1.0.114's gate; the shells after it were quick.
+      timeout: Duration(seconds: Platform.isWindows ? 60 : 20),
+    );
   } on TestFailure {
     // What there is instead: which terminals, where, and what is on screen.
     for (final element
@@ -302,6 +309,18 @@ Finder _kind(String a, String b) => find.byWidgetPredicate((w) {
 /// main, a HomeRow in the redesign.
 Finder _homeCard(String title) =>
     find.ancestor(of: find.text(title), matching: _kind('Card', 'HomeRow'));
+
+/// Waits until no list on screen is scrolling: a Scrollable still moving
+/// ignores the pointer, so a tap made meanwhile hits nothing.
+Future<void> _scrollsStill(WidgetTester tester) => _until(
+  tester,
+  () => find
+      .byType(Scrollable)
+      .evaluate()
+      .map((e) => (e as StatefulElement).state as ScrollableState)
+      .every((s) => !s.position.isScrollingNotifier.value),
+  'the lists to stop scrolling',
+);
 
 /// Picks [item] from a menu once it has finished opening. A menu grows open,
 /// and its items are built before they can be hit: tapped as soon as one is
@@ -1950,7 +1969,9 @@ void main() {
     // Desktop only, through flutter_pty: a phone has no pty to open. This is
     // native code, so no widget test can reach it — the card being here means
     // the plugin loaded on this embedder.
-    expect(find.text('Local shell'), findsOneWidget);
+    // Home's card, not a Local shell tab a test before left open and a
+    // launch brought back, which bears the same name.
+    expect(_homeCard('Local shell'), findsOneWidget);
   });
 
   // Deliberately not tested here: that a desktop drops the key bar and the
@@ -7959,22 +7980,28 @@ touch '${done.path}'
             (w is EditableText && w.controller.text == text),
       );
 
-      await tester.tap(find.text('tracker · file_issue'));
-      await tester.pump(const Duration(milliseconds: 500));
+      // A row growing while the chat follows its end runs the list to the
+      // end, and a list running takes no taps: one made before it stops
+      // lands on nothing, as on macOS in v1.0.114's gate.
+      Future<void> tap(Finder target) async {
+        await tester.pump();
+        await _scrollsStill(tester);
+        await tester.tap(target);
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      await tap(find.text('tracker · file_issue'));
+      await tester.pump(const Duration(milliseconds: 200));
       expect(node('meta: Object(1)'), findsOneWidget);
       expect(node('deep: value'), findsNothing);
-      await tester.tap(node('meta: Object(1)'));
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(node('inner: Object(1)'));
-      await tester.pump(const Duration(milliseconds: 300));
+      await tap(node('meta: Object(1)'));
+      await tap(node('inner: Object(1)'));
       expect(node('deep: value'), findsOneWidget);
-      await tester.tap(node('meta: Object(1)'));
-      await tester.pump(const Duration(milliseconds: 300));
+      await tap(node('meta: Object(1)'));
       expect(node('deep: value'), findsNothing);
 
       expect(find.text('show more'), findsOneWidget);
-      await tester.tap(find.text('show more'));
-      await tester.pump(const Duration(milliseconds: 300));
+      await tap(find.text('show more'));
       expect(node('note: $long'), findsOneWidget);
       expect(node('rows: Array(2)'), findsOneWidget);
       await _grab(tester, 'chat-tool-rows');
