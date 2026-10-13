@@ -304,8 +304,25 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// type an s or reach whatever is behind the page.
   KeyEventResult _onPageKey(FocusNode _, KeyEvent event) {
     if (!_editorFocus.hasPrimaryFocus) return KeyEventResult.ignored;
+    final keys = HardwareKeyboard.instance;
     final save = _command(LogicalKeyboardKey.keyS);
-    if (!save.accepts(event, HardwareKeyboard.instance)) {
+    if (!save.accepts(event, keys)) {
+      // Super is no typing key on Linux and Windows: a Super+letter the
+      // desktop let by types nothing, as in other editors, where it typed
+      // the letter. The text input only hears what no widget took.
+      final apple =
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.iOS;
+      final typed = event.character;
+      if (false &&
+          !apple &&
+          keys.isMetaPressed &&
+          event is! KeyUpEvent &&
+          typed != null &&
+          typed.isNotEmpty &&
+          typed.codeUnitAt(0) >= 0x20) {
+        return KeyEventResult.handled;
+      }
       return KeyEventResult.ignored;
     }
     if (event is KeyDownEvent && _canSave) _save();
@@ -495,9 +512,16 @@ class _TextFileTabState extends State<_TextFileTab> {
       // The preview takes no focus, so the page holds it and ⌘S still saves.
       if (_preview) return _pageFocus.requestFocus();
       _editorFocus.requestFocus();
+      // Only where there is a soft keyboard to keep down. On a desktop the
+      // token is what opens re_editor's text input at all: taken back, keys
+      // arrived and typed nothing, after Source or a switch of tabs.
       _editorFocus.consumeKeyboardToken();
     });
   }
+
+  static bool get _softKeyboard =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
 
   @override
   void didUpdateWidget(_TextFileTab oldWidget) {
@@ -1168,6 +1192,18 @@ class _TextFileTabState extends State<_TextFileTab> {
                     toolbarController: _toolbar,
                     findController: _find,
                     findBuilder: (context, find, readOnly) => _FindBar(find),
+                    // On a desktop re_editor binds ⌘S or Ctrl+S itself, by
+                    // platform as the page does, and consumes it doing
+                    // nothing unless it is told what saving is.
+                    shortcutOverrideActions: {
+                      CodeShortcutEscIntent:
+                          CallbackAction<CodeShortcutEscIntent>(
+                            onInvoke: (_) {
+                              if (_canSave) _save();
+                              return null;
+                            },
+                          ),
+                    },
                     style: CodeEditorStyle(
                       fontSize: _fontSize,
                       // Files are code and config far more often than prose,
