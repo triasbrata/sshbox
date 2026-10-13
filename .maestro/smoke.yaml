@@ -18,6 +18,13 @@ env:
 - launchApp:
     clearState: false
 
+# MUTATION, never to merge: a step that prints nothing for 400 s right after
+# the launch, as a hung driver does. The silence watch must kill it at 240 s,
+# run it once more, kill it again, and fail smoke, which fails the gate.
+- extendedWaitUntil:
+    visible: "e2e mutation: this text is never on screen"
+    timeout: 400000
+
 # The title and its tagline may read as one node, like the ListTile below.
 - assertVisible: "(?s)Jeansh.*"
 
