@@ -983,7 +983,7 @@ class ClaudeChat extends ChangeNotifier {
   /// A pick is applied for a new chat before its first message, for this
   /// chat's own Claude, and for a watched session chat can type into; one
   /// that is read-only from here takes none.
-  bool get canPickModel => _watching == null || _readOnly == null;
+  bool get canPickModel => _watching == null;
 
   /// Why the model cannot be changed from here, for a hint.
   static const modelReadOnlyHint =

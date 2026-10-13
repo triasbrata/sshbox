@@ -1970,6 +1970,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 Row(
                   children: [
                     IconButton(
+                      tooltip: sidebar
+                          ? 'Hide the sessions on this host'
+                          : 'Sessions on this host',
+                      isSelected: sidebar,
+                      onPressed: () => _toggleSessions(wide),
+                      icon: const Icon(Icons.view_sidebar_outlined),
+                      selectedIcon: const Icon(Icons.view_sidebar),
+                    ),
+                    IconButton(
                       tooltip: 'Add a picture',
                       onPressed: readOnly ? null : _pickPictures,
                       icon: const Icon(Icons.add_photo_alternate_outlined),
