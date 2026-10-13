@@ -130,7 +130,13 @@ chat_stand_in() {
   put_stand_in <<'SH'
 case "$1" in
   --version) echo '2.1.300 (Claude Code)' ;;
-  agents) cat "$HOME/.e2e-agents.json" ;;
+  # A listing that never answers, once, where the live stand-in's missed:
+  # turn asked for one (chat_working_backstop): its pid kept for the runner.
+  agents) if mv "$HOME/.e2e-agents-hang" "$HOME/.e2e-agents-hung" 2>/dev/null; then
+      echo $$ >>"$HOME/.e2e-agents-hung"
+      exec sleep 3600
+    fi
+    cat "$HOME/.e2e-agents.json" ;;
   # The SDK's `initialize` on stdin, as chat lists the slash commands with it:
   # answered with ~/.e2e-commands.json where a flow put one; the rest read
   # until stdin ends, as before.
@@ -811,6 +817,65 @@ chat_progress() {
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-progress-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# The working line's backstop with a hung listing (fix/chat-listing-timeout):
+# a watched turn whose end is never written ends only when two looks at
+# `claude agents` find the session idle, and a listing that never answers
+# must not hold those looks for good. One case a fresh live session, with a
+# fresh listing so no row of the last case is read first, and a session id of
+# its own: under one id, a case opened the last case's transcript, its turn
+# still open, and a message the chat still held for that session reached this
+# one's pane. The cases are in .maestro/chat_working_backstop.yaml.
+backstop_case() { # CASE WORD SID
+  local status=0 home=/home/$SSH_USER
+  # live_session and end_live_session read LIVE_SID: this case's, for both.
+  local LIVE_SID=$3
+  chat_stand_in
+  end_live_session
+  sudo rm -f "$home/.e2e-agents-hang" "$home/.e2e-agents-hung" "$home/.e2e-pane-lines.log"
+  live_session
+  flow chat_working_backstop -e "CASE=$1" -e "WORD=$2" || status=1
+  echo "lines that reached the pane in $1 (meant: '$2: go'), $(sudo cat \
+    "$home/.e2e-pane-lines.log" 2>/dev/null | wc -l) of them:"
+  sudo cat "$home/.e2e-pane-lines.log" 2>/dev/null | sed 's/^/  > /'
+  # The case's own word, and no other case's, or it tested something else.
+  if ! sudo grep -qix "$2: go" "$home/.e2e-pane-lines.log" 2>/dev/null; then
+    echo "::error::$1: '$2: go' never reached the pane"
+    status=1
+  elif sudo grep -vix "$2: go" "$home/.e2e-pane-lines.log" 2>/dev/null | grep -qi '^missed'; then
+    echo "::error::$1: another case's word reached the pane"
+    status=1
+  fi
+  # Whether a listing hung, as the case asked: else it proved nothing.
+  if [ "$1" = plain ]; then
+    if sudo test -e "$home/.e2e-agents-hung"; then
+      echo "::error::$1: a listing hung where none was asked for"
+      status=1
+    fi
+  elif ! sudo test -e "$home/.e2e-agents-hung"; then
+    echo "::error::$1: no listing hung, so the case proved nothing"
+    status=1
+  fi
+  # The hung listing's sleep, by the pid it kept: nothing else.
+  for pid in $(sudo cat "$home/.e2e-agents-hung" 2>/dev/null | grep -E '^[0-9]+$'); do
+    sudo kill "$pid" 2>/dev/null
+  done
+  sudo rm -f "$home/.e2e-agents-hang" "$home/.e2e-agents-hung"
+  # This case's pane and its transcript, so nothing of it is left to the next.
+  end_live_session
+  sudo rm -f "$home/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl"
+  echo "chat_working_backstop $1: $([ "$status" -eq 0 ] && echo passed || echo FAILED)"
+  return "$status"
+}
+chat_working_backstop() {
+  local status=0
+  backstop_case hang missed e2e00006-0000-4000-8000-0000000000b1 || status=1
+  backstop_case busy missedbusy e2e00006-0000-4000-8000-0000000000b2 || status=1
+  backstop_case plain missedplain e2e00006-0000-4000-8000-0000000000b3 || status=1
+  keep_shots 'chat-backstop-*.png'
   stand_in ''
   return "$status"
 }
@@ -2596,6 +2661,10 @@ echo "::endgroup::"
 
 echo "::group::chat_progress (report only)"
 chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_working_backstop (report only)"
+chat_working_backstop || echo "::warning::chat_working_backstop failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_images (report only)"

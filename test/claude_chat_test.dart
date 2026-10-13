@@ -4804,6 +4804,130 @@ void main() {
       expect(chat.progress, isNull);
     });
 
+    // A listing that hangs, once, at [where]: the look gives up rather than
+    // holding every later look off, and the backstop still ends the turn.
+    Future<void> hangsOnce(String where) async {
+      final host = _LiveHost('0\n', state: 'working');
+      var hang = false;
+      final closed = <bool>[];
+      final late = Completer<void>();
+      Future<CommandChannel> open(String command) async {
+        if (!hang || !command.contains('agents --json')) {
+          return host.open(command);
+        }
+        hang = false;
+        if (where == 'open') {
+          // Opens only once the look has given up.
+          await late.future;
+        }
+        final i = closed.length;
+        closed.add(false);
+        return (
+          output: where == 'open'
+              ? const Stream<Uint8List>.empty()
+              : StreamController<Uint8List>().stream,
+          write: (Uint8List data) {},
+          close: () => closed[i] = true,
+        );
+      }
+
+      final chat = ClaudeChat(
+        open: open,
+        listingTimeout: const Duration(milliseconds: 50),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      hang = true;
+      // The hung look ends of itself, well before the test would.
+      await chat.checkState().timeout(const Duration(seconds: 2));
+      expect(chat.progress, isNotNull);
+      late.complete();
+      await _settle();
+      // Whatever was opened for the hung look is closed, late or not.
+      expect(closed, [true]);
+      await chat.checkState().timeout(const Duration(seconds: 2));
+      expect(chat.progress, isNotNull);
+      await chat.checkState().timeout(const Duration(seconds: 2));
+      expect(chat.progress, isNull);
+    }
+
+    test('a listing that never ends does not keep the backstop off', () async {
+      await hangsOnce('read');
+    });
+
+    test('a listing that never opens does not keep the backstop off', () async {
+      await hangsOnce('open');
+    });
+
+    // Under the widget binding, which fails a test that leaves a timer
+    // pending, as chat_page_test's do.
+    testWidgets('a chat disposed while it lists leaves no timer behind', (
+      tester,
+    ) async {
+      final chat = ClaudeChat(
+        open: (_) => Completer<CommandChannel>().future,
+      );
+      unawaited(chat.agents().then((_) {}, onError: (_) {}));
+      await tester.pump();
+      chat.dispose();
+    });
+
+    testWidgets('a listing nobody waits for any more gives up, its timer and '
+        'its channel gone, while the chat stays', (tester) async {
+      final closed = <bool>[];
+      final open = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => open.future);
+      addTearDown(chat.dispose);
+      final gone = Completer<void>();
+      Object? why;
+      unawaited(
+        chat
+            .agents(until: gone.future)
+            .then((_) {}, onError: (Object e) => why = e),
+      );
+      await tester.pump();
+      gone.complete();
+      await tester.pump();
+      expect(why, isA<StateError>());
+      // Opened after it gave up: closed at once.
+      open.complete((
+        output: const Stream<Uint8List>.empty(),
+        write: (Uint8List data) {},
+        close: () => closed.add(true),
+      ));
+      await tester.pump();
+      expect(closed, [true]);
+    });
+
+    testWidgets('a listing that answers leaves no timer behind', (
+      tester,
+    ) async {
+      final chat = ClaudeChat(
+        open: (_) async => (
+          output: Stream.value(Uint8List.fromList(utf8.encode('[]'))),
+          write: (Uint8List data) {},
+          close: () {},
+        ),
+      );
+      addTearDown(chat.dispose);
+      final listed = await tester.runAsync(chat.agents);
+      expect(listed, isEmpty);
+    });
+
+    test('a listing that answers in time is read whole', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      await chat.checkState();
+      await chat.checkState();
+      expect(chat.progress, isNull);
+      expect(await chat.agents(), hasLength(1));
+    });
+
     test(
       'idle shows nothing, and a turn that ends goes from the line',
       () async {
