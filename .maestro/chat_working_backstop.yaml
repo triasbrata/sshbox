@@ -14,11 +14,12 @@
 #   busy   missedbusy:   the same hang, the listing busy: Working… still
 #                        there 30 s on
 #   plain  missedplain:  listing idle, no hang: Working… clears within 15 s
+#
+# CASE and WORD come from -e alone, with no default here: Maestro 2.10
+# applies a flow's own env: after the -e values, so a default would win.
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
-  CASE: hang
-  WORD: missed
 ---
 - stopApp
 - launchApp:
