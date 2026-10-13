@@ -33,9 +33,10 @@ runner can tell what reached the pane. A line starting `hold:` plays a turn that
 is busy, as the listing says, until the runner creates ~/.e2e-release. A line
 starting `ask:` stops at a permission prompt that stays until a line is typed
 at the terminal, the listing saying waiting meanwhile; that line answers it.
-A line starting `late:` is read and then not recorded for 45 seconds, past the
+A line starting `tardy:` is read and then not recorded for 45 seconds, past the
 chat's 30 s wait, while the pane looks like one with something typed in it; a
-`late:` line read again is recorded at once.
+`tardy:` line read again is recorded at once. (It was `late:` once, matched
+first, so chat_follow_jump's own `late:` turn above never played.)
 
 The working-line backstop's flows (chat_working_backstop) add three more, also
 matched without regard to case: a turn whose end is never written, no
@@ -505,7 +506,7 @@ while True:
         hold_turn(text)
     elif lower.startswith('ask:'):
         ask_turn(text)
-    elif lower.startswith('late:'):
+    elif lower.startswith('tardy:'):
         late_turn(text)
     elif text.startswith('slow:'):
         slow_turn(text)

@@ -36,7 +36,7 @@ env:
     timeout: 20000
 - tapOn: "(?s)\\W*E2E live session.*"
 - extendedWaitUntil:
-    visible: "(?s).*typed into that pane.*"
+    visible: "(?s).*in tmux pane.*"
     timeout: 20000
 
 # Negative: a session with no compaction keeps its count and has no marker.

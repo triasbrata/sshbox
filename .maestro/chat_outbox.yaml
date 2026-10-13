@@ -277,7 +277,7 @@ env:
       - tapOn:
           text: "Message “E2E live session”…"
           waitToSettleTimeoutMs: 500
-      - inputText: "late: outbox three"
+      - inputText: "tardy: outbox three"
       - tapOn:
           text: "Send"
           waitToSettleTimeoutMs: 500
@@ -290,7 +290,7 @@ env:
       - takeScreenshot: chat-outbox-late-failed
       # The session records it after all.
       - extendedWaitUntil:
-          visible: "(?i)Echo: late: outbox three"
+          visible: "(?i)Echo: tardy: outbox three"
           timeout: 90000
       - tapOn: "Retry"
       - extendedWaitUntil:

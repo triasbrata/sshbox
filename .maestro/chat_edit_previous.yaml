@@ -58,13 +58,16 @@ env:
 - pressKey: Remote Dpad Up
 - assertNotVisible: "(?s).*Went back to.*"
 - assertVisible: "(?s).*Echo: A.*"
+# The box's own line, with Gboard up: 52% of the height. At 49% the tap fell
+# on the rule above the composer, the box lost focus, nothing was erased and ↑
+# over the draft did nothing (both gates in October).
 - tapOn:
-    point: 40%, 49%
+    point: 40%, 52%
 - eraseText: 5
 
 # 3. In the empty box ↑ goes back: the answer is gone, the notice says so.
 - tapOn:
-    point: 40%, 49%
+    point: 40%, 52%
 - pressKey: Remote Dpad Up
 - extendedWaitUntil:
     visible: "(?s).*Went back to before that message.*"
@@ -77,7 +80,7 @@ env:
 
 # 4. While Claude answers, ↑ says so and goes nowhere.
 - tapOn:
-    point: 40%, 49%
+    point: 40%, 52%
 - eraseText: 5
 - inputText: "slow: B"
 - tapOn: "Send"
