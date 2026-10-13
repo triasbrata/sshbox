@@ -68,8 +68,8 @@ class TuiChatBubble extends StatelessWidget {
     final pending = delivery != null;
     final note = switch (delivery) {
       TuiChatDelivery.sending => 'Sending…',
-      TuiChatDelivery.queued => failureReason ??
-        'Queued: it runs after what the session is doing.',
+      TuiChatDelivery.queued =>
+        failureReason ?? 'Queued: it runs after what the session is doing.',
       TuiChatDelivery.failed => failureReason ?? 'Not delivered.',
       null => null,
     };
@@ -455,6 +455,7 @@ class TuiChatSessionList extends StatelessWidget {
     this.onSelect,
     this.onNewChat,
     this.onRefresh,
+    this.onCollapse,
     this.loading = false,
     this.errorMessage,
     this.emptyMessage = 'No sessions yet.',
@@ -467,6 +468,9 @@ class TuiChatSessionList extends StatelessWidget {
   final ValueChanged<TuiChatSession>? onSelect;
   final VoidCallback? onNewChat;
   final VoidCallback? onRefresh;
+
+  /// Folds the list away, from a « at the head of its own row.
+  final VoidCallback? onCollapse;
   final bool loading;
   final String? errorMessage;
   final String emptyMessage;
@@ -514,13 +518,24 @@ class TuiChatSessionList extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // One row, every glyph the same 32 dp square on the same centre line.
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 6, 4),
+            padding: EdgeInsets.fromLTRB(onCollapse == null ? 12 : 4, 6, 4, 6),
             child: Row(
               children: [
+                if (onCollapse != null) ...[
+                  _IconGlyph(
+                    label: 'Collapse the sessions',
+                    glyph: '«',
+                    onPressed: onCollapse,
+                  ),
+                  const SizedBox(width: 4),
+                ],
                 Expanded(
                   child: Text(
                     title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontFamily: TermulFonts.mono,
                       fontSize: 12,
@@ -629,7 +644,8 @@ class _SessionRow extends StatelessWidget {
         color: sel ? p.selection : Colors.transparent,
         child: Row(
           children: [
-            if (session.status == null || session.kind == TuiChatSessionKind.pinned) ...[
+            if (session.status == null ||
+                session.kind == TuiChatSessionKind.pinned) ...[
               Text(
                 mark,
                 style: TextStyle(

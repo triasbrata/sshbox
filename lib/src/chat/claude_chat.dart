@@ -975,23 +975,30 @@ class ClaudeChat extends ChangeNotifier {
   String? get modelName =>
       ChatModel.shortName(_model ?? (_watching == null ? _alias : null));
 
-  /// The alias to mark as chosen: the one picked, else none.
-  String? get modelAlias => _watching == null ? _alias : null;
+  /// The alias to mark as chosen: the one picked, else none. For a watched
+  /// session, the one its last `/model` set.
+  String? get modelAlias =>
+      _watching == null ? _alias : ChatModel.known(_model);
 
-  /// A pick is applied for a new chat before its first message and for this
-  /// chat's own Claude; a session watched on the host takes none from here.
-  bool get canPickModel => _watching == null;
+  /// A pick is applied for a new chat before its first message, for this
+  /// chat's own Claude, and for a watched session chat can type into; one
+  /// that is read-only from here takes none.
+  bool get canPickModel => _watching == null || _readOnly == null;
 
   /// Why the model cannot be changed from here, for a hint.
   static const modelReadOnlyHint =
-      'Change a running session’s model in its own terminal with /model.';
+      'Read-only from here: change its model in its own terminal with /model.';
 
   /// Picks [alias] (see [ChatModel.choices]). A chat of this app's own
   /// switches at once with `set_model`, which takes effect on its next
   /// message, measured; a new chat starts with it, and a restart keeps it.
+  /// A watched session is sent `/model <alias>` as a message is, which the
+  /// CLI applies without a dialog when it is given an alias — measured on
+  /// 2.1.287, `Set model to …` — and the chip follows from its record.
   Future<void> setModel(String alias) async {
     final known = ChatModel.known(alias);
     if (known == null || !canPickModel || modelStarting) return;
+    if (_watching != null) return send('/model $known');
     if (!_composing && _ready && _channel != null) {
       // Taken as the chat's own only once the CLI accepts it: a refused or
       // unwritten pick must not be what the next start passes.
@@ -3004,16 +3011,10 @@ class ClaudeChat extends ChangeNotifier {
       _say(
         ChatNotice(
           !agent.interactive
-              ? 'Watching “${agent.name}” live: what it does on the host '
-                    'shows here as it happens, and what you send goes into it.'
+              ? 'Watching “${agent.name}” live.'
               : pane != null
-              ? 'Watching “${agent.name}” live: it runs at a terminal on the '
-                    'host, in tmux pane $pane, and what you send is typed '
-                    'into that pane — only while it is waiting for a '
-                    'message, never into a question it is asking there.'
-              : 'Watching “${agent.name}” live, read-only: $_readOnly What '
-                    'it does shows here as it happens; to type into it, use '
-                    'that terminal.',
+              ? 'Watching “${agent.name}” live, in tmux pane $pane.'
+              : 'Watching “${agent.name}”, read-only: $_readOnly',
         ),
       );
       await _follow(agent, pid: pid, from: read.from, carry: read.carry);
@@ -4513,6 +4514,10 @@ class ClaudeChat extends ChangeNotifier {
       final last = _entries.lastOrNull;
       if (last is ChatCommand && last.output == null) {
         last.output = output;
+        // A model set by /model shows on the chip now, not at the next reply.
+        if (last.name == 'model' && output.startsWith('Set model to')) {
+          _model = ChatModel.known(last.args) ?? _model;
+        }
       } else if (output.isNotEmpty) {
         _entries.add(ChatNotice(output));
       }

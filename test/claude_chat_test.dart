@@ -2586,6 +2586,104 @@ void main() {
       expect(chat.watching?.sessionId, _live.sessionId);
     });
 
+    test('a model picked for the session being watched is typed into it as '
+        '/model <alias>, and taken once the session says it set it', () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      expect(chat.canPickModel, isTrue);
+      expect(chat.modelAlias, isNull);
+
+      // Only an alias this app offers ever reaches the session.
+      await chat.setModel('opus; rm -rf ~');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals, isEmpty);
+
+      unawaited(chat.setModel('haiku'));
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals.single.typed, ['/model haiku', '\r']);
+      expect(chat.modelAlias, isNull);
+
+      // As 2.1.287 records it.
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<command-name>/model</command-name>\n'
+            '            <command-message>model</command-message>\n'
+            '            <command-args>haiku</command-args>',
+      });
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Set model to Haiku 4.5 for this session '
+            'only</local-command-stdout>',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.modelAlias, 'haiku');
+      expect(chat.modelName, 'Haiku');
+      final command = chat.entries.whereType<ChatCommand>().single;
+      expect(command.name, 'model');
+      expect(command.args, 'haiku');
+      expect(
+        chat.entries.whereType<ChatSaid>().where((said) => said.mine),
+        isEmpty,
+      );
+    });
+
+    test('a /model whose output says it did not set one changes nothing',
+        () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<command-name>/model</command-name>\n'
+            '            <command-args>haiku</command-args>',
+      });
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Kept model as Opus 5.5'
+            '</local-command-stdout>',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.modelAlias, isNull);
+      // Another command's output that happens to say it, neither.
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<command-name>/color</command-name>\n'
+            '            <command-args>haiku</command-args>',
+      });
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Set model to Haiku</local-command-stdout>',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.modelAlias, isNull);
+    });
+
+    test('a session only watched, read-only from here, takes no model', () async {
+      final host = _LiveHost('0\n', interactive: true)
+        ..pane = 'sshbox:no pane\n';
+      final chat = watcher(host);
+      await chat.continueFrom(_interactive);
+      expect(chat.readOnly, isNotNull);
+      expect(chat.canPickModel, isFalse);
+      await chat.setModel('haiku');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals, isEmpty);
+      expect(host.paneTyping, isEmpty);
+    });
+
     test('a command typed from the chat is taken as sent once the session '
         'records it as a command', () async {
       final host = _LiveHost('0\n');
@@ -3343,8 +3441,7 @@ void main() {
         expect(chat.readOnly, isNull);
         expect(
           chat.entries.whereType<ChatNotice>().last.text,
-          contains('in tmux pane %3, and what you send is typed into that '
-              'pane'),
+          'Watching “${_interactive.name}” live, in tmux pane %3.',
         );
 
         chat.send('!is the build green?');
@@ -3406,7 +3503,7 @@ void main() {
 
         expect(chat.readOnly, contains('outside tmux'));
         final notice = chat.entries.whereType<ChatNotice>().last.text;
-        expect(notice, contains('live, read-only: it runs in a terminal '
+        expect(notice, contains('”, read-only: it runs in a terminal '
             'outside tmux'));
         expect(notice, isNot(contains('somebody is typing')));
 

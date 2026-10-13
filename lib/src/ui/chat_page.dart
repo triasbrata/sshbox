@@ -1484,6 +1484,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             onPick: _pick,
             onRefresh: () => setState(_listAgents),
             onNewChat: _newChat,
+            // Folds the sidebar to the rail; a drawer closes by its scrim.
+            onCollapse: wide ? () => _toggleSessions(wide) : null,
             unseen: (agent) => _unseen.contains(_placeOf(agent.sessionId)),
           ),
         ),
@@ -1502,24 +1504,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         body: Row(
           children: [
             if (sidebar) ...[
-              SizedBox(
-                width: 300,
-                child: Column(
-                  children: [
-                    // Collapses it to the rail, from the same corner the
-                    // rail's own toggle sits in.
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: _RailButton(
-                        glyph: '«',
-                        label: 'Collapse the sessions',
-                        onTap: () => _toggleSessions(wide),
-                      ),
-                    ),
-                    Expanded(child: sessions),
-                  ],
-                ),
-              ),
+              SizedBox(width: 300, child: sessions),
               const VerticalDivider(width: 1),
             ] else if (wide) ...[
               SizedBox(
@@ -1985,15 +1970,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 Row(
                   children: [
                     IconButton(
-                      tooltip: sidebar
-                          ? 'Hide the sessions on this host'
-                          : 'Sessions on this host',
-                      isSelected: sidebar,
-                      onPressed: () => _toggleSessions(wide),
-                      icon: const Icon(Icons.view_sidebar_outlined),
-                      selectedIcon: const Icon(Icons.view_sidebar),
-                    ),
-                    IconButton(
                       tooltip: 'Add a picture',
                       onPressed: readOnly ? null : _pickPictures,
                       icon: const Icon(Icons.add_photo_alternate_outlined),
@@ -2005,6 +1981,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           unawaited(chat.restart(permission: choice));
                         } else if (choice == 'new') {
                           unawaited(_newChat());
+                        } else if (choice == 'sessions') {
+                          _showSessions(wide);
                         } else {
                           unawaited(chat.restart());
                         }
@@ -2015,6 +1993,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           label: 'New chat',
                           enabled: connected,
                         ),
+                        // A wide screen has the sidebar, or its rail; a
+                        // narrow one reaches the drawer from here.
+                        if (!wide)
+                          const TuiMenuItem(
+                            value: 'sessions',
+                            label: 'Sessions on this host',
+                          ),
                         const TuiMenuDivider(),
                         for (final mode in ChatPermission.values)
                           TuiMenuItem(
@@ -2264,7 +2249,6 @@ class _Empty extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final root = session.host.fileRoot.trim();
     // Scrolls when a phone's keyboard leaves it less height than it needs.
     return Center(
       child: SingleChildScrollView(
@@ -2281,22 +2265,6 @@ class _Empty extends StatelessWidget {
             Text(
               'Claude Code on ${session.host.displayName}',
               style: theme.textTheme.titleMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              root.isEmpty
-                  ? 'It runs on the host, in the login directory, and sees '
-                        'the files there.'
-                  : 'It runs on the host, in $root, and sees the files there.',
-              style: theme.textTheme.bodySmall,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'What you send starts a new session there, listed with the '
-              'others, which carries on when this app is closed.',
-              style: theme.textTheme.bodySmall,
               textAlign: TextAlign.center,
             ),
             // Where a new chat tab lands, so the sessions already running on
@@ -4626,9 +4594,13 @@ class _SessionList extends StatelessWidget {
     required this.onRefresh,
     required this.onNewChat,
     required this.unseen,
+    this.onCollapse,
   });
 
   final ClaudeChat chat;
+
+  /// Folds the sidebar to the rail; null in a drawer.
+  final VoidCallback? onCollapse;
 
   /// Whether [agent] finished since it was last opened here.
   final bool Function(ClaudeAgent agent) unseen;
@@ -4684,11 +4656,6 @@ class _SessionList extends StatelessWidget {
     return '${since.inDays}d ago';
   }
 
-  static const _hint =
-      'One still running is watched live, and what you send goes into it; '
-      'one open in a terminal is only watched. A finished one is continued '
-      'where it stopped.';
-
   /// termul's session rail: Pinned, Running and Finished, a mark for each.
   Widget _list({
     List<ClaudeAgent> rows = const [],
@@ -4697,8 +4664,8 @@ class _SessionList extends StatelessWidget {
     String empty = 'No Claude sessions on this host yet.',
   }) => TuiChatSessionList(
     title: 'Sessions on this host',
-    hint: _hint,
     width: null,
+    onCollapse: onCollapse,
     loading: loading,
     errorMessage: error,
     emptyMessage: empty,

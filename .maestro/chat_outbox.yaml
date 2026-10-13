@@ -61,7 +61,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -109,7 +109,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       # Back from disk, still waiting: the turn has not ended.
       - extendedWaitUntil:
@@ -169,7 +169,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -213,7 +213,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       # Still failed after the restart, with its reason, and not sent on its own.
       - extendedWaitUntil:
@@ -272,7 +272,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -332,7 +332,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -398,7 +398,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -446,7 +446,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -540,7 +540,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
       - tapOn:
           text: "Message “E2E live session”…"
@@ -595,7 +595,7 @@ env:
           timeout: 20000
       - tapOn: "(?s)\\W*E2E live session.*"
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 20000
 
 # The connection is down. A message is sent: it says it waits for the

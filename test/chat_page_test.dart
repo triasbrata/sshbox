@@ -549,6 +549,12 @@ Map<String, Object?> _finished(String id, String name, {int started = 0}) => {
   'state': 'done',
 };
 
+/// The ⋮ beside the box: a focusable control that is not a text field, and
+/// whose press only opens its menu.
+final _menuGlyph = find
+    .descendant(of: find.byType(MenuButton<Object>), matching: find.byType(Text))
+    .first;
+
 /// Picks the finished session [name] from the list, on a phone's drawer:
 /// it is continued in place, by a Claude of this chat's own.
 Future<void> _continue(WidgetTester tester, String name) async {
@@ -609,7 +615,7 @@ void main() {
     // Nothing picked up by it either.
     expect(shell.commands.where((c) => c.contains(' -f ')), isEmpty);
 
-    await rightClick(find.textContaining('starts a new session'));
+    await rightClick(find.textContaining('Claude Code on'));
     expect(tabMenus, 1);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
@@ -649,9 +655,9 @@ void main() {
 
     // Only the list is asked for: no Claude of its own, no session.
     expect(shell.commands.where((c) => !c.contains('agents --json')), isEmpty);
-    // Nothing said yet, so the tab says where Claude will run, and how.
-    expect(find.textContaining('/srv/app'), findsOneWidget);
-    expect(find.textContaining('starts a new session'), findsOneWidget);
+    // Nothing said yet: the tab names the host, and explains nothing.
+    expect(find.textContaining('Claude Code on'), findsOneWidget);
+    expect(find.textContaining('starts a new session'), findsNothing);
     expect(
       tester.widget<TextField>(find.byType(TextField)).decoration!.hintText,
       'Start a new chat…',
@@ -1579,7 +1585,7 @@ void main() {
       await asked(tester);
       await focusOn(
         tester,
-        find.byIcon(Icons.view_sidebar_outlined),
+        find.byIcon(Icons.add_photo_alternate_outlined),
       );
       await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
       await tester.pump();
@@ -1788,14 +1794,120 @@ void main() {
     expect(row.selected, isTrue);
     expect(find.text('is the nightly build green?'), findsOneWidget);
 
-    // The button beside the box hides it, for room to read, and brings it
-    // back.
-    await tester.tap(find.byTooltip('Hide the sessions on this host'));
+    // The « in the list's own header folds it to the rail, for room to
+    // read, and the rail's » brings it back. Nothing beside the box does.
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    expect(find.byIcon(Icons.view_sidebar), findsNothing);
+    await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
     await tester.pumpAndSettle();
     expect(find.text('the nightly build'), findsNothing);
-    await tester.tap(find.byTooltip('Sessions on this host'));
+    await tester.tap(find.byTooltip('Expand the sessions'));
     await tester.pumpAndSettle();
     expect(find.text('the nightly build'), findsOneWidget);
+  });
+
+  testWidgets('the sessions header is one row: «, the title, + and ↻ on one '
+      'centre line, with no paragraph explaining under it', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()..listing = '[]';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
+    );
+    await _settlePickUp(tester);
+
+    final title = tester.getCenter(find.text('Sessions on this host'));
+    for (final label in ['Collapse the sessions', 'New chat', 'Refresh']) {
+      final at = tester.getCenter(find.bySemanticsLabel(label).first);
+      expect(at.dy, moreOrLessEquals(title.dy, epsilon: 0.5), reason: label);
+    }
+    // In order along the row.
+    expect(
+      tester.getCenter(find.bySemanticsLabel('Collapse the sessions')).dx,
+      lessThan(title.dx),
+    );
+    expect(
+      tester.getCenter(find.bySemanticsLabel('New chat').first).dx,
+      greaterThan(title.dx),
+    );
+    expect(find.textContaining('watched live'), findsNothing);
+    expect(find.textContaining('continued where it stopped'), findsNothing);
+    expect(
+      tester
+          .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
+          .hint,
+      isNull,
+    );
+  });
+
+  testWidgets('on a narrow screen the sessions are reached from the ⋮, and '
+      'nothing beside the box opens them', (tester) async {
+    tester.view
+      ..physicalSize = const Size(400, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()
+      ..listing = jsonEncode([
+        {
+          'pid': 4079548,
+          'id': '81badf4a',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+          'name': 'the nightly build',
+          'status': 'idle',
+          'state': 'done',
+        },
+      ]);
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
+    );
+    await _settlePickUp(tester);
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    expect(find.text('the nightly build'), findsNothing);
+
+    await tester.tap(find.byTooltip('Chat settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Sessions on this host').last);
+    await _settlePickUp(tester);
+    expect(find.text('the nightly build'), findsOneWidget);
+    // In a drawer, which closes by its scrim: no « to fold.
+    expect(find.bySemanticsLabel('Collapse the sessions'), findsNothing);
+  });
+
+  testWidgets('on a wide screen the ⋮ has no sessions entry: the sidebar and '
+      'its rail are there', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1280, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final shell = _Shell()..listing = '[]';
+    final session = LiveSession(host: _host, transport: (_, _) => shell);
+    addTearDown(session.dispose);
+    await session.connect(secrets: _NoSecrets());
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
+    );
+    await _settlePickUp(tester);
+    await tester.tap(find.byTooltip('Chat settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('New chat'), findsWidgets);
+    // Only the sidebar's own title, none in the menu.
+    expect(find.text('Sessions on this host'), findsOneWidget);
   });
 
   testWidgets('what is typed into a session being watched shows as sending, '
@@ -1892,14 +2004,24 @@ void main() {
       );
       await _settlePickUp(tester);
 
+      Future<void> open() async {
+        if (wide) {
+          await tester.tap(find.byTooltip('Expand the sessions'));
+        } else {
+          await tester.tap(find.byTooltip('Chat settings'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Sessions on this host').last);
+        }
+      }
+
       Future<void> show() async {
-        await tester.tap(find.byTooltip('Sessions on this host').first);
+        await open();
         await _settlePickUp(tester);
       }
 
       Future<void> hide() async {
         if (wide) {
-          await tester.tap(find.byTooltip('Hide the sessions on this host'));
+          await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
         } else {
           // Tapped beside the drawer, as a thumb does.
           await tester.tapAt(const Offset(390, 400));
@@ -1919,7 +2041,7 @@ void main() {
 
       // Shown, its rows are there at once, not after asking the host: it
       // only goes on to ask while on show, to keep each row's mark current.
-      await tester.tap(find.byTooltip('Sessions on this host').first);
+      await open();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('the nightly build'), findsOneWidget);
@@ -2574,8 +2696,8 @@ void main() {
     expect(find.textContaining('finished ·'), findsNWidgets(3));
   });
 
-  testWidgets('the sidebar says what picking a session does now: watched live '
-      'and typed into, not copied', (tester) async {
+  testWidgets('the sidebar explains nothing: no word of copies, and no '
+      'paragraph on what picking does', (tester) async {
     tester.view
       ..physicalSize = const Size(1280, 800)
       ..devicePixelRatio = 1;
@@ -2594,8 +2716,11 @@ void main() {
 
     expect(find.textContaining('copy'), findsNothing);
     expect(find.textContaining('nothing said here reaches it'), findsNothing);
-    expect(find.textContaining('watched live'), findsOneWidget);
-    expect(find.textContaining('what you send goes into it'), findsOneWidget);
+    expect(find.textContaining('watched live'), findsNothing);
+    expect(find.textContaining('what you send goes into it'), findsNothing);
+    // Nor does the empty tab: its title and the way to the sessions only.
+    expect(find.textContaining('It runs on the host'), findsNothing);
+    expect(find.textContaining('What you send starts'), findsNothing);
   });
 
   testWidgets('New chat leaves the session being watched running, and the '
@@ -2683,7 +2808,7 @@ void main() {
     // Said to be read-only, why, and nowhere said to take what is sent.
     expect(
       find.textContaining(
-        'live, read-only: it runs in a terminal outside '
+        '“dev-e0”, read-only: it runs in a terminal outside '
         'tmux',
       ),
       findsOneWidget,
@@ -3934,7 +4059,7 @@ void main() {
       ) async {
         final box = await pumpChat(tester);
         Focus.of(
-          tester.element(find.byIcon(Icons.view_sidebar_outlined)),
+          tester.element(_menuGlyph),
         ).requestFocus();
         await tester.pump();
 
@@ -3947,7 +4072,9 @@ void main() {
 
       testWidgets('leaves its keys to an open drawer', (tester) async {
         final box = await pumpChat(tester);
-        await tester.tap(find.byTooltip('Sessions on this host'));
+        await tester.tap(find.byTooltip('Chat settings'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Sessions on this host').last);
         await tester.pumpAndSettle();
 
         await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
@@ -4786,9 +4913,9 @@ void main() {
         tester.widget<TextField>(find.byType(TextField));
     String typed(WidgetTester tester) => box(tester).controller!.text;
 
-    /// Focus on the sessions button: a control that is not a text field.
+    /// Focus on the ⋮: a control that is not a text field.
     Future<void> focusAButton(WidgetTester tester) async {
-      Focus.of(tester.element(find.byIcon(Icons.view_sidebar_outlined)))
+      Focus.of(tester.element(_menuGlyph))
           .requestFocus();
       await tester.pump();
       expect(box(tester).focusNode!.hasFocus, isFalse);
@@ -5716,7 +5843,7 @@ void main() {
       await continued(tester);
       // The box let go: the focus on a button, as after a tab or a click.
       Focus.of(
-        tester.element(find.byIcon(Icons.view_sidebar_outlined)),
+        tester.element(find.byIcon(Icons.add_photo_alternate_outlined)),
       ).requestFocus();
       await tester.pump();
       expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
@@ -6362,12 +6489,14 @@ void main() {
         ),
         findsNothing,
       );
+      // No sessions toggle among them: the sidebar has its own «.
+      expect(find.byIcon(Icons.view_sidebar), findsNothing);
+      expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
       for (final inside in <Finder>[
-        find.byIcon(Icons.view_sidebar),
         find.byIcon(Icons.add_photo_alternate_outlined),
         find.byType(MenuButton<Object>),
         find.byType(ContextGauge),
-        find.text('Opus 5.5'),
+        find.text('Opus 5.5 ▾'),
         find.byIcon(Icons.send),
       ]) {
         expect(
@@ -6395,7 +6524,7 @@ void main() {
         for (final f in <Finder>[
           find.byIcon(Icons.add_photo_alternate_outlined),
           find.byType(ContextGauge),
-          find.text('Opus 5.5'),
+          find.text('Opus 5.5 ▾'),
           find.byIcon(Icons.send),
         ])
           tester.getCenter(f).dy.round(),
@@ -6420,21 +6549,142 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('a session watched on the host shows its model and cannot '
-        'change it from here', (tester) async {
+    /// Lets an attach come up and type, as [_deliver] waits for it to.
+    Future<void> typing(WidgetTester tester) async {
+      for (var turn = 0; turn < 12; turn++) {
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+    }
+
+    testWidgets('a session watched live takes a model from the chip: '
+        '/model <alias> typed into it, and the chip follows its record', (
+      tester,
+    ) async {
       final shell = await open(tester, running: running);
       await tester.tap(find.text('the nightly build'));
       await _settlePickUp(tester);
+      expect(find.text('Opus 5.5 ▾'), findsOneWidget);
+      await pick(tester, 'Haiku');
+      await typing(tester);
+      // Into the session itself, through its attach, as a message goes; not
+      // through a control request, which only chat's own Claude reads.
+      expect(shell.commands.any((c) => c.contains('attach')), isTrue);
+      expect(shell.typed.single.first, '/model haiku');
+      expect(shell.written, isEmpty);
+      // Not taken until the session records it.
+      expect(find.text('Opus 5.5 ▾'), findsOneWidget);
+
+      // As Claude Code 2.1.287 records it.
+      shell.adds({
+        'type': 'user',
+        'message': {
+          'role': 'user',
+          'content':
+              '<command-name>/model</command-name>\n'
+              '<command-message>model</command-message>\n'
+              '<command-args>haiku</command-args>',
+        },
+      });
+      shell.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Set model to Haiku 4.5 for this session '
+            'only</local-command-stdout>',
+      });
+      await _settlePickUp(tester);
+      expect(find.text('Haiku ▾'), findsOneWidget);
+      expect(find.text('Sending…'), findsNothing);
+      // The menu marks it.
+      await tester.tap(find.text('Haiku ▾'));
+      await tester.pump();
+      await _frames(tester);
+      Finder mark(String label) => find.descendant(
+        of: find.ancestor(
+          of: find.text(label),
+          matching: find.byType(PopupMenuItem<String>),
+        ),
+        matching: find.text('✓'),
+      );
+      expect(mark('Haiku'), findsOneWidget);
+      expect(mark('Default'), findsNothing);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pump();
+      await _frames(tester);
+
+      // And the next reply names the full model.
+      shell.adds({
+        'type': 'assistant',
+        'message': {
+          'id': 'm2',
+          'model': 'claude-haiku-4-5-20251001',
+          'stop_reason': 'end_turn',
+          'content': [
+            {'type': 'text', 'text': 'ok'},
+          ],
+        },
+      });
+      await _settlePickUp(tester);
+      expect(find.text('Haiku 4.5 ▾'), findsOneWidget);
+    });
+
+    testWidgets('a /model the session refused leaves the chip as it was', (
+      tester,
+    ) async {
+      final shell = await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      shell.adds({
+        'type': 'user',
+        'message': {
+          'role': 'user',
+          'content':
+              '<command-name>/model</command-name>\n'
+              '<command-args>fable</command-args>',
+        },
+      });
+      shell.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Model not available</local-command-stdout>',
+      });
+      await _settlePickUp(tester);
+      expect(find.text('Opus 5.5 ▾'), findsOneWidget);
+      expect(find.text('Fable ▾'), findsNothing);
+    });
+
+    testWidgets('a session that is only watched, open at a terminal in no '
+        'pane, shows its model and cannot change it from here', (
+      tester,
+    ) async {
+      final shell = await open(
+        tester,
+        running: {
+          'pid': 1259765,
+          'cwd': '/home/me',
+          'kind': 'interactive',
+          'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+          'name': 'dev-e0',
+          'status': 'idle',
+        },
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'dev-e0');
       expect(find.text('Opus 5.5'), findsOneWidget);
+      expect(find.textContaining('▾'), findsNothing);
       final before = shell.commands.length;
       await tester.tap(find.text('Opus 5.5'));
       await tester.pump();
       await _frames(tester);
-      expect(find.textContaining('/model'), findsOneWidget);
+      expect(find.text(ClaudeChat.modelReadOnlyHint), findsWidgets);
       expect(find.text('Haiku'), findsNothing);
+      await typing(tester);
       expect(shell.commands.length, before);
       expect(shell.written, isEmpty);
       expect(shell.paneTyped, isEmpty);
+      expect(shell.typed, isEmpty);
     });
 
     testWidgets('a new chat starts with the model picked', (tester) async {
@@ -6688,9 +6938,19 @@ void main() {
       tester,
     ) async {
       final semantics = tester.ensureSemantics();
-      await open(tester, running: running);
-      await tester.tap(find.text('the nightly build'));
-      await _settlePickUp(tester);
+      await open(
+        tester,
+        running: {
+          'pid': 1259765,
+          'cwd': '/home/me',
+          'kind': 'interactive',
+          'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+          'name': 'dev-e0',
+          'status': 'idle',
+        },
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'dev-e0');
       expect(
         tester.getSemantics(find.text('Opus 5.5')).hint,
         ClaudeChat.modelReadOnlyHint,

@@ -37,7 +37,7 @@ env:
     timeout: 20000
 - tapOn: "(?s)\\W*E2E live session.*"
 - extendedWaitUntil:
-    visible: "(?s).*typed into that pane.*"
+    visible: "(?s).*in tmux pane.*"
     timeout: 20000
 
 # A / opens the list: the built-ins that run, and none that open a dialog.

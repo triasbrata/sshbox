@@ -254,7 +254,7 @@ env:
       true: ${KIND == 'pane'}
     commands:
       - extendedWaitUntil:
-          visible: "(?s).*typed into that pane.*"
+          visible: "(?s).*in tmux pane.*"
           timeout: 30000
       - extendedWaitUntil:
           visible: "Which drink\\?"
