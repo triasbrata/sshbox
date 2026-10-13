@@ -120,6 +120,26 @@ void desktopKeyTests(TargetPlatform platform) {
       // Taken by the page, so the text input never hears it; a plain key
       // still goes on.
       await chord(tester, LogicalKeyboardKey.keyS, LogicalKeyboardKey.metaLeft);
+      // X11 sends Super as its own key, not counted as meta, which the test
+      // keyboard cannot simulate: held straight in the keyboard's state.
+      final keys = HardwareKeyboard.instance;
+      keys.handleKeyEvent(
+        const KeyDownEvent(
+          physicalKey: PhysicalKeyboardKey.metaLeft,
+          logicalKey: LogicalKeyboardKey.superKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      expect(keys.isMetaPressed, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
+      keys.handleKeyEvent(
+        const KeyUpEvent(
+          physicalKey: PhysicalKeyboardKey.metaLeft,
+          logicalKey: LogicalKeyboardKey.superKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.f5);
       expect(behind, isNot(contains(LogicalKeyboardKey.keyS)));
       expect(behind, contains(LogicalKeyboardKey.f5));
