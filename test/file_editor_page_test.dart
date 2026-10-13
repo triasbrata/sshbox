@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,7 @@ import 'package:webview_flutter_platform_interface/webview_flutter_platform_inte
 import 'fake_file_browser.dart';
 import 'fake_file_picker.dart';
 import 'fake_web_view.dart';
+
 import 'package:sshbox/src/ui/tui.dart';
 
 /// How many times the app log holds [line]: a test compares before and after.
@@ -31,13 +33,18 @@ Future<void> _pumpEditor(
   String path = '/home/me/notes.txt',
 }) async {
   await tester.pumpWidget(
-    MaterialApp(home: FileEditorPage(browser: browser, path: path)),
+    MaterialApp(
+      home: FileEditorPage(browser: browser, path: path),
+    ),
   );
   await tester.pumpAndSettle();
 }
 
-bool _canSave(WidgetTester tester) => tester
-        .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.save_outlined))
+bool _canSave(WidgetTester tester) =>
+    tester
+        .widget<IconButton>(
+          find.widgetWithIcon(IconButton, Icons.save_outlined),
+        )
         .onPressed !=
     null;
 
@@ -73,9 +80,11 @@ final _png = base64Decode(
 /// Waits out the copies and their decodes, which are real file work rather
 /// than anything on the test's fake clock.
 Future<void> _settleImages(WidgetTester tester, {int wanted = 1}) async {
-  for (var i = 0;
-      i < 100 && find.byType(Image).evaluate().length < wanted;
-      i++) {
+  for (
+    var i = 0;
+    i < 100 && find.byType(Image).evaluate().length < wanted;
+    i++
+  ) {
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 20)),
     );
@@ -105,7 +114,6 @@ const _unsavedWarning =
     'in it.';
 
 void main() {
-
   testWidgets('Ctrl with the wheel over an image tab zooms the picture only, '
       'not the UI text', (tester) async {
     SharedPreferences.setMockInitialValues({});
@@ -155,8 +163,7 @@ void main() {
       String path, {
       bool offered = true,
     }) async {
-      final browser = FakeFileBrowser()
-        ..contents[path] = '<h1>x</h1>';
+      final browser = FakeFileBrowser()..contents[path] = '<h1>x</h1>';
       final opened = <String>[];
       await tester.pumpWidget(
         MaterialApp(
@@ -214,10 +221,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
-    expect(
-      _editor(tester).text,
-      'first line\nsecond line\n',
-    );
+    expect(_editor(tester).text, 'first line\nsecond line\n');
     // Undo stops at the file as it came, not at the empty page before it.
     expect(_editor(tester).canUndo, isFalse);
   });
@@ -320,8 +324,9 @@ void main() {
     expect(find.text('Changed on the host'), findsNothing);
   });
 
-  testWidgets('will not save over a version someone else saved',
-      (tester) async {
+  testWidgets('will not save over a version someone else saved', (
+    tester,
+  ) async {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
 
@@ -353,10 +358,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Reload'));
     await tester.pumpAndSettle();
 
-    expect(
-      _editor(tester).text,
-      'theirs\n',
-    );
+    expect(_editor(tester).text, 'theirs\n');
     expect(_canSave(tester), isFalse);
   });
 
@@ -364,8 +366,7 @@ void main() {
     final browser = FakeFileBrowser();
     await _pumpEditor(tester, browser);
     final reloads = _logged('action editor reload');
-    String text() =>
-        _editor(tester).text;
+    String text() => _editor(tester).text;
 
     _editor(tester).text = 'half typed';
     await tester.pumpAndSettle();
@@ -399,8 +400,9 @@ void main() {
       }
     }
 
-    testWidgets('finds, steps between matches and replaces them all',
-        (tester) async {
+    testWidgets('finds, steps between matches and replaces them all', (
+      tester,
+    ) async {
       await _pumpEditor(tester, FakeFileBrowser());
 
       await tester.tap(find.byTooltip('Find'));
@@ -460,16 +462,17 @@ void main() {
     expect(_editor(tester).selection.extentIndex, 1);
   });
 
-  testWidgets('opens at the line asked for, and moves when asked again',
-      (tester) async {
+  testWidgets('opens at the line asked for, and moves when asked again', (
+    tester,
+  ) async {
     final browser = FakeFileBrowser();
     Widget editor(int line) => MaterialApp(
-          home: FileEditorPage(
-            browser: browser,
-            path: '/home/me/notes.txt',
-            line: line,
-          ),
-        );
+      home: FileEditorPage(
+        browser: browser,
+        path: '/home/me/notes.txt',
+        line: line,
+      ),
+    );
 
     await tester.pumpWidget(editor(2));
     await tester.pumpAndSettle();
@@ -578,14 +581,15 @@ void main() {
   group('key bar', () {
     // Wide enough for every key at once, so none has to be scrolled to.
     setUp(() {
-      final view = TestWidgetsFlutterBinding.instance.platformDispatcher.views
-          .single;
+      final view =
+          TestWidgetsFlutterBinding.instance.platformDispatcher.views.single;
       view.physicalSize = const Size(3200, 800);
       view.devicePixelRatio = 1;
     });
-    tearDown(() => TestWidgetsFlutterBinding.instance.platformDispatcher.views
-        .single
-        .reset());
+    tearDown(
+      () => TestWidgetsFlutterBinding.instance.platformDispatcher.views.single
+          .reset(),
+    );
 
     Future<void> press(WidgetTester tester, String key) async {
       await tester.tap(find.text(key));
@@ -593,14 +597,15 @@ void main() {
     }
 
     (int, int) caret(WidgetTester tester) => (
-          _editor(tester).selection.extentIndex,
-          _editor(tester).selection.extentOffset,
-        );
+      _editor(tester).selection.extentIndex,
+      _editor(tester).selection.extentOffset,
+    );
 
     testWidgets('moves the cursor and types where it is', (tester) async {
       await _pumpEditor(tester, FakeFileBrowser());
       final editor = _editor(tester);
-      bool canUndo() => tester
+      bool canUndo() =>
+          tester
               .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.undo))
               .onPressed !=
           null;
@@ -633,8 +638,10 @@ void main() {
     testWidgets('Tab types a real tab in a Makefile', (tester) async {
       final browser = FakeFileBrowser()..contents['/srv/Makefile'] = 'all:\n';
       await _pumpEditor(tester, browser, path: '/srv/Makefile');
-      _editor(tester).selection =
-          const CodeLineSelection.collapsed(index: 1, offset: 0);
+      _editor(tester).selection = const CodeLineSelection.collapsed(
+        index: 1,
+        offset: 0,
+      );
       await tester.pumpAndSettle();
 
       await press(tester, 'TAB');
@@ -661,8 +668,7 @@ void main() {
       of: find.byType(TuiDialog),
       matching: find.byType(TextField),
     );
-    String text(WidgetTester tester) =>
-        _editor(tester).text;
+    String text(WidgetTester tester) => _editor(tester).text;
 
     // The page's spinner keeps turning behind the password dialog, so nothing
     // settles while it is up: pump just long enough for it to open.
@@ -710,8 +716,9 @@ void main() {
       expect(text(tester), 'first line\nsecond line\n');
     });
 
-    testWidgets('a wrong password is turned down and asked for again',
-        (tester) async {
+    testWidgets('a wrong password is turned down and asked for again', (
+      tester,
+    ) async {
       final browser = SudoFakeFileBrowser()..failReadWith = denied;
       await _pumpEditor(tester, browser);
 
@@ -730,8 +737,9 @@ void main() {
       expect(text(tester), 'first line\nsecond line\n');
     });
 
-    testWidgets('a save the login is refused can go through sudo',
-        (tester) async {
+    testWidgets('a save the login is refused can go through sudo', (
+      tester,
+    ) async {
       final browser = SudoFakeFileBrowser()
         ..failWriteWith = const FileBrowserException(
           'Could not save: permission denied.',
@@ -746,7 +754,10 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
-      expect(browser.contents['/home/me/notes.txt'], 'first line\nsecond line\n');
+      expect(
+        browser.contents['/home/me/notes.txt'],
+        'first line\nsecond line\n',
+      );
 
       await tester.tap(
         find.descendant(
@@ -764,8 +775,9 @@ void main() {
       expect(find.textContaining('as root'), findsOneWidget);
     });
 
-    testWidgets('offers nothing where the transport has no sudo',
-        (tester) async {
+    testWidgets('offers nothing where the transport has no sudo', (
+      tester,
+    ) async {
       final browser = FakeFileBrowser()..failReadWith = denied;
       await _pumpEditor(tester, browser);
 
@@ -774,19 +786,17 @@ void main() {
     });
   });
 
-  testWidgets('offers back an edit the app never got to save',
-      (tester) async {
+  testWidgets('offers back an edit the app never got to save', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final browser = FakeFileBrowser();
     Widget editor() => MaterialApp(
-          home: FileEditorPage(
-            browser: browser,
-            path: '/home/me/notes.txt',
-            draftKey: 'box:/home/me/notes.txt',
-          ),
-        );
-    String text() =>
-        _editor(tester).text;
+      home: FileEditorPage(
+        browser: browser,
+        path: '/home/me/notes.txt',
+        draftKey: 'box:/home/me/notes.txt',
+      ),
+    );
+    String text() => _editor(tester).text;
 
     await tester.pumpWidget(editor());
     await tester.pumpAndSettle();
@@ -836,8 +846,9 @@ void main() {
     expect(find.byType(CodeEditor), findsOneWidget);
   });
 
-  testWidgets('refuses a file too large to edit, and says how large',
-      (tester) async {
+  testWidgets('refuses a file too large to edit, and says how large', (
+    tester,
+  ) async {
     final browser = FakeFileBrowser()
       ..failReadWith = const FileBrowserException(
         '48 MB is too large to open here. Use the terminal for a file this '
@@ -887,11 +898,15 @@ void main() {
       );
       await tester.pumpAndSettle();
       // Copying is not saving: the host still has what it had.
-      expect(browser.contents['/home/me/notes.txt'], 'first line\nsecond line\n');
+      expect(
+        browser.contents['/home/me/notes.txt'],
+        'first line\nsecond line\n',
+      );
     });
 
-    testWidgets('one past the clipboard ceiling says so and copies nothing',
-        (tester) async {
+    testWidgets('one past the clipboard ceiling says so and copies nothing', (
+      tester,
+    ) async {
       final copied = _useFakeClipboard();
       // 3400 lines of 80 characters: 272 KB, past the 256 KB ceiling and well
       // inside the 1 MiB the editor opens at all.
@@ -907,8 +922,9 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('is offered on a text file, and Copy image is not',
-        (tester) async {
+    testWidgets('is offered on a text file, and Copy image is not', (
+      tester,
+    ) async {
       await _pumpEditor(tester, FakeFileBrowser());
       await tester.tap(find.byTooltip('More'));
       await tester.pumpAndSettle();
@@ -917,7 +933,9 @@ void main() {
       expect(find.text('Copy image'), findsNothing);
     });
 
-    testWidgets('is not offered for a file that would not open', (tester) async {
+    testWidgets('is not offered for a file that would not open', (
+      tester,
+    ) async {
       final browser = FakeFileBrowser()
         ..failReadWith = const FileBrowserException(
           'This looks like a binary file.',
@@ -933,16 +951,19 @@ void main() {
     });
   });
 
-  testWidgets('closes the pane instead of popping when embedded',
-      (tester) async {
+  testWidgets('closes the pane instead of popping when embedded', (
+    tester,
+  ) async {
     var closed = false;
-    await tester.pumpWidget(MaterialApp(
-      home: FileEditorPage(
-        browser: FakeFileBrowser(),
-        path: '/home/me/notes.txt',
-        onClose: () => closed = true,
+    await tester.pumpWidget(
+      MaterialApp(
+        home: FileEditorPage(
+          browser: FakeFileBrowser(),
+          path: '/home/me/notes.txt',
+          onClose: () => closed = true,
+        ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.close));
@@ -953,13 +974,15 @@ void main() {
 
   testWidgets('still guards unsaved work when embedded', (tester) async {
     var closed = false;
-    await tester.pumpWidget(MaterialApp(
-      home: FileEditorPage(
-        browser: FakeFileBrowser(),
-        path: '/home/me/notes.txt',
-        onClose: () => closed = true,
+    await tester.pumpWidget(
+      MaterialApp(
+        home: FileEditorPage(
+          browser: FakeFileBrowser(),
+          path: '/home/me/notes.txt',
+          onClose: () => closed = true,
+        ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
 
     _editor(tester).text = 'half typed';
@@ -978,8 +1001,7 @@ void main() {
   });
 
   group('download', () {
-    testWidgets('is on the menu in the preview and in Source',
-        (tester) async {
+    testWidgets('is on the menu in the preview and in Source', (tester) async {
       const readme = '/home/me/README.md';
       final browser = FakeFileBrowser()..contents[readme] = '# Title\n';
       await _pumpEditor(tester, browser, path: readme);
@@ -999,8 +1021,9 @@ void main() {
       await expectOnMenu();
     });
 
-    testWidgets('saves the bytes on the host, without asking when clean',
-        (tester) async {
+    testWidgets('saves the bytes on the host, without asking when clean', (
+      tester,
+    ) async {
       final picker = useFakePicker();
       // CRLF, which the editor holds as LF: what is saved is the host's.
       final browser = FakeFileBrowser()
@@ -1021,8 +1044,9 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('with unsaved edits, asks first and saves the host version',
-        (tester) async {
+    testWidgets('with unsaved edits, asks first and saves the host version', (
+      tester,
+    ) async {
       final picker = useFakePicker();
       await _pumpEditor(tester, FakeFileBrowser());
       _editor(tester).text = 'edited\n';
@@ -1043,8 +1067,9 @@ void main() {
       expect(_canSave(tester), isTrue);
     });
 
-    testWidgets('a file opened with sudo the login may not read says so',
-        (tester) async {
+    testWidgets('a file opened with sudo the login may not read says so', (
+      tester,
+    ) async {
       final picker = useFakePicker();
       final browser = SudoFakeFileBrowser()
         ..failReadWith = const FileBrowserException(
@@ -1095,15 +1120,14 @@ void main() {
     // termul's Source / Preview switch in the file's header.
     Future<void> toggle(WidgetTester tester, String tooltip) async {
       await tester.tap(
-        find.bySemanticsLabel(
-          tooltip == 'Show source' ? 'source' : 'preview',
-        ),
+        find.bySemanticsLabel(tooltip == 'Show source' ? 'source' : 'preview'),
       );
       await tester.pumpAndSettle();
     }
 
-    testWidgets('only a Markdown file has a preview, and opens in it',
-        (tester) async {
+    testWidgets('only a Markdown file has a preview, and opens in it', (
+      tester,
+    ) async {
       await _pumpEditor(tester, FakeFileBrowser());
       expect(find.bySemanticsLabel('preview'), findsNothing);
       expect(find.bySemanticsLabel('source'), findsNothing);
@@ -1121,8 +1145,9 @@ void main() {
       expect(find.byType(EditorKeyBar), findsOneWidget);
     });
 
-    testWidgets('previews unsaved edits, and Source keeps them',
-        (tester) async {
+    testWidgets('previews unsaved edits, and Source keeps them', (
+      tester,
+    ) async {
       await pumpReadme(tester, '# Title\n\nfirst paragraph\n');
       await toggle(tester, 'Show source');
       final editor = tester.state(find.byType(CodeEditor));
@@ -1145,8 +1170,9 @@ void main() {
       expect(tester.state(find.byType(CodeEditor)), same(editor));
     });
 
-    testWidgets('a reload comes back to where the preview was left',
-        (tester) async {
+    testWidgets('a reload comes back to where the preview was left', (
+      tester,
+    ) async {
       await pumpReadme(
         tester,
         List.generate(200, (i) => 'Paragraph number $i.').join('\n\n'),
@@ -1170,8 +1196,9 @@ void main() {
       expect(at(), left);
     });
 
-    testWidgets('a web link opens in a web tab, a relative one opens nothing',
-        (tester) async {
+    testWidgets('a web link opens in a web tab, a relative one opens nothing', (
+      tester,
+    ) async {
       final opened = <Uri>[];
       await pumpReadme(
         tester,
@@ -1202,9 +1229,7 @@ void main() {
     testWidgets('renders a table, code, tasks, and a picture that is not '
         'there as its alt text', (tester) async {
       terminalSettings.value = terminalStyleOf('JetBrains Mono', 13);
-      addTearDown(
-        () => terminalSettings.value = TerminalSettings.defaultStyle,
-      );
+      addTearDown(() => terminalSettings.value = TerminalSettings.defaultStyle);
       await pumpReadme(tester, '''
 | Name | Value |
 |------|-------|
@@ -1246,10 +1271,10 @@ echo hello
       expect(find.byType(Image), findsNothing);
     });
 
-    testWidgets('a picture beside the document is fetched and drawn',
-        (tester) async {
-      final browser = FakeFileBrowser()
-        ..binary['/home/me/img/logo.png'] = _png;
+    testWidgets('a picture beside the document is fetched and drawn', (
+      tester,
+    ) async {
+      final browser = FakeFileBrowser()..binary['/home/me/img/logo.png'] = _png;
       await pumpReadme(tester, '![the logo](img/logo.png)\n', on: browser);
       await _settleImages(tester);
 
@@ -1278,10 +1303,7 @@ echo hello
         find.textContaining('a drawing — not a picture this app can draw'),
         findsOneWidget,
       );
-      expect(
-        find.textContaining('gone — Could not open'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('gone — Could not open'), findsOneWidget);
     });
 
     testWidgets('a path is read as a shell would read it', (tester) async {
@@ -1349,10 +1371,10 @@ echo hello
       );
     });
 
-    testWidgets('the copies it brought down go when the tab closes',
-        (tester) async {
-      final browser = FakeFileBrowser()
-        ..binary['/home/me/img/logo.png'] = _png;
+    testWidgets('the copies it brought down go when the tab closes', (
+      tester,
+    ) async {
+      final browser = FakeFileBrowser()..binary['/home/me/img/logo.png'] = _png;
       await pumpReadme(tester, '![the logo](img/logo.png)\n', on: browser);
       await _settleImages(tester);
       final copy = File(browser.downloads.single.to);
@@ -1365,10 +1387,11 @@ echo hello
       expect(copy.parent.existsSync(), isFalse);
     });
 
-    testWidgets('draws a mermaid block as a diagram, and leaves other code be',
-        (tester) async {
-      WebViewPlatform.instance = FakeWebViewPlatform();
-      await pumpReadme(tester, '''
+    testWidgets(
+      'draws a mermaid block as a diagram, and leaves other code be',
+      (tester) async {
+        WebViewPlatform.instance = FakeWebViewPlatform();
+        await pumpReadme(tester, '''
 ```mermaid
 flowchart LR
   A --> B
@@ -1381,18 +1404,19 @@ echo hello
 Run `make` first.
 ''');
 
-      expect(
-        tester.widget<MermaidView>(find.byType(MermaidView)).source,
-        'flowchart LR\n  A --> B\n',
-      );
-      expect(find.textContaining('A --> B'), findsNothing);
-      expect(find.text('echo hello'), findsOneWidget);
-      expect(find.textContaining('make first'), findsOneWidget);
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          'flowchart LR\n  A --> B\n',
+        );
+        expect(find.textContaining('A --> B'), findsNothing);
+        expect(find.text('echo hello'), findsOneWidget);
+        expect(find.textContaining('make first'), findsOneWidget);
 
-      await toggle(tester, 'Show source');
-      expect(find.byType(MermaidView), findsNothing);
-      expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
-    });
+        await toggle(tester, 'Show source');
+        expect(find.byType(MermaidView), findsNothing);
+        expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
+      },
+    );
 
     testWidgets('every code block gets a copy button; inline code and a '
         'mermaid diagram do not', (tester) async {
@@ -1419,8 +1443,9 @@ Run `make` first.
       expect(find.byType(MermaidView), findsOneWidget);
     });
 
-    testWidgets('the copy button copies the block, fences and all left out',
-        (tester) async {
+    testWidgets('the copy button copies the block, fences and all left out', (
+      tester,
+    ) async {
       final copied = _useFakeClipboard();
       await pumpReadme(tester, '''
 Before it.
@@ -1461,8 +1486,7 @@ After it.
       expect(find.widgetWithText(TextField, 'Find'), findsOneWidget);
     });
 
-    testWidgets('previews only the start of a very long file',
-        (tester) async {
+    testWidgets('previews only the start of a very long file', (tester) async {
       await pumpReadme(tester, 'word ' * 30000);
       expect(find.textContaining('Only the first 100 KB'), findsOneWidget);
     });
@@ -1480,12 +1504,15 @@ After it.
       String path = shot,
     }) async {
       await tester.pumpWidget(
-        MaterialApp(home: FileEditorPage(browser: browser, path: path)),
+        MaterialApp(
+          home: FileEditorPage(browser: browser, path: path),
+        ),
       );
-      for (var i = 0;
-          i < 100 &&
-              find.byType(TuiSpinner).evaluate().isNotEmpty;
-          i++) {
+      for (
+        var i = 0;
+        i < 100 && find.byType(TuiSpinner).evaluate().isNotEmpty;
+        i++
+      ) {
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 20)),
         );
@@ -1493,8 +1520,9 @@ After it.
       }
     }
 
-    testWidgets('an image opens in the viewer rather than the editor',
-        (tester) async {
+    testWidgets('an image opens in the viewer rather than the editor', (
+      tester,
+    ) async {
       final browser = FakeFileBrowser()..binary[shot] = png;
       await pumpImage(tester, browser);
 
@@ -1521,8 +1549,9 @@ After it.
       expect(find.byType(InteractiveViewer), findsNothing);
     });
 
-    testWidgets('one past the cap says so instead of opening it',
-        (tester) async {
+    testWidgets('one past the cap says so instead of opening it', (
+      tester,
+    ) async {
       final browser = FakeFileBrowser()
         ..binary[shot] = png
         ..statedSize[shot] = 21 * 1024 * 1024;
@@ -1566,8 +1595,9 @@ After it.
       await tester.pumpAndSettle();
     });
 
-    testWidgets('one that will not decode says so, and still downloads',
-        (tester) async {
+    testWidgets('one that will not decode says so, and still downloads', (
+      tester,
+    ) async {
       final picker = useFakePicker();
       final browser = FakeFileBrowser()
         ..binary[shot] = utf8.encode('not really a png');
@@ -1585,8 +1615,9 @@ After it.
       await tester.pumpAndSettle();
     });
 
-    testWidgets('the copy it brought down goes when the tab closes',
-        (tester) async {
+    testWidgets('the copy it brought down goes when the tab closes', (
+      tester,
+    ) async {
       final browser = FakeFileBrowser()..binary[shot] = png;
       await pumpImage(tester, browser);
       final copy = File(browser.downloads.single.to);
@@ -1625,10 +1656,7 @@ After it.
 
     test('its size is read from its header, not by decoding it', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
-      expect(
-        await pictureSize(MemoryImage(huge)),
-        const Size(30000, 30000),
-      );
+      expect(await pictureSize(MemoryImage(huge)), const Size(30000, 30000));
     });
 
     testWidgets('one claiming more pixels than may be drawn is refused, never '
@@ -1645,11 +1673,218 @@ After it.
       final image = tester.widget<Image>(find.byType(Image)).image;
       expect(image, isA<ResizeImage>());
       final view = tester.view;
-      final most =
-          (view.physicalSize.longestSide * 2).ceil();
+      final most = (view.physicalSize.longestSide * 2).ceil();
       expect((image as ResizeImage).width, most);
       expect(image.height, most);
       expect(image.allowUpscaling, isFalse);
     });
   });
+
+  group('the command key', () {
+    // ⌘ on a Mac and an iPad, Ctrl everywhere else.
+    bool apple() =>
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    LogicalKeyboardKey command() =>
+        apple() ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+    LogicalKeyboardKey other() =>
+        apple() ? LogicalKeyboardKey.controlLeft : LogicalKeyboardKey.metaLeft;
+    final every = TargetPlatformVariant.all();
+
+    /// Every key that reaches past the page, which wraps the page here as a
+    /// terminal's tab strip would sit round it.
+    late List<LogicalKeyboardKey> behind;
+
+    Future<_CountingBrowser> pump(
+      WidgetTester tester, {
+      String path = '/home/me/notes.txt',
+      String? text,
+    }) async {
+      behind = [];
+      final browser = _CountingBrowser();
+      if (text != null) browser.contents[path] = text;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Focus(
+            onKeyEvent: (_, event) {
+              if (event is KeyDownEvent) behind.add(event.logicalKey);
+              return KeyEventResult.ignored;
+            },
+            child: FileEditorPage(browser: browser, path: path),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return browser;
+    }
+
+    /// The text behind the preview, which finders skip by default.
+    CodeLineEditingController hidden(WidgetTester tester) => tester
+        .widget<CodeEditor>(find.byType(CodeEditor, skipOffstage: false))
+        .controller!;
+
+    /// Whether the save's own toast came up for the last [chord].
+    var toasted = false;
+
+    Future<void> chord(
+      WidgetTester tester,
+      LogicalKeyboardKey key,
+      LogicalKeyboardKey holding,
+    ) async {
+      await tester.sendKeyDownEvent(holding);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(holding);
+      // The toast comes in on the frame after; then its countdown runs out.
+      await tester.pump();
+      await tester.pump();
+      toasted = find.textContaining('Saved ').evaluate().isNotEmpty;
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> focusText(WidgetTester tester) async {
+      await tester.tap(find.byType(CodeEditor));
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    testWidgets('⌘S or Ctrl+S saves from the text, types no s and reaches '
+        'nothing behind, and the other key does not', (tester) async {
+      final browser = await pump(tester);
+      await focusText(tester);
+      _editor(tester).text = 'edited\n';
+      await tester.pumpAndSettle();
+
+      await chord(tester, LogicalKeyboardKey.keyS, other());
+      expect(browser.writes, 0);
+      expect(_canSave(tester), isTrue);
+      // Ctrl on a Mac is not the page's key, so it goes on as any other key
+      // would; Super elsewhere types nothing, so the page keeps it.
+      expect(behind.contains(LogicalKeyboardKey.keyS), apple());
+      expect(_editor(tester).text, 'edited\n');
+      behind.clear();
+
+      await chord(tester, LogicalKeyboardKey.keyS, command());
+      expect(browser.writes, 1);
+      expect(browser.contents['/home/me/notes.txt'], 'edited\n');
+      expect(_editor(tester).text, 'edited\n');
+      expect(_canSave(tester), isFalse);
+      expect(toasted, isTrue);
+      expect(behind, isNot(contains(LogicalKeyboardKey.keyS)));
+    }, variant: every);
+
+    testWidgets('with nothing to save it writes nothing, and still takes the '
+        'key', (tester) async {
+      final browser = await pump(tester);
+      await focusText(tester);
+
+      await chord(tester, LogicalKeyboardKey.keyS, command());
+      expect(browser.writes, 0);
+      expect(toasted, isFalse);
+      expect(_editor(tester).text, 'first line\nsecond line\n');
+      expect(behind, isNot(contains(LogicalKeyboardKey.keyS)));
+    }, variant: every);
+
+    testWidgets('saves with the find bar open and its field focused, typing '
+        'no s there', (tester) async {
+      final browser = await pump(tester);
+      _editor(tester).text = 'edited\n';
+      await tester.tap(find.byTooltip('Find'));
+      await tester.pumpAndSettle();
+      final field = find.widgetWithText(TextField, 'Find');
+      await tester.tap(field);
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        FocusManager.instance.primaryFocus?.context
+            ?.findAncestorWidgetOfExactType<TextField>(),
+        isNotNull,
+      );
+
+      await chord(tester, LogicalKeyboardKey.keyS, command());
+      expect(browser.writes, 1);
+      expect(browser.contents['/home/me/notes.txt'], 'edited\n');
+      expect(tester.widget<TextField>(field).controller?.text ?? '', isEmpty);
+      expect(behind, isNot(contains(LogicalKeyboardKey.keyS)));
+    }, variant: every);
+
+    testWidgets('saves with a toolbar button focused', (tester) async {
+      final browser = await pump(tester);
+      _editor(tester).text = 'edited\n';
+      await tester.pumpAndSettle();
+      Focus.of(tester.element(find.byIcon(Icons.refresh))).requestFocus();
+      await tester.pump();
+
+      await chord(tester, LogicalKeyboardKey.keyS, command());
+      expect(browser.writes, 1);
+      expect(behind, isNot(contains(LogicalKeyboardKey.keyS)));
+    }, variant: every);
+
+    testWidgets('saves with the Markdown preview showing, opened in it and '
+        'switched to it', (tester) async {
+      const readme = '/home/me/README.md';
+      final browser = await pump(tester, path: readme, text: '# Title\n');
+      expect(find.byType(Markdown), findsOneWidget);
+      // Opened rendered, the page holds the keys.
+      hidden(tester).text = '# Edited\n';
+      await tester.pumpAndSettle();
+      await chord(tester, LogicalKeyboardKey.keyS, command());
+      expect(browser.writes, 1);
+      expect(browser.contents[readme], '# Edited\n');
+
+      await tester.tap(find.bySemanticsLabel('source'));
+      await tester.pumpAndSettle();
+      _editor(tester).text = '# Again\n';
+      await tester.tap(find.bySemanticsLabel('preview'));
+      await tester.pumpAndSettle();
+      await chord(tester, LogicalKeyboardKey.keyS, command());
+      expect(browser.writes, 2);
+      expect(browser.contents[readme], '# Again\n');
+      expect(behind, isNot(contains(LogicalKeyboardKey.keyS)));
+    }, variant: every);
+
+    // re_editor binds these itself on a desktop; on a phone and an iPad the
+    // page does, and an iPad's are ⌘.
+    testWidgets('select all, cut, paste, undo and redo go by the command key', (
+      tester,
+    ) async {
+      _useFakeClipboard();
+      await pump(tester);
+      await focusText(tester);
+      final editor = _editor(tester);
+
+      await chord(tester, LogicalKeyboardKey.keyA, other());
+      expect(editor.selectedText, isEmpty);
+      await chord(tester, LogicalKeyboardKey.keyA, command());
+      expect(editor.selectedText, 'first line\nsecond line\n');
+
+      editor.selection = const CodeLineSelection(
+        baseIndex: 0,
+        baseOffset: 0,
+        extentIndex: 0,
+        extentOffset: 5,
+      );
+      await chord(tester, LogicalKeyboardKey.keyX, command());
+      expect(editor.text, ' line\nsecond line\n');
+      await chord(tester, LogicalKeyboardKey.keyZ, command());
+      expect(editor.text, 'first line\nsecond line\n');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await chord(tester, LogicalKeyboardKey.keyZ, command());
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      expect(editor.text, ' line\nsecond line\n');
+    }, variant: every);
+  });
+}
+
+/// A browser that counts what was written to it.
+class _CountingBrowser extends FakeFileBrowser {
+  int writes = 0;
+
+  @override
+  Future<FileStamp> writeText(
+    String path,
+    String content, {
+    FileStamp? expected,
+  }) {
+    writes++;
+    return super.writeText(path, content, expected: expected);
+  }
 }
