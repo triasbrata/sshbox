@@ -1,0 +1,54 @@
+# Seconds each unit of tools/e2e_android.sh takes on the CI emulator, read by
+# tools/e2e_shards.py to balance the shards e2e.yml runs at once. Each is the
+# faster of the v1.0.112 and v1.0.113 gates, a unit's steps summed (a failed
+# flow's timeouts inflate the slower run). A unit missing here counts as 120 s
+# and runs all the same; each shard uploads what its units took, as
+# durations-<run>-android-<shard>, to bring this up to date from.
+smoke	18
+connect_and_keybar	32
+tabs	38
+file_browser	51
+logs	23
+duplicate_session	48
+dotfiles	89
+card_tap_reconnect	46
+port_forward_no_host	48
+terminal_selection	55
+single_instance	14
+jeansh_open2	314
+jeansh_open	114
+share_text	55
+share_chat	175
+chat_continue_cwd	185
+chat_version	147
+chat_code_copy	189
+chat_scroll	59
+chat_tool_rows	47
+chat_mermaid	47
+chat_two_way	137
+html_tab	65
+html_site	331
+chat_session_status	76
+chat_progress	144
+chat_working_backstop	120
+chat_images	478
+chat_subagents	56
+chat_usage	49
+chat_compact	55
+chat_model	107
+chat_cwd	358
+folder_zip	348
+chat_outbox	798
+chat_outbox_reconnect	624
+chat_edit_previous	113
+chat_ask_watched	350
+chat_slash	155
+chat_ask	106
+chat_follow_jump	187
+chat_tasks	93
+bug_button	36
+tmux_mouse_reattach	270
+text_size_home	46
+soft_backspace	33
+file_editor	75
+text_size	63
