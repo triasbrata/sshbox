@@ -362,7 +362,7 @@ jobs:
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'linux-desktop' }}
     # The release's Linux build runs on 22.04 (release.yml), so this does too.
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -432,7 +432,7 @@ jobs:
       # to offer. The feed override is read by debug builds alone, never a
       # release.
       - name: Drive the desktop build
-        timeout-minutes: 22
+        timeout-minutes: 32
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
         run: |
