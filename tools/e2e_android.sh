@@ -86,10 +86,86 @@ maestro_env=(
 )
 
 # flow NAME [-e KEY=VALUE ...]: extra -e values for this run only.
+#
+# Maestro now and then hangs in a call to its on-device driver and never
+# comes back: in the gate of 2026-10-13, three flows sat at `Launch app` (and
+# one earlier at `Stop`) until the unit's watchdog fired 10 to 16 minutes
+# later, where a launch takes 1 to 4 s on every shard. Maestro prints a step
+# when it ends, and no step waits longer than 120 s, so FLOW_SILENCE seconds
+# with no output is such a hang: the run is killed, and if the flow had done
+# nothing yet but stop and launch the app, it is run once more, since nothing
+# it does has happened twice. A hang later in a flow fails it, saying where.
+FLOW_SILENCE=${FLOW_SILENCE:-240}
 flow() {
-  local name=$1
+  local name=$1 out rc try
   shift
-  maestro test "${maestro_env[@]}" "$@" ".maestro/$name.yaml"
+  out=$(mktemp)
+  for try in 1 2; do
+    maestro_watched "$out" "${maestro_env[@]}" "$@" ".maestro/$name.yaml"
+    rc=$?
+    [ "$rc" -eq 124 ] || break
+    local at
+    at=$(tr '\r' '\n' <"$out" | grep -v '^[[:space:]]*$' | tail -1)
+    echo "::warning::$name: Maestro printed nothing for $FLOW_SILENCE s, at: $at"
+    if [ "$try" = 2 ] || ! only_app_lifecycle "$out"; then
+      rc=1
+      break
+    fi
+    echo "$name: nothing past stopping and launching the app had run; once more"
+  done
+  rm -f "$out"
+  return "$rc"
+}
+
+# Whether every step Maestro finished stops or launches the app.
+only_app_lifecycle() {
+  ! tr '\r' '\n' <"$1" | grep 'COMPLETED' |
+    grep -vqE '^[[:space:]]*(Stop [^ ]+|Launch app "[^"]+")\.\.\. COMPLETED'
+}
+
+# maestro_watched LOG ARGS...: `maestro test ARGS`, its output to the job log
+# as it comes and to LOG; 124, as timeout(1) says, when it fell silent for
+# FLOW_SILENCE seconds and was killed.
+maestro_watched() {
+  local log=$1 pid tailer size last=-1 changed=$SECONDS
+  shift
+  : >"$log"
+  maestro test "$@" >"$log" 2>&1 &
+  pid=$!
+  tail -f -n +1 "$log" &
+  tailer=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    size=$(stat -c %s "$log")
+    if [ "$size" != "$last" ]; then
+      last=$size
+      changed=$SECONDS
+    fi
+    if [ $((SECONDS - changed)) -ge "$FLOW_SILENCE" ]; then
+      # Maestro's launcher execs its JVM, so this is Maestro itself; what it
+      # started goes with it.
+      pkill -TERM -P "$pid" 2>/dev/null
+      kill -TERM "$pid" 2>/dev/null
+      sleep 5
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      stop_tailer "$tailer"
+      echo
+      return 124
+    fi
+    sleep 1
+  done
+  wait "$pid"
+  local rc=$?
+  stop_tailer "$tailer"
+  return "$rc"
+}
+
+# The tail -f copying a run's output to the job log: a moment for its last
+# lines, then gone.
+stop_tailer() {
+  sleep 2
+  kill "$1" 2>/dev/null
+  wait "$1" 2>/dev/null
 }
 
 # Screenshots taken as evidence, on success as well as failure, so a feature can
