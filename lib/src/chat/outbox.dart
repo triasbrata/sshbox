@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
+import '../session/terminal_session.dart' show uploadName;
+
 /// A message the user sent in chat, kept on this device from the moment Send
 /// is tapped until the session's own transcript records it, so that a kill, a
 /// crash or a dead connection never turns it into something that only looked
@@ -71,8 +73,7 @@ class OutboxEntry {
       why: json['why'] is String ? json['why'] as String : null,
       pictures: [
         if (json['pictures'] is List)
-          for (final p in json['pictures'] as List)
-            ?OutboxPicture.fromJson(p),
+          for (final p in json['pictures'] as List) ?OutboxPicture.fromJson(p),
       ],
     );
   }
@@ -159,7 +160,8 @@ class OutboxStore {
   @visibleForTesting
   OutboxStore.memory()
     : _mem = {},
-      _root = (() async => throw StateError('an in-memory store has no folder'));
+      _root = (() async =>
+          throw StateError('an in-memory store has no folder'));
 
   /// The one every chat of the app files its messages in.
   static OutboxStore shared = OutboxStore.app();
@@ -188,7 +190,8 @@ class OutboxStore {
   }
 
   /// A file name made only of what a name can safely hold.
-  static String _safe(String part) => part.replaceAll(RegExp(r'[^A-Za-z0-9-]'), '_');
+  static String _safe(String part) =>
+      part.replaceAll(RegExp(r'[^A-Za-z0-9-]'), '_');
 
   /// The file's name for [host] and [session]; a chat with no session yet
   /// uses [newChat].
@@ -213,7 +216,9 @@ class OutboxStore {
     try {
       file = await _file(key);
     } catch (error) {
-      throw OutboxException('Messages kept on this device could not be opened ($error).');
+      throw OutboxException(
+        'Messages kept on this device could not be opened ($error).',
+      );
     }
     if (!file.existsSync()) return OutboxBox();
     try {
@@ -236,8 +241,7 @@ class OutboxStore {
       return OutboxBox(
         entries: [
           if (json['entries'] is List)
-            for (final e in json['entries'] as List)
-              ?OutboxEntry.fromJson(e),
+            for (final e in json['entries'] as List) ?OutboxEntry.fromJson(e),
         ],
         consumed: [
           if (json['consumed'] is List)
@@ -287,7 +291,9 @@ class OutboxStore {
         await _private(temp.path, '600');
         await temp.rename(file.path);
       } catch (error) {
-        throw OutboxException('The message could not be saved on this device ($error).');
+        throw OutboxException(
+          'The message could not be saved on this device ($error).',
+        );
       }
     });
     _tails[key] = next;
@@ -295,6 +301,13 @@ class OutboxStore {
   }
 
   /// Copies [source] in for message [entryId], returning the copy's path.
+  ///
+  /// The copy keeps [source]'s own name as [uploadName] scrubs it, extension
+  /// and all: it is the name the picture reaches the host under, and Claude
+  /// Code takes a pasted path as a picture only by its `.png`, `.jpg` and the
+  /// like. The chat's own copy of a picture is named uniquely, so two pictures
+  /// called [name] in one message stay two files, here and on the host; a
+  /// clash left anyway is numbered rather than overwritten.
   Future<String> copyPicture(String entryId, String name, String source) async {
     if (_mem != null) return source;
     try {
@@ -303,12 +316,21 @@ class OutboxStore {
         dir.createSync(recursive: true);
         await _private(dir.path, '700');
       }
-      final copy = File('${dir.path}/${_safe(name)}');
+      final dots = RegExp(r'^\.*$');
+      var base = uploadName(source);
+      if (dots.hasMatch(base)) base = uploadName(name);
+      if (dots.hasMatch(base)) base = 'picture';
+      var copy = File('${dir.path}/$base');
+      for (var n = 2; copy.existsSync(); n++) {
+        copy = File('${dir.path}/$n-$base');
+      }
       await File(source).copy(copy.path);
       await _private(copy.path, '600');
       return copy.path;
     } catch (error) {
-      throw OutboxException('A picture could not be saved on this device ($error).');
+      throw OutboxException(
+        'A picture could not be saved on this device ($error).',
+      );
     }
   }
 
@@ -437,8 +459,8 @@ class OutboxMatch {
           ? DateTime.tryParse(row['timestamp'] as String)
           : null;
       if (text == null || at == null) continue;
-      final key = (row['uuid'] is String ? row['uuid'] : row['timestamp'])
-          as String;
+      final key =
+          (row['uuid'] is String ? row['uuid'] : row['timestamp']) as String;
       turns.add(TranscriptTurn(key, normal(text), at.toUtc()));
     }
     return turns;

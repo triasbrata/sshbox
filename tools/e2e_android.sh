@@ -855,6 +855,22 @@ TXT
   return "$status"
 }
 
+# After /compact: a marker whose tap shows and hides the summary, never a
+# bubble of the user's, and the ring reading "Context compacted…" until the
+# next reply, against the stand-in's usage:, compact: and recount: turns.
+chat_compact() {
+  local status=0
+  chat_stand_in
+  end_live_session
+  live_session
+  flow chat_compact || status=1
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-compact-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
 # #214: the model chip over chat's box. A new chat started on Sonnet runs
 # `claude --bg --model sonnet`; chat's own claude, continuing a finished
 # session, is sent set_model and its chip follows the answer; a session
@@ -2592,6 +2608,10 @@ echo "::endgroup::"
 
 echo "::group::chat_usage (report only)"
 chat_usage || echo "::warning::chat_usage failed -- report only, not gating"
+echo "::endgroup::"
+
+echo "::group::chat_compact (report only)"
+chat_compact || echo "::warning::chat_compact failed -- report only, not gating"
 echo "::endgroup::"
 
 echo "::group::chat_model (report only)"

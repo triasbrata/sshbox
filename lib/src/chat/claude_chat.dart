@@ -220,6 +220,28 @@ class ChatNotice extends ChatEntry {
   final bool failed;
 }
 
+/// Where the session's conversation was compacted, by `/compact` or by Claude
+/// Code itself near the window's end: everything above it was replaced, for
+/// Claude, by [summary]. Claude Code writes that summary as a `user` line, but
+/// nobody typed it, so it is drawn as this marker rather than as a message of
+/// the user's. Measured on 2.1.287: a transcript records a `system` line,
+/// `compact_boundary`, then the summary marked `isCompactSummary`; a
+/// stream-json run sends the same boundary, then the summary marked
+/// `isSynthetic`.
+class ChatCompacted extends ChatEntry {
+  ChatCompacted({this.auto = false});
+
+  /// From the boundary's `compactMetadata` or `compact_metadata`.
+  factory ChatCompacted.from(Object? metadata) =>
+      ChatCompacted(auto: metadata is Map && metadata['trigger'] == 'auto');
+
+  /// Compacted by Claude Code on its own, rather than by `/compact`.
+  final bool auto;
+
+  /// What Claude was left with, once its line has come; Claude's own words.
+  String? summary;
+}
+
 /// What time it is, for a turn's elapsed seconds and how often the host is
 /// asked how a session is doing; a test replaces it with a clock it moves.
 DateTime Function() chatNow = DateTime.now;
@@ -364,10 +386,31 @@ class ChatModel {
 /// 1,000,000 where the id says so or the request was already past 200,000, and
 /// 200,000 otherwise.
 class ChatContext {
-  const ChatContext({required this.tokens, this.model, this.reportedWindow});
+  const ChatContext({
+    required this.tokens,
+    this.model,
+    this.reportedWindow,
+    this.recounting = false,
+  });
 
   final int tokens;
   final String? model;
+
+  /// Compacted since the last request, which is all [tokens] knew: what the
+  /// context holds now is not known until the next request reports it. The
+  /// boundary's own `postTokens` is not it — it counts the summary alone,
+  /// leaving out the system prompt and the tools, measured on 2.1.287 as
+  /// 1,260 where the next request used 34,286, and 7,000 where it used
+  /// 42,448 — so no number is shown rather than one far too low.
+  final bool recounting;
+
+  /// This, compacted: the model and window kept, the count not.
+  ChatContext get compacted => ChatContext(
+    tokens: 0,
+    model: model,
+    reportedWindow: reportedWindow,
+    recounting: true,
+  );
 
   /// The window as Claude Code reported it, where a stream did; else guessed.
   final int? reportedWindow;
@@ -4456,6 +4499,12 @@ class ClaudeChat extends ChangeNotifier {
         _onQueuedCommand(event['attachment']);
       case 'system' when event['subtype'] == 'local_command':
         if (event['content'] case final String text) _onCommandLine(text);
+      case 'system' when event['subtype'] == 'compact_boundary':
+        _onCompacted(event['compactMetadata']);
+      case 'user' when event['isCompactSummary'] == true:
+        if (message is Map<String, dynamic>) {
+          _onCompactSummary(_userText(message['content']));
+        }
       case 'user' when message is Map<String, dynamic>:
         final said = _userText(message['content']);
         if (said == null) {
@@ -4505,6 +4554,34 @@ class ClaudeChat extends ChangeNotifier {
     final text = prompt.replaceAll(_pasteTag, '').trim();
     if (text.isEmpty || text.startsWith('<')) return;
     _entries.add(ChatSaid(text, mine: true));
+  }
+
+  /// A compact boundary: its marker, and the context ring told the count it
+  /// shows is from before — unless this is older history, which says nothing
+  /// about the context now.
+  void _onCompacted(Object? metadata) {
+    _entries.add(ChatCompacted.from(metadata));
+    if (!_pastOnly) _context = _context?.compacted;
+  }
+
+  /// The last entry is a compaction's marker its summary has not reached.
+  bool get _awaitingSummary => switch (_entries.lastOrNull) {
+    ChatCompacted(summary: null) => true,
+    _ => false,
+  };
+
+  /// The summary a compaction left Claude with, which follows its boundary:
+  /// it goes under that marker. One with no marker before it, its boundary
+  /// cut off by where the history was read from, gets a marker of its own.
+  void _onCompactSummary(String? text) {
+    final summary = text?.trim();
+    if (summary == null || summary.isEmpty) return;
+    final last = _entries.lastOrNull;
+    if (last is ChatCompacted && last.summary == null) {
+      last.summary = summary;
+    } else {
+      _entries.add(ChatCompacted()..summary = summary);
+    }
   }
 
   /// A command the session ran, or what one printed, drawn as such: see
@@ -4687,6 +4764,17 @@ class ClaudeChat extends ChangeNotifier {
         _onAssistantTurn(event);
         _onAssistant(event['message']);
         notifyListeners();
+      case 'system' when event['subtype'] == 'compact_boundary':
+        _onCompacted(event['compact_metadata']);
+        notifyListeners();
+      // The summary, which the stream marks only as not the user's: under
+      // the boundary it follows, and nowhere else.
+      case 'user' when event['isSynthetic'] == true && _awaitingSummary:
+        final message = event['message'];
+        if (message is Map<String, dynamic>) {
+          _onCompactSummary(_userText(message['content']));
+          notifyListeners();
+        }
       case 'user':
         if (_onToolResults(
           event['message'],
@@ -4733,6 +4821,7 @@ class ClaudeChat extends ChangeNotifier {
             tokens: _context!.tokens,
             model: _context!.model,
             reportedWindow: window,
+            recounting: _context!.recounting,
           );
         }
         _busy = false;

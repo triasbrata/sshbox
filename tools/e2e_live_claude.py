@@ -20,6 +20,8 @@ two lines sharing one message id and the turn's duration. Meanwhile its row
 in the stand-in listing, ~/.e2e-agents.json, says busy, as `claude agents`
 says of a session mid-turn. A line starting `wait:` stops at a permission
 prompt instead: its row says waiting, with waitingFor, for twenty seconds.
+A line starting `compact:` plays a turn at 85% of its window and then a
+compaction, as /compact records one; `recount:` the turn after, at 21%.
 A line starting `long:` writes six long answers after five seconds, for a
 chat put behind another tab meanwhile to come back following; `long2:` and
 `long3:` write the same under other words, and `late:` after twenty seconds.
@@ -314,6 +316,62 @@ def usage_turn(text):
     sys.stdout.write('Usage answer: done\n')
 
 
+def compact_turn(text):
+    """A line starting `compact:` plays a turn at 170,000 of a 200,000 window,
+    then a compaction as 2.1.287 records one in a transcript: the boundary, the
+    summary as a user line nobody typed, the caveat, and the /compact command
+    with what it printed. Chat draws a marker holding the summary, never a
+    bubble of the user's, and its ring waits for the next request."""
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_compact', 'role': 'assistant', 'model': 'claude-opus-5-5',
+        'stop_reason': 'end_turn',
+        'usage': {'input_tokens': 1, 'cache_creation_input_tokens': 0,
+                  'cache_read_input_tokens': 169989, 'output_tokens': 10},
+        'content': [{'type': 'text', 'text': 'Compact answer: done'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 1000,
+            'timestamp': now()})
+    record({'type': 'system', 'subtype': 'compact_boundary', 'timestamp': now(),
+            'content': 'Conversation compacted',
+            'compactMetadata': {'trigger': 'manual', 'preTokens': 170000,
+                                'postTokens': 7000}})
+    record({'type': 'user', 'timestamp': now(),
+            'isVisibleInTranscriptOnly': True, 'isCompactSummary': True,
+            'message': {'role': 'user', 'content':
+                        'This session is being continued from a previous '
+                        'conversation that ran out of context. The summary '
+                        'below covers the earlier portion.\n\nSummary:\n'
+                        '1. E2E compact summary: the ring was fixed.'}})
+    record({'type': 'user', 'timestamp': now(), 'isMeta': True, 'message': {
+        'role': 'user',
+        'content': '<local-command-caveat>Caveat.</local-command-caveat>'}})
+    record({'type': 'user', 'timestamp': now(), 'message': {
+        'role': 'user', 'content': '<command-name>/compact</command-name>\n'
+                                   '<command-message>compact</command-message>\n'
+                                   '<command-args></command-args>'}})
+    record({'type': 'user', 'timestamp': now(), 'message': {
+        'role': 'user', 'content': '<local-command-stdout>\x1b[2mCompacted'
+                                   '\x1b[22m</local-command-stdout>'}})
+    sys.stdout.write('Compacted\n')
+
+
+def recount_turn(text):
+    """A line starting `recount:` plays the turn after a compaction, its request
+    carrying 42,448 of a 200,000 window: chat's ring reads 21% again."""
+    record({'type': 'user', 'timestamp': now(),
+            'message': {'role': 'user', 'content': text}})
+    record({'type': 'assistant', 'timestamp': now(), 'message': {
+        'id': 'msg_e2e_recount', 'role': 'assistant', 'model': 'claude-opus-5-5',
+        'stop_reason': 'end_turn',
+        'usage': {'input_tokens': 2, 'cache_creation_input_tokens': 42000,
+                  'cache_read_input_tokens': 0, 'output_tokens': 446},
+        'content': [{'type': 'text', 'text': 'Recount answer: done'}]}})
+    record({'type': 'system', 'subtype': 'turn_duration', 'durationMs': 1000,
+            'timestamp': now()})
+    sys.stdout.write('Recount answer: done\n')
+
+
 pane_lines = os.path.join(os.environ['HOME'], '.e2e-pane-lines.log')
 # The aliases /model takes, and the names the CLI says it set.
 MODELS = {'default': 'Default', 'opus': 'Opus 5.5', 'sonnet': 'Sonnet 5.5',
@@ -426,6 +484,10 @@ while True:
         agents_turn(text)
     elif text.startswith('usage:'):
         usage_turn(text)
+    elif lower.startswith('compact:'):
+        compact_turn(text)
+    elif lower.startswith('recount:'):
+        recount_turn(text)
     elif text.startswith('tasks:'):
         task_turn(text)
     elif text.startswith('wait:'):

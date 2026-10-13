@@ -7,8 +7,12 @@ import 'package:sshbox/src/chat/outbox.dart';
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 
-OutboxEntry _entry(String id, String text, DateTime at, {bool failed = false}) =>
-    OutboxEntry(id: id, text: text, createdAt: at.toUtc(), failed: failed);
+OutboxEntry _entry(
+  String id,
+  String text,
+  DateTime at, {
+  bool failed = false,
+}) => OutboxEntry(id: id, text: text, createdAt: at.toUtc(), failed: failed);
 
 String _turn(String uuid, String text, DateTime at) => jsonEncode({
   'type': 'user',
@@ -38,14 +42,21 @@ void main() {
       final box = OutboxBox()
         ..entries.addAll([
           _entry('a', 'first', t0),
-          _entry('b', 'second', t0.add(const Duration(seconds: 1)), failed: true)
+          _entry(
+              'b',
+              'second',
+              t0.add(const Duration(seconds: 1)),
+              failed: true,
+            )
             ..why = 'no route'
             ..attempts = 2,
         ])
         ..consumed.add('turn-1');
       await store.save(key, box);
 
-      final again = OutboxStore(() async => Directory('${dir.path}/chat_outbox'));
+      final again = OutboxStore(
+        () async => Directory('${dir.path}/chat_outbox'),
+      );
       final read = await again.load(key);
       expect([for (final e in read.entries) e.text], ['first', 'second']);
       expect(read.entries[1].failed, isTrue);
@@ -58,7 +69,10 @@ void main() {
     test('an empty box deletes the file, so nothing of a delivered message '
         'stays on disk', () async {
       final key = OutboxStore.keyOf('h', 's');
-      await store.save(key, OutboxBox(entries: [_entry('a', 'secret words', t0)]));
+      await store.save(
+        key,
+        OutboxBox(entries: [_entry('a', 'secret words', t0)]),
+      );
       final file = File('${dir.path}/chat_outbox/$key.json');
       expect(file.existsSync(), isTrue);
       expect(file.readAsStringSync(), contains('secret words'));
@@ -116,6 +130,37 @@ void main() {
       expect(read.consumed.first, 't100');
     });
 
+    test('a picture\'s copy keeps its source\'s name and extension, so the '
+        'host gets a path Claude Code reads as a picture; two of one name '
+        'stay two files', () async {
+      final a = File('${dir.path}/111-e2e-red.png')..writeAsBytesSync([1]);
+      final b = File('${dir.path}/222-e2e-red.png')..writeAsBytesSync([2]);
+      final first = await store.copyPicture('m', 'e2e-red.png', a.path);
+      final second = await store.copyPicture('m', 'e2e-red.png', b.path);
+      expect(first, endsWith('/111-e2e-red.png'));
+      expect(first, isNot(contains('_png')));
+      expect(second, endsWith('/222-e2e-red.png'));
+      // The same source twice is numbered, not overwritten.
+      final again = await store.copyPicture('m', 'e2e-red.png', a.path);
+      expect(again, endsWith('/2-111-e2e-red.png'));
+      expect(File(first).readAsBytesSync(), [1]);
+      expect(File(second).readAsBytesSync(), [2]);
+      expect(File(again).readAsBytesSync(), [1]);
+    });
+
+    test(
+      'a source named only dots takes the picture\'s name, and a name of '
+      'dots too is "picture": the copy never lands on the folder itself',
+      () async {
+        final dots = File('${dir.path}/...')..writeAsBytesSync([3]);
+        final named = await store.copyPicture('d', 'shot 1.png', dots.path);
+        expect(named, endsWith('/shot_1.png'));
+        final bare = await store.copyPicture('d', '..', dots.path);
+        expect(bare, endsWith('/picture'));
+        expect(File(bare).readAsBytesSync(), [3]);
+      },
+    );
+
     test('a picture that cannot be copied is a visible failure', () async {
       await expectLater(
         store.copyPicture('e', 'x.png', '${dir.path}/absent.png'),
@@ -155,26 +200,40 @@ void main() {
       expect(File('${dir.path}/chat_outbox/$other.json').existsSync(), isTrue);
     });
 
-    test('a sweep removes what belongs to hosts no longer saved, keeps this '
-        'machine\'s own shells, and removes picture copies nothing refers to',
-        () async {
-      await store.save(OutboxStore.keyOf('h1', 's'), OutboxBox(entries: [_entry('a', 'x', t0)]));
-      await store.save(OutboxStore.keyOf('h2', 's'), OutboxBox(entries: [_entry('b', 'x', t0)]));
-      await store.save(OutboxStore.keyOf('local', 's'), OutboxBox(entries: [_entry('c', 'x', t0)]));
-      await store.save(OutboxStore.keyOf('wsl:Ubuntu', 's'), OutboxBox(entries: [_entry('d', 'x', t0)]));
-      final source = File('${dir.path}/pic.png')..writeAsBytesSync([1]);
-      final orphan = await store.copyPicture('zzz', 'pic.png', source.path);
-      await store.sweep({'h1'});
-      final names = Directory('${dir.path}/chat_outbox')
-          .listSync()
-          .map((e) => e.uri.pathSegments.where((s) => s.isNotEmpty).last)
-          .toSet();
-      expect(names.any((n) => n.startsWith('h1__')), isTrue);
-      expect(names.any((n) => n.startsWith('h2__')), isFalse);
-      expect(names.any((n) => n.startsWith('local__')), isTrue);
-      expect(names.any((n) => n.startsWith('wsl_Ubuntu__')), isTrue);
-      expect(File(orphan).existsSync(), isFalse);
-    });
+    test(
+      'a sweep removes what belongs to hosts no longer saved, keeps this '
+      'machine\'s own shells, and removes picture copies nothing refers to',
+      () async {
+        await store.save(
+          OutboxStore.keyOf('h1', 's'),
+          OutboxBox(entries: [_entry('a', 'x', t0)]),
+        );
+        await store.save(
+          OutboxStore.keyOf('h2', 's'),
+          OutboxBox(entries: [_entry('b', 'x', t0)]),
+        );
+        await store.save(
+          OutboxStore.keyOf('local', 's'),
+          OutboxBox(entries: [_entry('c', 'x', t0)]),
+        );
+        await store.save(
+          OutboxStore.keyOf('wsl:Ubuntu', 's'),
+          OutboxBox(entries: [_entry('d', 'x', t0)]),
+        );
+        final source = File('${dir.path}/pic.png')..writeAsBytesSync([1]);
+        final orphan = await store.copyPicture('zzz', 'pic.png', source.path);
+        await store.sweep({'h1'});
+        final names = Directory('${dir.path}/chat_outbox')
+            .listSync()
+            .map((e) => e.uri.pathSegments.where((s) => s.isNotEmpty).last)
+            .toSet();
+        expect(names.any((n) => n.startsWith('h1__')), isTrue);
+        expect(names.any((n) => n.startsWith('h2__')), isFalse);
+        expect(names.any((n) => n.startsWith('local__')), isTrue);
+        expect(names.any((n) => n.startsWith('wsl_Ubuntu__')), isTrue);
+        expect(File(orphan).existsSync(), isFalse);
+      },
+    );
   });
 
   group('which messages a transcript already holds', () {
@@ -221,7 +280,10 @@ void main() {
         _plain,
       );
       final hit = OutboxMatch.matched(
-        [_entry('a', 'ok', t0), _entry('b', 'ok', t0.add(const Duration(seconds: 1)))],
+        [
+          _entry('a', 'ok', t0),
+          _entry('b', 'ok', t0.add(const Duration(seconds: 1))),
+        ],
         turns,
         const [],
       );
@@ -234,14 +296,18 @@ void main() {
         _turn('u1', 'hello', t0.subtract(const Duration(minutes: 10))),
         _plain,
       );
-      expect(OutboxMatch.matched([_entry('a', 'hello', t0)], old, const []), isEmpty);
+      expect(
+        OutboxMatch.matched([_entry('a', 'hello', t0)], old, const []),
+        isEmpty,
+      );
       final skewed = OutboxMatch.turnsIn(
         _turn('u1', 'hello', t0.subtract(const Duration(seconds: 30))),
         _plain,
       );
-      expect(OutboxMatch.matched([_entry('a', 'hello', t0)], skewed, const []), {
-        'a': 'u1',
-      });
+      expect(
+        OutboxMatch.matched([_entry('a', 'hello', t0)], skewed, const []),
+        {'a': 'u1'},
+      );
     });
 
     test('different words, and a picture\'s number, are compared as Claude '
@@ -252,7 +318,10 @@ void main() {
         _plain,
       );
       final hit = OutboxMatch.matched(
-        [_entry('a', 'look at [Image #1] please', t0), _entry('b', 'other', t0)],
+        [
+          _entry('a', 'look at [Image #1] please', t0),
+          _entry('b', 'other', t0),
+        ],
         turns,
         const [],
       );
@@ -290,17 +359,22 @@ void main() {
     });
   });
 
-  test('the automatic retry waits 2 s, 5 s, 15 s, 45 s, 2 min, then gives up',
-      () {
-    expect([for (var i = 0; i < 6; i++) outboxBackoff(i)], [
-      const Duration(seconds: 2),
-      const Duration(seconds: 5),
-      const Duration(seconds: 15),
-      const Duration(seconds: 45),
-      const Duration(minutes: 2),
-      null,
-    ]);
-  });
+  test(
+    'the automatic retry waits 2 s, 5 s, 15 s, 45 s, 2 min, then gives up',
+    () {
+      expect(
+        [for (var i = 0; i < 6; i++) outboxBackoff(i)],
+        [
+          const Duration(seconds: 2),
+          const Duration(seconds: 5),
+          const Duration(seconds: 15),
+          const Duration(seconds: 45),
+          const Duration(minutes: 2),
+          null,
+        ],
+      );
+    },
+  );
 
   test('deleting a host from the repository deletes what was kept unsent '
       'for its chats, and not another host\'s', () async {

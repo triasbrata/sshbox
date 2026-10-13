@@ -4489,6 +4489,7 @@ void main() {
             ChatToolRun() => 'tool',
             ChatCommand(:final name) => '/$name',
             ChatQuestion() => 'question',
+            ChatCompacted() => 'compacted',
           },
       ];
       final gap = texts.indexWhere((text) => text.contains('left out'));
@@ -4497,6 +4498,55 @@ void main() {
       expect(texts.where((text) => text.contains('left out')), hasLength(1));
       // All of it above where the chat opened.
       expect(chat.earlier, texts.indexOf('late 0 ✓'));
+    });
+
+    test('a compaction in turns loaded earlier is drawn and says nothing of '
+        'the context now', () async {
+      final said = <String>[];
+      final before = [
+        ...talk('early', 64 * 1024, said),
+        line({
+          'type': 'system',
+          'subtype': 'compact_boundary',
+          'compactMetadata': {'trigger': 'auto'},
+        }),
+        line({
+          'type': 'user',
+          'isCompactSummary': true,
+          'message': {'role': 'user', 'content': 'Summary: old'},
+        }),
+      ];
+      final after = [
+        ...talk('late', ClaudeChat.historyLimit, said),
+        line({
+          'type': 'assistant',
+          'message': {
+            'id': 'm1',
+            'model': 'claude-opus-5-5',
+            'stop_reason': 'end_turn',
+            'usage': {'input_tokens': 5, 'cache_read_input_tokens': 90000},
+            'content': [
+              {'type': 'text', 'text': 'now'},
+            ],
+          },
+        }),
+      ];
+      transcript.writeAsStringSync('${[...before, ...after].join('\n')}\n');
+
+      final chat = ClaudeChat(open: host);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_finished);
+      expect(chat.entries.whereType<ChatCompacted>(), isEmpty);
+      expect(chat.context!.tokens, 90005);
+
+      while (chat.canLoadEarlier) {
+        await chat.loadEarlier();
+      }
+      final marker = chat.entries.whereType<ChatCompacted>().single;
+      expect(marker.auto, isTrue);
+      expect(marker.summary, 'Summary: old');
+      expect(chat.context!.recounting, isFalse);
+      expect(chat.context!.tokens, 90005);
     });
 
     test('while a running session is watched, what it adds still goes in '
@@ -5910,6 +5960,195 @@ void main() {
       expect(chat.context!.window, 1000000);
       await chat.newChat();
       expect(chat.context, isNull);
+    });
+
+    // A compaction as 2.1.287 records it in a transcript: the boundary, the
+    // summary as a user line nobody typed, then the command and its output.
+    const summaryText =
+        'This session is being continued from a previous conversation that '
+        'ran out of context. The summary below covers the earlier portion.\n\n'
+        'Summary:\n1. Primary Request and Intent: fix the ring.';
+    List<Map<String, Object?>> compaction({String trigger = 'manual'}) => [
+      {
+        'type': 'system',
+        'subtype': 'compact_boundary',
+        'content': 'Conversation compacted',
+        'compactMetadata': {
+          'trigger': trigger,
+          'preTokens': 766115,
+          'postTokens': 7000,
+        },
+      },
+      {
+        'type': 'user',
+        'isVisibleInTranscriptOnly': true,
+        'isCompactSummary': true,
+        'message': {'role': 'user', 'content': summaryText},
+      },
+      {
+        'type': 'user',
+        'isMeta': true,
+        'message': {
+          'role': 'user',
+          'content': '<local-command-caveat>Caveat.</local-command-caveat>',
+        },
+      },
+      {
+        'type': 'user',
+        'message': {
+          'role': 'user',
+          'content':
+              '<command-name>/compact</command-name>\n'
+              '<command-message>compact</command-message>\n'
+              '<command-args></command-args>',
+        },
+      },
+      {
+        'type': 'user',
+        'message': {
+          'role': 'user',
+          'content':
+              '<local-command-stdout>\u001b[2mCompacted\u001b[22m'
+              '</local-command-stdout>',
+        },
+      },
+    ];
+
+    test('a watched session\'s compaction is a marker holding its summary, '
+        'never the user\'s message, and the ring waits for the next request',
+        () async {
+      final text = [
+        said({'input_tokens': 1, 'cache_read_input_tokens': 760000}),
+        ...compaction(),
+      ].map(jsonEncode).join('\n');
+      final host = _LiveHost('${utf8.encode('$text\n').length}\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      expect(
+        chat.entries.whereType<ChatSaid>().where((e) => e.mine),
+        isEmpty,
+      );
+      final marker = chat.entries.whereType<ChatCompacted>().single;
+      expect(marker.summary, summaryText);
+      expect(marker.auto, isFalse);
+      // The command and what it printed stay as they were drawn.
+      expect(chat.entries.whereType<ChatCommand>().single.output, 'Compacted');
+      // Not 760001, and not the boundary's 7000.
+      expect(chat.context!.recounting, isTrue);
+      expect(chat.context!.tokens, 0);
+      expect(chat.context!.fraction, 0);
+      expect(chat.context!.model, 'claude-opus-5-5');
+
+      host.adds(
+        said({
+          'input_tokens': 2,
+          'cache_creation_input_tokens': 42000,
+          'output_tokens': 446,
+        }),
+      );
+      await _settle();
+      expect(chat.context!.recounting, isFalse);
+      expect(chat.context!.tokens, 42448);
+    });
+
+    test('Claude Code compacting by itself says so; a summary whose boundary '
+        'was not read gets a marker of its own; an empty one none', () async {
+      final text = [
+        compaction()[1],
+        ...compaction(trigger: 'auto').take(1),
+        {
+          'type': 'user',
+          'isCompactSummary': true,
+          'message': {'role': 'user', 'content': '  '},
+        },
+        {'type': 'user', 'isCompactSummary': true, 'message': 'odd'},
+      ].map(jsonEncode).join('\n');
+      final host = _LiveHost('${utf8.encode('$text\n').length}\n$text\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+
+      final markers = chat.entries.whereType<ChatCompacted>().toList();
+      expect(markers, hasLength(2));
+      expect(markers[0].summary, summaryText);
+      expect(markers[0].auto, isFalse);
+      expect(markers[1].auto, isTrue);
+      expect(markers[1].summary, isNull);
+      expect(chat.entries.whereType<ChatSaid>(), isEmpty);
+      // Nothing was known of the context, and a compaction tells nothing.
+      expect(chat.context, isNull);
+    });
+
+    test('the chat\'s own stream: the boundary, then its summary under it, the '
+        'result keeping the recount, and the next request counting', () async {
+      final claude = _FakeClaude();
+      final chat = ClaudeChat(open: _routed(claude));
+      addTearDown(chat.dispose);
+      await chat.start();
+      claude.event(
+        said({'input_tokens': 10, 'cache_creation_input_tokens': 33625}),
+      );
+      await _settle();
+      // Shapes measured on 2.1.287 under -p stream-json.
+      claude.event({
+        'type': 'system',
+        'subtype': 'compact_boundary',
+        'compact_metadata': {
+          'trigger': 'manual',
+          'pre_tokens': 33679,
+          'post_tokens': 1260,
+        },
+      });
+      claude.event({
+        'type': 'user',
+        'isReplay': false,
+        'isSynthetic': true,
+        'message': {'role': 'user', 'content': summaryText},
+      });
+      claude.event({
+        'type': 'user',
+        'isReplay': true,
+        'message': {
+          'role': 'user',
+          'content': '<local-command-stdout>Compacted </local-command-stdout>',
+        },
+      });
+      claude.event({
+        'type': 'result',
+        'subtype': 'success',
+        'modelUsage': {
+          'claude-haiku-4-5': {'contextWindow': 200000},
+        },
+      });
+      await _settle();
+      expect(
+        chat.entries.whereType<ChatCompacted>().single.summary,
+        summaryText,
+      );
+      expect(chat.entries.whereType<ChatSaid>().where((e) => e.mine), isEmpty);
+      expect(chat.context!.recounting, isTrue);
+      expect(chat.context!.window, 200000);
+
+      // A synthetic line anywhere else is not taken for a summary.
+      claude.event({
+        'type': 'user',
+        'isSynthetic': true,
+        'message': {'role': 'user', 'content': 'other'},
+      });
+      claude.event(
+        said({
+          'input_tokens': 10,
+          'cache_read_input_tokens': 32219,
+          'cache_creation_input_tokens': 2054,
+          'output_tokens': 3,
+        }),
+      );
+      await _settle();
+      expect(chat.entries.whereType<ChatCompacted>(), hasLength(1));
+      expect(chat.context!.recounting, isFalse);
+      expect(chat.context!.tokens, 34286);
     });
 
     test('a rate_limit_event of the stream gives the windows, utilization as '

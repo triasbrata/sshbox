@@ -2332,6 +2332,10 @@ Widget _drawEntry(
   ),
   final ChatNotice notice => _Notice(notice: notice),
   final ChatCommand command => _CommandRow(command: command),
+  final ChatCompacted compacted => _CompactMarker(
+    compacted: compacted,
+    onTapLink: onTapLink,
+  ),
   final ChatQuestion q => question == null
       ? const SizedBox.shrink()
       : question(q),
@@ -3483,6 +3487,81 @@ class _CommandRow extends StatelessWidget {
   }
 }
 
+/// Where the conversation was compacted: a rule across the chat, its label a
+/// toggle that opens the summary Claude was left with. Not a bubble — the
+/// summary is Claude Code's, never the user's.
+// TODO(termul): termul has no divider or disclosure; this is drawn from its
+// palette and TuiText.
+class _CompactMarker extends StatefulWidget {
+  const _CompactMarker({required this.compacted, required this.onTapLink});
+
+  final ChatCompacted compacted;
+  final MarkdownTapLinkCallback onTapLink;
+
+  @override
+  State<_CompactMarker> createState() => _CompactMarkerState();
+}
+
+class _CompactMarkerState extends State<_CompactMarker> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final summary = widget.compacted.summary;
+    final label = widget.compacted.auto
+        ? 'Conversation compacted automatically'
+        : 'Conversation compacted';
+    Widget rule() => Expanded(child: Container(height: 1, color: p.border));
+    final head = Row(
+      children: [
+        rule(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: TuiText(
+            summary == null ? label : '$label ${_open ? '▾' : '▸'}',
+            size: 11,
+            tone: TuiTextTone.dim,
+          ),
+        ),
+        rule(),
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (summary == null)
+            Semantics(
+              container: true,
+              label: label,
+              excludeSemantics: true,
+              child: head,
+            )
+          else
+            Semantics(
+              container: true,
+              button: true,
+              expanded: _open,
+              label: _open ? '$label. Hide summary' : '$label. Show summary',
+              excludeSemantics: true,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => _open = !_open),
+                child: head,
+              ),
+            ),
+          if (summary != null && _open) ...[
+            const SizedBox(height: 6),
+            _Answer(text: summary, onTapLink: widget.onTapLink),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// The run's own asides: it ended, it was refused, the host had nothing to
 /// run. Quieter than anything that was said.
 class _Notice extends StatelessWidget {
@@ -3724,7 +3803,10 @@ class _UsageChipState extends State<_UsageChip> {
     final context_ = widget.chat.context!;
     final percent = (context_.fraction * 100).round();
     final warn = context_.fraction >= 0.8;
-    final label = 'Context $percent%';
+    // Compacted: no count until the next request, and an empty ring.
+    final label = context_.recounting
+        ? 'Context compacted, counted at the next reply'
+        : 'Context $percent%';
     return CompositedTransformTarget(
       link: _link,
       child: OverlayPortal(
@@ -3775,7 +3857,9 @@ class _UsageChipState extends State<_UsageChip> {
               child: Semantics(
                 container: true,
                 button: true,
-                label: '$label used. Usage details',
+                label: context_.recounting
+                    ? '$label. Usage details'
+                    : '$label used. Usage details',
                 excludeSemantics: true,
                 child: TuiTooltip(
                   message: label,
@@ -4429,7 +4513,15 @@ class _UsagePopup extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (used != null) ...[
+              if (used != null && used.recounting) ...[
+                row('Context  compacted', bold: true),
+                row(
+                  'Counted again at the next reply',
+                  tone: TuiTextTone.dim,
+                ),
+                if (used.model != null) row(used.model!, tone: TuiTextTone.dim),
+                const SizedBox(height: 6),
+              ] else if (used != null) ...[
                 row(
                   'Context  ${count(used.tokens)} / ${count(used.window)} '
                   '(${(used.fraction * 100).round()}%)',

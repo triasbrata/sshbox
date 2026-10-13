@@ -1,0 +1,112 @@
+# After /compact, chat draws a "Conversation compacted ▸" marker whose tap
+# opens and closes the summary Claude Code wrote, never that summary as a
+# bubble of the user's, and its context ring reads "Context compacted…" until
+# the next reply's usage counts it again.
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_usage (tools/e2e_android.sh's chat_compact). usage: plays a turn at
+# 170,000 of 200,000; compact: another such turn followed by a compaction as
+# 2.1.287 records one; recount: the next turn, at 42,448.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*typed into that pane.*"
+    timeout: 20000
+
+# Negative: a session with no compaction keeps its count and has no marker.
+- tapOn: "Message “E2E live session”…"
+- inputText: "usage: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*Context 85%.*"
+    timeout: 20000
+- assertVisible: "(?s).*Usage answer: done.*"
+- assertNotVisible: "(?s).*Conversation compacted.*"
+- assertNotVisible: "(?s).*Context compacted.*"
+- assertNotVisible: "(?s).*This session is being continued.*"
+- takeScreenshot: chat-compact-1-none
+
+# Positive: the compaction is a marker, its summary hidden, the ring recounting.
+- tapOn: "Message “E2E live session”…"
+- inputText: "compact: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s)Conversation compacted\\. Show summary.*"
+    timeout: 20000
+- assertNotVisible: "(?s).*This session is being continued.*"
+- assertNotVisible: "(?s).*E2E compact summary.*"
+# A summary drawn as a bubble would push the turn's answer off screen.
+- assertVisible: "(?s).*Compact answer: done.*"
+- assertVisible: "(?s).*Context compacted, counted at the next reply.*"
+- assertNotVisible: "(?s).*Context 85%.*"
+- takeScreenshot: chat-compact-2-marker
+
+# A tap shows the summary, drawn as Claude's answer; another hides it.
+- tapOn: "(?s)Conversation compacted\\. Show summary.*"
+- extendedWaitUntil:
+    visible: "(?s).*E2E compact summary: the ring was fixed.*"
+    timeout: 5000
+- assertVisible: "(?s).*This session is being continued.*"
+- takeScreenshot: chat-compact-3-open
+# Following the end, the opened summary pushes the marker above the list's top.
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: "(?s)Conversation compacted\\. Hide summary.*"
+    direction: UP
+    timeout: 15000
+- assertVisible: "(?s)Conversation compacted\\. Hide summary.*"
+- assertNotVisible: "(?s)Conversation compacted\\. Show summary.*"
+- takeScreenshot: chat-compact-3-marker-open
+- tapOn: "(?s)Conversation compacted\\. Hide summary.*"
+- extendedWaitUntil:
+    notVisible: "(?s).*E2E compact summary.*"
+    timeout: 5000
+- assertNotVisible: "(?s).*This session is being continued.*"
+- assertVisible: "(?s)Conversation compacted\\. Show summary.*"
+
+# The next reply's usage counts the context again.
+- tapOn: "Message “E2E live session”…"
+- inputText: "recount: go"
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: "(?s).*Context 21%.*"
+    timeout: 20000
+- assertNotVisible: "(?s).*Context compacted.*"
+- assertNotVisible: "(?s).*Context 85%.*"
+- takeScreenshot: chat-compact-4-recount
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"
