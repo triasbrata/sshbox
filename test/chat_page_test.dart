@@ -8607,10 +8607,7 @@ void main() {
 
       // From the root of the tree the gauge's node is in.
       walk(
-        tester
-            .getSemantics(find.byType(ContextGauge))
-            .owner!
-            .rootSemanticsNode,
+        tester.getSemantics(find.byType(ContextGauge)).owner!.rootSemanticsNode,
       );
       expect(exported, contains('Context  170k / 200k (85%)'));
       expect(exported, contains('claude-opus-5-5'));
