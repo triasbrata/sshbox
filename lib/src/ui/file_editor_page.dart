@@ -93,7 +93,6 @@ final _htmlNames = RegExp(r'\.html?$', caseSensitive: false);
 
 bool isHtmlFile(String path) => _htmlNames.hasMatch(path);
 
-
 /// The most of any one picture the app will bring down and decode, whether it
 /// is a tab of its own or one image in a Markdown preview.
 ///
@@ -269,26 +268,48 @@ class _TextFileTabState extends State<_TextFileTab> {
     const SingleActivator(LogicalKeyboardKey.tab, shift: true):
         _controller.applyOutdent,
     const SingleActivator(LogicalKeyboardKey.delete): _controller.deleteForward,
-    const SingleActivator(LogicalKeyboardKey.keyA, control: true):
-        _controller.selectAll,
-    const SingleActivator(LogicalKeyboardKey.keyC, control: true):
-        _controller.copy,
-    const SingleActivator(LogicalKeyboardKey.keyX, control: true):
-        _controller.cut,
-    const SingleActivator(LogicalKeyboardKey.keyV, control: true):
-        _controller.paste,
-    const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
-        _controller.undo,
-    const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true):
-        _controller.redo,
-    const SingleActivator(LogicalKeyboardKey.keyY, control: true):
-        _controller.redo,
-    const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-        _find.findMode,
-    const SingleActivator(LogicalKeyboardKey.keyS, control: true): () {
-      if (_canSave) _save();
-    },
+    _command(LogicalKeyboardKey.keyA): _controller.selectAll,
+    _command(LogicalKeyboardKey.keyC): _controller.copy,
+    _command(LogicalKeyboardKey.keyX): _controller.cut,
+    _command(LogicalKeyboardKey.keyV): _controller.paste,
+    _command(LogicalKeyboardKey.keyZ): _controller.undo,
+    _command(LogicalKeyboardKey.keyZ, shift: true): _controller.redo,
+    _command(LogicalKeyboardKey.keyY): _controller.redo,
+    _command(LogicalKeyboardKey.keyF): _find.findMode,
   };
+
+  /// [key] with the platform's command key: ⌘ on a Mac and an iPad, as
+  /// re_editor itself binds a Mac, and Ctrl everywhere else. Not both: on a
+  /// Mac Ctrl+A goes to the start of the line, and on Linux and Windows the
+  /// Super key is the desktop's.
+  static SingleActivator _command(
+    LogicalKeyboardKey key, {
+    bool shift = false,
+  }) => switch (defaultTargetPlatform) {
+    TargetPlatform.macOS ||
+    TargetPlatform.iOS => SingleActivator(key, meta: true, shift: shift),
+    _ => SingleActivator(key, control: true, shift: shift),
+  };
+
+  /// The whole page's own stop, round every field, button and the preview:
+  /// it hears ⌘S or Ctrl+S from wherever the focus is on the page, and holds
+  /// the focus itself while the preview, which takes none, is up.
+  final _pageFocus = FocusNode(
+    debugLabel: 'file editor page',
+    skipTraversal: true,
+  );
+
+  /// ⌘S or Ctrl+S saves, as the Save button does, from anywhere on the page.
+  /// Taken whether or not there is anything to save, so it never goes on to
+  /// type an s or reach whatever is behind the page.
+  KeyEventResult _onPageKey(FocusNode _, KeyEvent event) {
+    final save = _command(LogicalKeyboardKey.keyS);
+    if (!save.accepts(event, HardwareKeyboard.instance)) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyDownEvent && _canSave) _save();
+    return KeyEventResult.handled;
+  }
 
   KeyEventResult _onHardwareKey(FocusNode _, KeyEvent event) {
     if (!_editorFocus.hasPrimaryFocus) return KeyEventResult.ignored;
@@ -436,6 +457,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     }
     _find.dispose();
     _editorFocus.dispose();
+    _pageFocus.dispose();
     _images.dispose();
     _controller.removeListener(_onEdited);
     _controller.dispose();
@@ -468,7 +490,9 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// [didChangeDependencies]. Never while the preview hides the text.
   void _focusText() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _loading || _error != null || _preview) return;
+      if (!mounted || _loading || _error != null) return;
+      // The preview takes no focus, so the page holds it and ⌘S still saves.
+      if (_preview) return _pageFocus.requestFocus();
       _editorFocus.requestFocus();
       _editorFocus.consumeKeyboardToken();
     });
@@ -656,6 +680,9 @@ class _TextFileTabState extends State<_TextFileTab> {
         // A draft that matches the host has nothing left to offer.
         _draft = draft != null && draft.text != text ? draft : null;
       });
+      // re_editor focuses the text itself, but a file opening rendered has
+      // no text on show to focus.
+      if (_preview) _focusText();
       final line = widget.line;
       // After the frame: centring the cursor needs the new text laid out.
       if (line != null) {
@@ -823,17 +850,20 @@ class _TextFileTabState extends State<_TextFileTab> {
             'and drop your edits?',
         actions: [
           TuiButton(
-            label: 'Cancel', logName: 'Cancel',
+            label: 'Cancel',
+            logName: 'Cancel',
             variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(),
           ),
           TuiButton(
-            label: 'Reload', logName: 'Reload',
+            label: 'Reload',
+            logName: 'Reload',
             variant: TuiButtonVariant.ghost,
             onPressed: () => Navigator.of(context).pop(_Conflict.reload),
           ),
           TuiButton(
-            label: 'Overwrite', logName: 'Overwrite',
+            label: 'Overwrite',
+            logName: 'Overwrite',
             variant: TuiButtonVariant.danger,
             onPressed: () => Navigator.of(context).pop(_Conflict.overwrite),
           ),
@@ -937,98 +967,102 @@ class _TextFileTabState extends State<_TextFileTab> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _leaveIfConfirmed();
       },
-      child: Scaffold(
-        appBar: TuiAppBar(
-          automaticallyImplyLeading: false,
-          leading: IconButton(
-            tooltip: _embedded ? 'Close file' : 'Back',
-            icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
-            onPressed: _leaveIfConfirmed,
-          ),
-          bottom: _saving
-              ? const PreferredSize(
-                  preferredSize: Size.fromHeight(3),
-                  child: TuiProgressBar(),
-                )
-              : null,
-          actions: [
-            IconButton(
-              tooltip: 'Find',
-              onPressed: _loading || _error != null
-                  ? null
-                  : () => _inSource(_find.findMode),
-              icon: const Icon(Icons.search),
+      child: Focus(
+        focusNode: _pageFocus,
+        onKeyEvent: _onPageKey,
+        child: Scaffold(
+          appBar: TuiAppBar(
+            automaticallyImplyLeading: false,
+            leading: IconButton(
+              tooltip: _embedded ? 'Close file' : 'Back',
+              icon: Icon(_embedded ? Icons.close : Icons.arrow_back),
+              onPressed: _leaveIfConfirmed,
             ),
-            // Beside Reload and Save, where it is seen, rather than only in
-            // the menu behind More.
-            if (widget.onOpenHtml != null && isHtmlFile(widget.path))
+            bottom: _saving
+                ? const PreferredSize(
+                    preferredSize: Size.fromHeight(3),
+                    child: TuiProgressBar(),
+                  )
+                : null,
+            actions: [
               IconButton(
-                tooltip: 'Open in browser tab',
-                onPressed: () => widget.onOpenHtml!(widget.path),
-                icon: const Icon(Icons.open_in_browser),
+                tooltip: 'Find',
+                onPressed: _loading || _error != null
+                    ? null
+                    : () => _inSource(_find.findMode),
+                icon: const Icon(Icons.search),
               ),
-            IconButton(
-              tooltip: 'Reload from host',
-              onPressed: _loading || _saving ? null : _reload,
-              icon: const Icon(Icons.refresh),
-            ),
-            IconButton(
-              tooltip: 'Save to host',
-              onPressed: canSave ? _save : null,
-              icon: const Icon(Icons.save_outlined),
-            ),
-            MenuButton<VoidCallback>(
-              tooltip: 'More',
-              onSelected: (action) => action(),
-              entries: [
-                // Only the path is needed, so a file that would not open as
-                // text can still be saved on the phone.
-                menuAction('Download', _download, enabled: _transfer == null),
-                if (widget.onOpenHtml != null && isHtmlFile(widget.path))
-                  menuAction(
-                    'Open in browser tab',
-                    () => widget.onOpenHtml!(widget.path),
-                  ),
-                // Nothing to copy while the file is still coming, and nothing
-                // worth copying when it would not open as text.
-                if (!_loading && _error == null)
-                  menuAction('Copy content', _copyContent),
-                const TuiMenuDivider(),
-                if (!_loading && _error == null) ...[
-                  menuAction(
-                    'Find and replace',
-                    () => _inSource(_find.replaceMode),
-                  ),
-                  menuAction('Go to line…', () => _inSource(_goToLine)),
+              // Beside Reload and Save, where it is seen, rather than only in
+              // the menu behind More.
+              if (widget.onOpenHtml != null && isHtmlFile(widget.path))
+                IconButton(
+                  tooltip: 'Open in browser tab',
+                  onPressed: () => widget.onOpenHtml!(widget.path),
+                  icon: const Icon(Icons.open_in_browser),
+                ),
+              IconButton(
+                tooltip: 'Reload from host',
+                onPressed: _loading || _saving ? null : _reload,
+                icon: const Icon(Icons.refresh),
+              ),
+              IconButton(
+                tooltip: 'Save to host',
+                onPressed: canSave ? _save : null,
+                icon: const Icon(Icons.save_outlined),
+              ),
+              MenuButton<VoidCallback>(
+                tooltip: 'More',
+                onSelected: (action) => action(),
+                entries: [
+                  // Only the path is needed, so a file that would not open as
+                  // text can still be saved on the phone.
+                  menuAction('Download', _download, enabled: _transfer == null),
+                  if (widget.onOpenHtml != null && isHtmlFile(widget.path))
+                    menuAction(
+                      'Open in browser tab',
+                      () => widget.onOpenHtml!(widget.path),
+                    ),
+                  // Nothing to copy while the file is still coming, and nothing
+                  // worth copying when it would not open as text.
+                  if (!_loading && _error == null)
+                    menuAction('Copy content', _copyContent),
                   const TuiMenuDivider(),
+                  if (!_loading && _error == null) ...[
+                    menuAction(
+                      'Find and replace',
+                      () => _inSource(_find.replaceMode),
+                    ),
+                    menuAction('Go to line…', () => _inSource(_goToLine)),
+                    const TuiMenuDivider(),
+                  ],
+                  menuAction(
+                    'Word wrap',
+                    () => _setLook(wordWrap: !_wordWrap),
+                    checked: _wordWrap,
+                  ),
+                  menuAction(
+                    'Larger text',
+                    () => _setLook(fontSize: _fontSize + 1),
+                  ),
+                  menuAction(
+                    'Smaller text',
+                    () => _setLook(fontSize: _fontSize - 1),
+                  ),
                 ],
-                menuAction(
-                  'Word wrap',
-                  () => _setLook(wordWrap: !_wordWrap),
-                  checked: _wordWrap,
-                ),
-                menuAction(
-                  'Larger text',
-                  () => _setLook(fontSize: _fontSize + 1),
-                ),
-                menuAction(
-                  'Smaller text',
-                  () => _setLook(fontSize: _fontSize - 1),
-                ),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_transfer case final transfer?) TransferBar(transfer),
+              Expanded(child: _editorChrome()),
+            ],
+          ),
+          bottomNavigationBar: _loading || _error != null || _preview
+              ? null
+              : EditorKeyBar(controller: _controller, useTabs: _useTabs),
         ),
-        body: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (_transfer case final transfer?) TransferBar(transfer),
-            Expanded(child: _editorChrome()),
-          ],
-        ),
-        bottomNavigationBar: _loading || _error != null || _preview
-            ? null
-            : EditorKeyBar(controller: _controller, useTabs: _useTabs),
       ),
     );
   }
@@ -1075,12 +1109,17 @@ class _TextFileTabState extends State<_TextFileTab> {
             ),
           ),
           TuiButton(
-            label: 'Discard', logName: 'Discard',
+            label: 'Discard',
+            logName: 'Discard',
             variant: TuiButtonVariant.ghost,
             onPressed: _discardStoredDraft,
           ),
           const SizedBox(width: 8),
-          TuiButton(label: 'Restore', logName: 'Restore', onPressed: _restoreDraft),
+          TuiButton(
+            label: 'Restore',
+            logName: 'Restore',
+            onPressed: _restoreDraft,
+          ),
         ],
       ),
     );
@@ -1573,8 +1612,8 @@ class _PictureViewState extends State<PictureView> {
       );
     }
     // Decoded at no more than twice the screen each way, whatever it is.
-    final screen = MediaQuery.sizeOf(context) *
-        MediaQuery.devicePixelRatioOf(context);
+    final screen =
+        MediaQuery.sizeOf(context) * MediaQuery.devicePixelRatioOf(context);
     final most = (math.max(screen.width, screen.height) * 2).ceil();
     // A mid grey behind it: what a transparent PNG leaves showing is as often
     // white as black, and this is the one ground neither disappears into,
@@ -1702,7 +1741,8 @@ class _EditorError extends StatelessWidget {
             if (onSudo != null) ...[
               const SizedBox(height: 16),
               TuiButton(
-                label: 'Open with sudo', logName: 'Open with sudo',
+                label: 'Open with sudo',
+                logName: 'Open with sudo',
                 prefix: '#',
                 onPressed: onSudo,
               ),
@@ -2050,51 +2090,51 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
             child: SelectionArea(
               child: SeparatedSelection(
                 child: Markdown(
-                data: shown,
-                controller: _scroll,
-                onTapLink: widget.onTapLink,
-                builders: {'code': CodeBlockBuilder()},
-                imageBuilder: (uri, title, alt) {
-                  final label = alt == null || alt.isEmpty ? '$uri' : alt;
-                  // Anything with a scheme or a host is somebody else's
-                  // server: see the class comment.
-                  if (uri.hasScheme || uri.hasAuthority) {
-                    return _imageAlt(context, label);
-                  }
-                  return _MarkdownImage(
-                    images: widget.images,
-                    // Without the query a raw link carries, and with `%20`
-                    // read back as the space it stands for: what is left is a
-                    // path on the host. Uri.parse escapes a bare `%` on its
-                    // way in, so this never throws on one.
-                    source: Uri.decodeComponent(uri.path),
-                    label: label,
-                  );
-                },
-                // The package's own picks a fixed blue for links and a
-                // colour that vanishes on a dark page for checkboxes.
-                styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                  a: TextStyle(
-                    color: scheme.primary,
-                    decoration: TextDecoration.underline,
-                    decorationColor: scheme.primary,
+                  data: shown,
+                  controller: _scroll,
+                  onTapLink: widget.onTapLink,
+                  builders: {'code': CodeBlockBuilder()},
+                  imageBuilder: (uri, title, alt) {
+                    final label = alt == null || alt.isEmpty ? '$uri' : alt;
+                    // Anything with a scheme or a host is somebody else's
+                    // server: see the class comment.
+                    if (uri.hasScheme || uri.hasAuthority) {
+                      return _imageAlt(context, label);
+                    }
+                    return _MarkdownImage(
+                      images: widget.images,
+                      // Without the query a raw link carries, and with `%20`
+                      // read back as the space it stands for: what is left is a
+                      // path on the host. Uri.parse escapes a bare `%` on its
+                      // way in, so this never throws on one.
+                      source: Uri.decodeComponent(uri.path),
+                      label: label,
+                    );
+                  },
+                  // The package's own picks a fixed blue for links and a
+                  // colour that vanishes on a dark page for checkboxes.
+                  styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                    a: TextStyle(
+                      color: scheme.primary,
+                      decoration: TextDecoration.underline,
+                      decorationColor: scheme.primary,
+                    ),
+                    code: body.copyWith(
+                      fontFamily: terminal.fontFamily,
+                      fontFamilyFallback: terminal.fontFamilyFallback,
+                      fontSize: body.fontSize! * 0.9,
+                      backgroundColor: scheme.surfaceContainerHighest,
+                    ),
+                    codeblockDecoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      border: Border.all(color: scheme.outlineVariant),
+                    ),
+                    checkbox: body.copyWith(color: scheme.primary),
+                    // Sized to what they hold, so a wide one scrolls sideways
+                    // the way a code block does, rather than squeezing.
+                    tableColumnWidth: const IntrinsicColumnWidth(),
                   ),
-                  code: body.copyWith(
-                    fontFamily: terminal.fontFamily,
-                    fontFamilyFallback: terminal.fontFamilyFallback,
-                    fontSize: body.fontSize! * 0.9,
-                    backgroundColor: scheme.surfaceContainerHighest,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: scheme.surfaceContainerHighest,
-                    border: Border.all(color: scheme.outlineVariant),
-                  ),
-                  checkbox: body.copyWith(color: scheme.primary),
-                  // Sized to what they hold, so a wide one scrolls sideways
-                  // the way a code block does, rather than squeezing.
-                  tableColumnWidth: const IntrinsicColumnWidth(),
                 ),
-              ),
               ),
             ),
           ),
@@ -2313,7 +2353,8 @@ class _TextPromptState extends State<_TextPrompt> {
       title: widget.title,
       actions: [
         TuiButton(
-          label: 'Cancel', logName: 'Cancel',
+          label: 'Cancel',
+          logName: 'Cancel',
           variant: TuiButtonVariant.ghost,
           onPressed: () => Navigator.of(context).pop(),
         ),
