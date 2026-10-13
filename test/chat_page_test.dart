@@ -8536,6 +8536,14 @@ void main() {
           );
           final gauge = tester.getRect(find.byType(ContextGauge));
           expect(find.text('Context  170k / 200k (85%)'), findsOneWidget);
+          // What an e2e or a screen reader is given: the row, whole, alone.
+          final semantics = tester.ensureSemantics();
+          await tester.pump();
+          expect(
+            find.bySemanticsLabel('Context  170k / 200k (85%)'),
+            findsOneWidget,
+          );
+          semantics.dispose();
           expect(popup.left, greaterThanOrEqualTo(0));
           expect(popup.right, lessThanOrEqualTo(screen.width));
           if (phone) {

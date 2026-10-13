@@ -978,6 +978,11 @@ Current week (all models): 28% used · resets Oct 9, 2:59am (Asia/Example)
 Current week (Fable): 0% used · resets Oct 9, 3am (Asia/Example)
 TXT
   flow chat_usage || status=1
+  # On a failure the popup is still up, as Maestro left it: what Android's
+  # accessibility tree, which Maestro reads, holds of it (#303's run showed
+  # the row on screen and Maestro not finding it).
+  [ "$status" = 0 ] || code_ui | grep -o '<node [^>]*>' |
+    grep -E 'Context|Usage|claude-opus|as of' | sed 's/^/ui: /'
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-usage-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   sudo rm -f "$home/.e2e-usage.txt"
