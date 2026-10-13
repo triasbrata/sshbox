@@ -67,25 +67,53 @@ permissions:
 # issue either. tag.yml's own `concurrency: tag` is what orders releases.
 
 jobs:
-  run:
-    # A hand run may ask for one desktop job alone, which is minutes rather
-    # than the emulator's half hour; tag.yml's call passes no `only`, so the
-    # release gate always runs this, and every other job too.
+  # The Android suite runs as shards at once, each on a runner, an emulator,
+  # an sshd and a seeded host of its own: one emulator running every flow
+  # took 1h53m (v1.0.112) and 2h28m (v1.0.113). tools/e2e_shards.py splits
+  # tools/e2e_android.sh's units by the seconds in e2e/android_durations.tsv,
+  # each shard keeping the units' order; this job says how many shards, runs
+  # the splitter's tests, and prints the split, so the log shows that every
+  # unit is in exactly one shard. A hand run naming one `block` is one shard.
+  android-plan:
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' }}
     runs-on: ubuntu-latest
-    # The full Android suite outgrew an hour: v1.0.103's gate was cancelled at
-    # 60 minutes mid-way through its report-only flows, which skipped promote
-    # without failing anything. ponytail: one job runs every flow, so each
-    # report-only flow added lengthens every release; split them into a
-    # parallel job when this ceiling nears.
-    # 120 was outgrown too: v1.0.111's gate took 83 minutes of flows, then the
-    # chat flows added on 2026-10-12 pushed the step past 115, and runs
-    # 38210062066, 38217678634 and v1.0.112-rc.1's gate were each cancelled at
-    # 2 h with the suite unfinished (so its true length is unmeasured, only
-    # above 115 minutes). 240 is that floor doubled; GitHub allows 360.
-    timeout-minutes: 240
+    timeout-minutes: 10
     outputs:
-      coverage: ${{ steps.coverage.outputs.pct }}
+      shards: ${{ steps.plan.outputs.shards }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Test the splitter
+        run: python3 tools/test_e2e_shards.py
+
+      # Five: about 24 minutes of flows each at the measured seconds, with
+      # room to grow before a shard nears the ceiling of the matrix's timeout.
+      - name: Split the units
+        id: plan
+        env:
+          BLOCK: ${{ inputs.block }}
+        run: |
+          count=5
+          [ -z "$BLOCK" ] || count=1
+          mapfile -t units < <(E2E_UNITS=list tools/e2e_android.sh)
+          python3 tools/e2e_shards.py --plan "$count" "${units[@]}"
+          # Every unit once, across the shards: the union is the whole run.
+          for i in $(seq "$count"); do
+            python3 tools/e2e_shards.py --shard "$i/$count" "${units[@]}" 2>/dev/null
+          done | sort >shards.txt
+          printf '%s\n' "${units[@]}" | sort | diff - shards.txt
+          echo "count=$count" >>"$GITHUB_OUTPUT"
+          echo "shards=[$(seq -s, "$count")]" >>"$GITHUB_OUTPUT"
+
+  # The candidate, built once and handed to every shard, which then needs no
+  # Flutter, no Java and no Gradle of its own.
+  android-build:
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
@@ -100,18 +128,6 @@ jobs:
         run: |
           sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
 
-      # ----------------------------------------------------------------------
-      # Everything from here to the coverage step is the e2e session's, and
-      # the pipeline deliberately says nothing about what is in it. Which
-      # platform the candidate is driven on, what drives it, and what it is
-      # driven against are that session's to decide and the user's to settle;
-      # more than one suite can live here as long as one pass or fail and one
-      # coverage number come out the other end.
-      #
-      # Until something lands this fails, and so nothing is promoted. That is
-      # the safe direction to be unfinished in: a gate that passed by default
-      # would publish every release untested.
-      # ----------------------------------------------------------------------
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -162,6 +178,40 @@ jobs:
             ~/.gradle/caches/modules-2
             ~/.gradle/wrapper/dists
           key: ${{ steps.gradle.outputs.cache-primary-key }}
+
+      # A debug build of a public repository's candidate, nothing secret in
+      # it, and kept a day: long enough for every shard and a re-run.
+      - name: Hand the APK to the shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.run_id }}
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 1
+          if-no-files-found: error
+
+  android:
+    needs: [android-plan, android-build]
+    runs-on: ubuntu-latest
+    # A shard is about 24 minutes of flows (e2e/android_durations.tsv) and a
+    # few of setup. 90 leaves room for a slow runner and for flows that fail
+    # by timing out, which take far longer than they pass.
+    timeout-minutes: 90
+    name: android (shard ${{ matrix.shard }} of ${{ needs.android-plan.outputs.count }})
+    strategy:
+      # Every shard runs to the end, so one failure still shows every other
+      # flow's result; `run` below fails the gate if any shard failed.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.android-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-${{ github.run_id }}
+          path: build/app/outputs/flutter-apk
 
       # The host the flows connect to: this runner's own sshd, which the
       # emulator reaches as 10.0.2.2 -- its alias for the host's loopback.
@@ -233,8 +283,9 @@ jobs:
           version=$("$HOME/.maestro/bin/maestro" --version 2>/dev/null | tail -1 | tr -d '[:space:]')
           [ "$version" = 2.11.0 ] || { echo "::error::installed Maestro $version, not 2.11.0"; exit 1; }
 
+      # One shard saves it; the others would race it for the same key.
       - name: Save Maestro
-        if: github.ref == 'refs/heads/main' && steps.maestro.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.maestro.outputs.cache-hit != 'true' && matrix.shard == 1
         uses: actions/cache/save@v4
         with:
           path: |
@@ -280,22 +331,24 @@ jobs:
           echo "::error::could not install $image after 3 attempts"
           exit 1
 
-      # Each line of `script` runs in a shell of its own, so the whole of the
-      # logic lives in tools/e2e_android.sh: which flows gate, which only
-      # report, and seed_host first.
       - name: Save the emulator's system image
-        if: github.ref == 'refs/heads/main' && steps.sysimg.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.sysimg.outputs.cache-hit != 'true' && matrix.shard == 1
         uses: actions/cache/save@v4
         with:
           path: /usr/local/lib/android/sdk/system-images/android-34/google_apis/x86_64
           key: sysimg-android-34-google_apis-x86_64-v1
 
+      # Each line of `script` runs in a shell of its own, so the whole of the
+      # logic lives in tools/e2e_android.sh: which flows gate, which only
+      # report, seed_host first, and which units are this shard's.
       - name: The flows
         uses: reactivecircus/android-emulator-runner@v2
-        # Empty unless a hand run names one block (tools/e2e_android.sh);
-        # tag.yml's call has no such input, so the gate runs every flow.
+        # E2E_ONLY is empty unless a hand run names one block
+        # (tools/e2e_android.sh); tag.yml's call has no such input, so the
+        # gate runs every flow, across the shards.
         env:
           E2E_ONLY: ${{ inputs.block }}
+          E2E_SHARD: ${{ matrix.shard }}/${{ needs.android-plan.outputs.count }}
         with:
           api-level: 34
           arch: x86_64
@@ -318,12 +371,12 @@ jobs:
       # can be shown working rather than only reported green -- the chat's
       # version check, say, which the user has no host to try it on. PNGs
       # alone, for the same reason as the failure artifact below. Kept longer,
-      # since someone has to look at them.
+      # since someone has to look at them. Each shard's under a name of its own.
       - name: Keep the evidence screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: evidence-${{ github.run_id }}
+          name: evidence-${{ github.run_id }}-android-${{ matrix.shard }}
           path: build/e2e-evidence/*.png
           retention-days: 30
           if-no-files-found: ignore
@@ -336,14 +389,48 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-${{ github.run_id }}
+          name: maestro-${{ github.run_id }}-android-${{ matrix.shard }}
           path: ~/.maestro/tests/**/screenshots/*.png
           retention-days: 7
           if-no-files-found: ignore
 
+      # What each unit took (a unit and its seconds, nothing else), to bring
+      # e2e/android_durations.tsv up to date from.
+      - name: Keep what each unit took
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: durations-${{ github.run_id }}-android-${{ matrix.shard }}
+          path: build/e2e-durations/*.tsv
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # The Android gate's one answer, and the job tag.yml's `coverage` comes
+  # from: it fails unless the plan, the build and every shard succeeded, so a
+  # gating flow failing in any one shard fails the whole of e2e.
+  run:
+    needs: [android-plan, android-build, android]
+    if: ${{ always() && (!inputs.only || inputs.only == 'all' || inputs.only == 'android') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      coverage: ${{ steps.coverage.outputs.pct }}
+    steps:
+      - name: Every shard passed
+        env:
+          PLAN: ${{ needs.android-plan.result }}
+          BUILD: ${{ needs.android-build.result }}
+          SHARDS: ${{ needs.android.result }}
+        run: |
+          echo "plan: $PLAN, build: $BUILD, shards: $SHARDS"
+          [ "$PLAN" = success ] && [ "$BUILD" = success ] && [ "$SHARDS" = success ]
+
       # Read by tag.yml: it goes in the promotion's log line, and in the issue
       # when the gate fails. An empty value means it could not be measured,
-      # which is not a failure.
+      # which is not a failure. No shard measures it yet; when one does, the
+      # merge is the union of the lines each shard hit over lib/'s lines, never
+      # an average of the shards' percentages, each of which sees only its own
+      # flows.
       - name: Coverage
         id: coverage
         if: always()

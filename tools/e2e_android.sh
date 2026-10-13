@@ -21,6 +21,36 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The units a whole run takes, in order: the flows and blocks at the end of
+# this file, each a function u_<name> there. smoke and connect_and_keybar gate;
+# every other one only reports. E2E_UNITS=list prints them and runs nothing,
+# for e2e.yml's plan and for a check that the shards' union is all of them.
+UNITS=(smoke connect_and_keybar
+  tabs file_browser logs duplicate_session dotfiles card_tap_reconnect
+  port_forward_no_host terminal_selection
+  single_instance jeansh_open2 jeansh_open share_text share_chat chat_continue_cwd
+  chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
+  html_tab html_site chat_session_status chat_progress chat_working_backstop
+  chat_images chat_subagents chat_usage chat_compact chat_model chat_cwd
+  folder_zip chat_outbox chat_outbox_reconnect
+  chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
+  chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
+  # Last but one, since it leaves its session's tab open; text_size last of all.
+  file_editor text_size)
+if [ "${E2E_UNITS:-}" = list ]; then
+  printf '%s\n' "${UNITS[@]}"
+  exit 0
+fi
+
+# Which shard this run is (e2e.yml's matrix), I/N; unset, every unit. Worked
+# out here, before the install, so a bad one costs nothing.
+SHARD="${E2E_SHARD:-1/1}"
+mine=$(python3 "$ROOT/tools/e2e_shards.py" --shard "$SHARD" "${UNITS[@]}") ||
+  { echo "::error::could not work out shard $SHARD"; exit 1; }
+mapfile -t MINE <<<"$mine"
+[ -n "$mine" ] || { echo "::error::shard $SHARD has no units"; exit 1; }
+echo "shard $SHARD runs ${#MINE[@]} of ${#UNITS[@]} units: ${MINE[*]}"
+
 APK="${APK:-build/app/outputs/flutter-apk/app-debug.apk}"
 : "${SSH_USER:?SSH_USER must be set}"
 : "${SSH_PASSWORD:?SSH_PASSWORD must be set}"
@@ -42,9 +72,6 @@ if [ "$SSH_USER" = "$(id -un)" ]; then
   exit 2
 fi
 
-GATING=(smoke connect_and_keybar)
-REPORT_ONLY=(tabs file_browser logs duplicate_session dotfiles card_tap_reconnect
-  port_forward_no_host terminal_selection)
 
 # No HOST_LABEL here. Maestro 2.10 applies a flow's own `env:` block after the
 # -e values, so every flow's default of "WSL via" would win over anything passed
@@ -2606,59 +2633,77 @@ if [ -n "${E2E_ONLY:-}" ]; then
   exit "$status"
 fi
 
-failed=()
-for name in "${GATING[@]}"; do
-  echo "::group::$name (gating)"
-  flow "$name" || failed+=("$name")
-  echo "::endgroup::"
-done
 
-for name in "${REPORT_ONLY[@]}"; do
+# Every flow below is a unit: a function u_<name> that runs it, warns for a
+# report-only one and records a gating one's failure. UNITS lists them in the
+# order a whole run takes them. e2e.yml runs them as shards at once, each on an
+# emulator and a host of its own: E2E_SHARD=I/N runs only shard I's units,
+# still in that order, chosen by tools/e2e_shards.py from the seconds in
+# e2e/android_durations.tsv. Unset, it is 1/1, every unit. A unit's setup is
+# its own (chat_stand_in, live_session), since the one before it in a whole
+# run may be in another shard.
+
+# report NAME CMD...: CMD in a group of its own, a failure only warned about.
+report() {
+  local name=$1
+  shift
   echo "::group::$name (report only)"
-  flow "$name" || echo "::warning::$name failed -- report only, not gating"
+  "$@" || echo "::warning::$name failed -- report only, not gating"
   echo "::endgroup::"
-done
+}
 
-echo "::group::single_instance (report only)"
-single_instance || echo "::warning::single_instance failed -- report only, not gating"
-echo "::endgroup::"
-# Its steps are groups of their own, in the job log.
-jeansh_open2 || echo "::warning::jeansh_open2 failed -- report only, not gating"
+# report_bare NAME CMD...: the same, for a block whose steps are groups of
+# their own in the job log.
+report_bare() {
+  local name=$1
+  shift
+  "$@" || echo "::warning::$name failed -- report only, not gating"
+}
 
-echo "::group::jeansh_open (report only)"
-jeansh_open || echo "::warning::jeansh_open failed -- report only, not gating"
-echo "::endgroup::"
+# Into a file, not the array: a unit runs in a subshell of its own (run_unit).
+gating() {
+  echo "::group::$1 (gating)"
+  flow "$1" || echo "$1" >>"$FAILED"
+  echo "::endgroup::"
+}
+GATING_UNITS=(smoke connect_and_keybar)
 
-echo "::group::share_text (report only)"
-share_text || echo "::warning::share_text failed -- report only, not gating"
-echo "::endgroup::"
-echo "::group::share_chat (report only)"
-share_chat || echo "::warning::share_chat failed -- report only, not gating"
-echo "::endgroup::"
-echo "::group::chat_continue_cwd (report only)"
-chat_continue_cwd || echo "::warning::chat_continue_cwd failed -- report only, not gating"
-echo "::endgroup::"
-
-chat_version || true
-
-# Chat mode against sessions the stand-in keeps (chat_stand_in): where a
-# conversation comes back to, and how a tool's row reads. Report-only until
-# they have earned the gate.
-chat_stand_in
-echo "::group::chat_code_copy (report only)"
-chat_code_copy || echo "::warning::chat_code_copy failed -- report only, not gating"
-echo "::endgroup::"
-for name in chat_scroll chat_tool_rows chat_mermaid; do
-  echo "::group::$name (report only)"
-  flow "$name" || echo "::warning::$name failed -- report only, not gating"
-  # Their screenshots are evidence, wherever Maestro put them: see chat_version.
-  # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
+# Their screenshots are evidence, wherever Maestro put them: see chat_version.
+# -maxdepth keeps the evidence folder itself, a level deeper, out of it.
+keep_chat_shots() {
   for shot in $( { find "$ROOT" -maxdepth 2 -name 'chat-tool-rows-*.png' -o -name 'chat-mermaid-*.png'
                    find "$HOME/.maestro" -name 'chat-tool-rows-*.png' -o -name 'chat-mermaid-*.png'; } 2>/dev/null); do
     mv -f "$shot" "$EVIDENCE/" && echo "evidence: $(basename "$shot")"
   done
-  echo "::endgroup::"
+}
+
+# Chat mode against sessions the stand-in keeps (chat_stand_in): where a
+# conversation comes back to, and how a tool's row reads.
+stand_in_flow() {
+  chat_stand_in
+  flow "$1"
+  local status=$?
+  keep_chat_shots
+  return "$status"
+}
+
+u_smoke() { gating smoke; }
+u_connect_and_keybar() { gating connect_and_keybar; }
+for name in tabs file_browser logs duplicate_session dotfiles card_tap_reconnect \
+  port_forward_no_host terminal_selection; do
+  eval "u_$name() { report $name flow $name; }"
 done
+u_single_instance() { report single_instance single_instance; }
+u_jeansh_open2() { report_bare jeansh_open2 jeansh_open2; }
+u_jeansh_open() { report jeansh_open jeansh_open; }
+u_share_text() { report share_text share_text; }
+u_share_chat() { report share_chat share_chat; }
+u_chat_continue_cwd() { report chat_continue_cwd chat_continue_cwd; }
+u_chat_version() { chat_version || true; }
+u_chat_code_copy() { report chat_code_copy chat_code_copy_alone; }
+u_chat_scroll() { report chat_scroll stand_in_flow chat_scroll; }
+u_chat_tool_rows() { report chat_tool_rows stand_in_flow chat_tool_rows; }
+u_chat_mermaid() { report chat_mermaid stand_in_flow chat_mermaid; }
 
 # Chat typing into a running Claude Code session and showing what is typed at
 # its terminal, both ways (UAT issue #15), against a stand-in interactive
@@ -2666,134 +2711,125 @@ done
 # the state file, the ❯ input line and the transcript chat's host checks
 # read. The phone's message must be typed into the pane and answered; then a
 # line typed at the pane itself, once the phone's has landed, must show in
-# the chat too.
+# the chat too. chat_markdown shares its session.
+u_chat_two_way() {
+  chat_stand_in
+  echo "::group::chat_two_way (report only)"
+  live_session
+  # The terminal's side: once the phone's message is in the transcript, a line
+  # typed at the pane, as someone at that terminal would.
+  local transcript=/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl
+  (
+    for _ in $(seq 240); do
+      sudo grep -qi 'hello from the phone' "$transcript" 2>/dev/null && break
+      sleep 1
+    done
+    sleep 3
+    sudo -u "$SSH_USER" -H tmux send-keys -t e2e-live -l 'typed at the terminal'
+    sudo -u "$SSH_USER" -H tmux send-keys -t e2e-live Enter
+  ) &
+  local terminal_side=$!
+  flow chat_two_way || echo "::warning::chat_two_way failed -- report only, not gating"
+  kill "$terminal_side" 2>/dev/null
+  echo "::endgroup::"
+  echo "::group::chat_markdown (report only)"
+  flow chat_markdown || echo "::warning::chat_markdown failed -- report only, not gating"
+  keep_shots 'chat-markdown-*.png'
+  end_live_session
+  echo "::endgroup::"
+  stand_in ''
+}
 
-echo "::group::chat_two_way (report only)"
-live_session
-# The terminal's side: once the phone's message is in the transcript, a line
-# typed at the pane, as someone at that terminal would.
-transcript=/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl
-(
-  for _ in $(seq 240); do
-    sudo grep -qi 'hello from the phone' "$transcript" 2>/dev/null && break
-    sleep 1
-  done
-  sleep 3
-  sudo -u "$SSH_USER" -H tmux send-keys -t e2e-live -l 'typed at the terminal'
-  sudo -u "$SSH_USER" -H tmux send-keys -t e2e-live Enter
-) &
-terminal_side=$!
-flow chat_two_way || echo "::warning::chat_two_way failed -- report only, not gating"
-kill "$terminal_side" 2>/dev/null
-echo "::endgroup::"
-echo "::group::chat_markdown (report only)"
-flow chat_markdown || echo "::warning::chat_markdown failed -- report only, not gating"
-keep_shots 'chat-markdown-*.png'
-end_live_session
-echo "::endgroup::"
-stand_in ''
-
-echo "::group::html_tab (report only)"
-html_tab || echo "::warning::html_tab failed -- report only, not gating"
-echo "::endgroup::"
-
-# Its steps are groups of their own, in the job log.
-html_site || echo "::warning::html_site failed -- report only, not gating"
-
-echo "::group::chat_session_status (report only)"
-chat_session_status || echo "::warning::chat_session_status failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_progress (report only)"
-chat_progress || echo "::warning::chat_progress failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_working_backstop (report only)"
-chat_working_backstop || echo "::warning::chat_working_backstop failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_images (report only)"
-chat_images || echo "::warning::chat_images failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_subagents (report only)"
-chat_subagents || echo "::warning::chat_subagents failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_usage (report only)"
-chat_usage || echo "::warning::chat_usage failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_compact (report only)"
-chat_compact || echo "::warning::chat_compact failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_model (report only)"
-chat_model || echo "::warning::chat_model failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_cwd (report only)"
-chat_cwd || echo "::warning::chat_cwd failed -- report only, not gating"
-echo "::endgroup::"
-
-# Its steps are groups of their own, in the job log.
-folder_zip || echo "::warning::folder_zip failed -- report only, not gating"
-chat_outbox || echo "::warning::chat_outbox failed -- report only, not gating"
-chat_outbox_reconnect || echo "::warning::chat_outbox_reconnect failed -- report only, not gating"
-
-echo "::group::chat_edit_previous (report only)"
-chat_edit_previous || echo "::warning::chat_edit_previous failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_ask_watched (report only)"
-chat_ask_watched || echo "::warning::chat_ask_watched failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_slash (report only)"
-chat_slash || echo "::warning::chat_slash failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_ask (report only)"
-chat_ask || echo "::warning::chat_ask failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_follow_jump (report only)"
-chat_follow_jump || echo "::warning::chat_follow_jump failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::chat_tasks (report only)"
-chat_tasks || echo "::warning::chat_tasks failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::bug_button (report only)"
-bug_button || echo "::warning::bug_button failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::tmux_mouse_reattach (report only)"
-tmux_mouse_reattach || echo "::warning::tmux_mouse_reattach failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::text_size_home (report only)"
-text_size_home || echo "::warning::text_size_home failed -- report only, not gating"
-echo "::endgroup::"
-
-echo "::group::soft_backspace (report only)"
-soft_backspace || echo "::warning::soft_backspace failed -- report only, not gating"
-echo "::endgroup::"
-
-# Last, since it leaves its session's tab open.
-#
+u_html_tab() { report html_tab html_tab; }
+u_html_site() { report_bare html_site html_site; }
+for name in chat_session_status chat_progress chat_working_backstop chat_images \
+  chat_subagents chat_usage chat_compact chat_model chat_cwd; do
+  eval "u_$name() { report $name $name; }"
+done
+u_folder_zip() { report_bare folder_zip folder_zip; }
+u_chat_outbox() { report_bare chat_outbox chat_outbox; }
+u_chat_outbox_reconnect() { report_bare chat_outbox_reconnect chat_outbox_reconnect; }
+for name in chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump \
+  chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace; do
+  eval "u_$name() { report $name $name; }"
+done
 # Not swipe_cursor, which reads the shell's working directory off the tab's
 # title: a saved host's tab now shows its label, so it never sees a `cd`
 # land, on main or in the redesign. It wants its checks moved to this host.
-echo "::group::file_editor (report only)"
-file_editor || echo "::warning::file_editor failed -- report only, not gating"
-echo "::endgroup::"
+u_file_editor() { report file_editor file_editor; }
+# The UI text size at its largest (issue #133), as the size it sets is saved
+# and every flow after it would meet the app at 160%.
+u_text_size() { report text_size flow text_size; }
 
-# The UI text size at its largest (issue #133). Last of all, as the size it
-# sets is saved and every flow after it would meet the app at 160%.
-echo "::group::text_size (report only)"
-flow text_size || echo "::warning::text_size failed -- report only, not gating"
+for unit in "${UNITS[@]}"; do
+  declare -F "u_$unit" >/dev/null || { echo "::error::no u_$unit for unit $unit"; exit 1; }
+done
+
+# What each unit took, for e2e/android_durations.tsv: e2e.yml uploads it.
+DURATIONS="$ROOT/build/e2e-durations/shard-${SHARD%%/*}.tsv"
+mkdir -p "$(dirname "$DURATIONS")"
+: >"$DURATIONS"
+FAILED=$(mktemp)
+TIMED_OUT=$(mktemp -u)
+
+# A unit's limit: three times what it takes, and never under ten minutes, so
+# a hang costs minutes rather than the shard (v1.0.113's chat_cwd stalled 20
+# minutes in one Maestro step). E2E_UNIT_LIMIT overrides it, for a test of
+# the timeout itself.
+unit_limit() {
+  local took
+  took=$(awk -v u="$1" '$1 == u { print $2 }' "$ROOT/e2e/android_durations.tsv")
+  took=$((3 * ${took:-120}))
+  echo "${E2E_UNIT_LIMIT:-$((took > 600 ? took : 600))}"
+}
+
+# run_unit UNIT LIMIT: the unit in a process group of its own, which a
+# watchdog kills, with whatever the unit started (Maestro, a tail), once it
+# runs past LIMIT seconds; TIMED_OUT then exists.
+run_unit() {
+  local pid wd rc
+  rm -f "$TIMED_OUT"
+  set -m
+  "u_$1" &
+  pid=$!
+  (
+    sleep "$2"
+    touch "$TIMED_OUT"
+    kill -TERM -- "-$pid" 2>/dev/null
+    sleep 15
+    kill -KILL -- "-$pid" 2>/dev/null
+  ) &
+  wd=$!
+  set +m
+  wait "$pid"
+  rc=$?
+  kill -- "-$wd" 2>/dev/null
+  wait "$wd" 2>/dev/null
+  return "$rc"
+}
+
+for unit in "${MINE[@]}"; do
+  started=$SECONDS
+  limit=$(unit_limit "$unit")
+  run_unit "$unit" "$limit"
+  if [ -e "$TIMED_OUT" ]; then
+    echo "::endgroup::"
+    # A gating unit that hangs fails the gate; a report-only one warns.
+    if [[ " ${GATING_UNITS[*]} " == *" $unit "* ]]; then
+      echo "$unit" >>"$FAILED"
+      echo "::error::$unit timed out after $limit s -- gating"
+    else
+      echo "::warning::$unit timed out after $limit s -- report only, not gating"
+    fi
+    # Whatever it left on screen is not the next unit's to meet.
+    adb shell am force-stop cloud.brata.terminal >/dev/null 2>&1
+  fi
+  printf '%s\t%s\n' "$unit" "$((SECONDS - started))" >>"$DURATIONS"
+done
+mapfile -t failed <"$FAILED"
+rm -f "$FAILED" "$TIMED_OUT"
+echo "::group::What each unit took"
+cat "$DURATIONS"
 echo "::endgroup::"
 
 # Every other flow's takeScreenshot, as evidence: Maestro keeps a bare-named
@@ -2803,7 +2839,7 @@ find "$HOME/.maestro/tests" -path '*/takeScreenshot/*.png' \
   -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
 
 if [ "${#failed[@]}" -gt 0 ]; then
-  echo "::error::gating flows failed: ${failed[*]}"
+  echo "::error::gating flows failed in shard $SHARD: ${failed[*]}"
   exit 1
 fi
-echo "Every gating flow passed: seed_host ${GATING[*]}"
+echo "Every gating flow in shard $SHARD passed (seed_host first)"
