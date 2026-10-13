@@ -1055,6 +1055,14 @@ PY
   return "$status"
 }
 
+# For E2E_ONLY: chat_version right after chat_continue_cwd, as the full run
+# has them, which is where the chat tab and the folder chip left behind used
+# to make it fail. Fails if chat_version does.
+chat_version_after_cwd() {
+  chat_continue_cwd || echo "::warning::chat_continue_cwd failed (not what this block checks)"
+  chat_version
+}
+
 # The three hosts, one after another: a block of its own for E2E_ONLY.
 # Fails if any of them did, for a run asking for it alone.
 chat_version() {
