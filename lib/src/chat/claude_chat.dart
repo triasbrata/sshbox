@@ -2899,7 +2899,7 @@ class ClaudeChat extends ChangeNotifier {
     final opening = open(agentsCommand(all: all));
     final CommandChannel channel;
     try {
-      channel = await opening.timeout(listingTimeout);
+      channel = await opening;
     } on TimeoutException {
       // Opened after all, too late: closed, so nothing is left on the host.
       unawaited(opening.then((late) => late.close(), onError: (_) {}));
@@ -2910,8 +2910,7 @@ class ClaudeChat extends ChangeNotifier {
       final left = listingTimeout - clock.elapsed;
       output = await utf8.decoder
           .bind(channel.output)
-          .join()
-          .timeout(left.isNegative ? Duration.zero : left);
+          .join();
     } finally {
       channel.close();
     }
