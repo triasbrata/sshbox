@@ -4498,12 +4498,8 @@ class ClaudeChat extends ChangeNotifier {
         _onQueuedCommand(event['attachment']);
       case 'system' when event['subtype'] == 'local_command':
         if (event['content'] case final String text) _onCommandLine(text);
-      case 'system' when event['subtype'] == 'compact_boundary':
-        _onCompacted(event['compactMetadata']);
-      case 'user' when event['isCompactSummary'] == true:
-        if (message is Map<String, dynamic>) {
-          _onCompactSummary(_userText(message['content']));
-        }
+      // MUTATION: a transcript's compaction is read as before the fix — the
+      // summary a bubble of the user's, the ring left at the old count.
       case 'user' when message is Map<String, dynamic>:
         final said = _userText(message['content']);
         if (said == null) {
