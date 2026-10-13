@@ -370,6 +370,38 @@ Future<void> _closeTabs(WidgetTester tester) async {
   }
 }
 
+/// Shows chat's sessions so [row] can be found: already there in a wide
+/// window's sidebar, else in the drawer, which an empty tab's own button
+/// opens and, once a session is picked, the ⋮ menu's "Sessions on this
+/// host". The composer has no sessions button of its own any more.
+/// The « at the head of a wide window's sessions list, a termul glyph named
+/// by its semantics rather than a tooltip.
+final _collapse = find.byWidgetPredicate(
+  (w) => w is Semantics && w.properties.label == 'Collapse the sessions',
+);
+
+Future<void> _showSessions(WidgetTester tester, Finder row) async {
+  final settings = find.byTooltip('Chat settings');
+  await _until(
+    tester,
+    () => row.evaluate().isNotEmpty || settings.evaluate().isNotEmpty,
+    'the sessions, or the chat that shows them',
+  );
+  // A wide window's sidebar, perhaps still loading: [row] is waited for there.
+  await tester.pump(const Duration(milliseconds: 500));
+  if (row.evaluate().isNotEmpty ||
+      find.byType(TuiChatSessionList).evaluate().isNotEmpty) {
+    return;
+  }
+  final button = find.text('Sessions on this host');
+  if (button.evaluate().isEmpty) {
+    await tester.tap(settings);
+    await tester.pumpAndSettle();
+  }
+  await tester.tap(button.last);
+  await tester.pumpAndSettle();
+}
+
 Future<String?> _clipboard() async =>
     (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 
@@ -3209,7 +3241,10 @@ touch '${done.path}'
       await menu('dev', 'Download as zip');
       await _until(
         tester,
-        () => find.textContaining('No zip tool on no-tool host').evaluate().isNotEmpty,
+        () => find
+            .textContaining('No zip tool on no-tool host')
+            .evaluate()
+            .isNotEmpty,
         'the dialog that says the host has no zip tool',
       );
       expect(
@@ -4163,11 +4198,40 @@ touch '${done.path}'
       );
       expect(list, findsOneWidget);
       expect(find.byTooltip('Expand the sessions'), findsNothing);
+      // The composer has no sessions button: the list's « and the rail's »
+      // are the ways on a wide window, and the ⋮ menu adds no item for it.
+      Future<void> noComposerButton() async {
+        expect(find.byTooltip('Sessions on this host'), findsNothing);
+        expect(find.byTooltip('Hide the sessions on this host'), findsNothing);
+        final titles = find.text('Sessions on this host').evaluate().length;
+        await click(find.byTooltip('Chat settings'));
+        await _until(
+          tester,
+          () => find.text('Restart Claude').evaluate().isNotEmpty,
+          'the ⋮ menu',
+        );
+        expect(
+          find.text('Sessions on this host').evaluate().length,
+          titles,
+          reason: 'no "Sessions on this host" in a wide window\'s ⋮ menu',
+        );
+        // Closed as its route, picking nothing: an Escape sent here never
+        // reached the menu under the real-input binding.
+        Navigator.of(tester.element(find.text('Restart Claude'))).pop();
+        await _until(
+          tester,
+          () => find.text('Restart Claude').evaluate().isEmpty,
+          'the ⋮ menu to close',
+        );
+      }
+
+      await noComposerButton();
 
       // Collapsed: the list is gone, the toggle is the first icon, and the
       // sessions follow in order, pinned, running, finished.
-      await click(find.byTooltip('Collapse the sessions'));
+      await click(_collapse);
       await _until(tester, () => list.evaluate().isEmpty, 'the list to go');
+      await noComposerButton();
       await _until(
         tester,
         () => icon('old one').evaluate().isNotEmpty,
@@ -4244,7 +4308,22 @@ touch '${done.path}'
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpAndSettle(const Duration(seconds: 2));
       expect(find.byTooltip('Expand the sessions'), findsNothing);
-      expect(find.byTooltip('Collapse the sessions'), findsNothing);
+      expect(_collapse, findsNothing);
+      // No sessions button in the composer: the ⋮ menu's item opens the
+      // drawer, which was shut before it.
+      final list = find.byType(TuiChatSessionList);
+      expect(find.byTooltip('Sessions on this host'), findsNothing);
+      expect(find.byTooltip('Hide the sessions on this host'), findsNothing);
+      expect(list, findsNothing);
+      await tester.tap(find.byTooltip('Chat settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sessions on this host').last);
+      await tester.pumpAndSettle(const Duration(seconds: 2));
+      expect(list, findsOneWidget);
+      // A drawer has no «, folding being a wide window's.
+      expect(_collapse, findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
       await tester.pumpAndSettle(const Duration(seconds: 2));
@@ -4317,20 +4396,9 @@ touch '${done.path}'
       // Two tabs, so the tab's menu has a Group with… to offer.
       await _chatAnswered(tester);
       // The stand-in's own session, as `claude agents` lists it: in the
-      // sidebar on a wide window, in the drawer its button opens otherwise.
-      // The list may still be loading on a wide window, whose button then
-      // reads Hide…: wait for one or the other before choosing.
+      // sidebar on a wide window, in the drawer the ⋮ menu opens otherwise.
       final row = find.text('e2e');
-      final drawer = find.byTooltip('Sessions on this host');
-      await _until(
-        tester,
-        () => row.evaluate().isNotEmpty || drawer.evaluate().isNotEmpty,
-        'the sessions, or the button that shows them',
-      );
-      if (row.evaluate().isEmpty) {
-        await tester.tap(drawer);
-        await tester.pumpAndSettle();
-      }
+      await _showSessions(tester, row);
       await _until(
         tester,
         () => row.evaluate().isNotEmpty,
@@ -5025,7 +5093,9 @@ touch '${done.path}'
       await _drag(tester, file.path, dir);
       await _until(
         tester,
-        () => RegExp('^/tmp/\\d+-${RegExp.escape(remoteName)} \$').hasMatch(box()),
+        () =>
+            RegExp('^/tmp/\\d+-${RegExp.escape(remoteName)} \$')
+                .hasMatch(box()),
         'the uploaded path and a space in the box',
         timeout: const Duration(seconds: 30),
       );
@@ -7387,16 +7457,7 @@ touch '${done.path}'
       await _localShell(tester);
       await tester.tap(find.byTooltip('Chat with Claude'));
       final row = find.text('E2E pane session');
-      await _until(
-        tester,
-        () =>
-            row.evaluate().isNotEmpty ||
-            find.byTooltip('Sessions on this host').evaluate().isNotEmpty,
-        'the chat to open',
-      );
-      if (row.evaluate().isEmpty) {
-        await tester.tap(find.byTooltip('Sessions on this host'));
-      }
+      await _showSessions(tester, row);
       await _until(
         tester,
         () => row.evaluate().isNotEmpty,
@@ -7405,7 +7466,7 @@ touch '${done.path}'
       await tester.tap(row.first);
       await _until(
         tester,
-        () => find.textContaining('typed into that pane').evaluate().isNotEmpty,
+        () => find.textContaining('in tmux pane').evaluate().isNotEmpty,
         'the chat to watch the session, typing into its pane',
       );
       final chat = tester.widget<ChatPage>(find.byType(ChatPage)).session.chat;
@@ -7641,16 +7702,7 @@ touch '${done.path}'
           .first;
       await tester.tap(find.byTooltip('Chat with Claude'));
       final row = find.text('E2E live session');
-      await _until(
-        tester,
-        () =>
-            row.evaluate().isNotEmpty ||
-            find.byTooltip('Sessions on this host').evaluate().isNotEmpty,
-        'the chat to open',
-      );
-      if (row.evaluate().isEmpty) {
-        await tester.tap(find.byTooltip('Sessions on this host'));
-      }
+      await _showSessions(tester, row);
       await _until(
         tester,
         () => row.evaluate().isNotEmpty,
@@ -7659,7 +7711,7 @@ touch '${done.path}'
       await tester.tap(row.first);
       await _until(
         tester,
-        () => find.textContaining('typed into that pane').evaluate().isNotEmpty,
+        () => find.textContaining('in tmux pane').evaluate().isNotEmpty,
         'the chat to watch the session, typing into its pane',
       );
 

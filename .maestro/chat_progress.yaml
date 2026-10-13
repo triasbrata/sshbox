@@ -38,7 +38,7 @@ env:
     timeout: 20000
 - tapOn: "(?s)\\W*E2E live session.*"
 - extendedWaitUntil:
-    visible: "(?s).*typed into that pane.*"
+    visible: "(?s).*in tmux pane.*"
     timeout: 20000
 
 - tapOn: "Message “E2E live session”…"

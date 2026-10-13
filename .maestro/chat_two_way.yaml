@@ -42,7 +42,7 @@ env:
 
 # Typed into, not read-only: the pane was found, and the input says so.
 - extendedWaitUntil:
-    visible: "(?s).*typed into that pane.*"
+    visible: "(?s).*in tmux pane.*"
     timeout: 20000
 - assertVisible: "Message “E2E live session”…"
 

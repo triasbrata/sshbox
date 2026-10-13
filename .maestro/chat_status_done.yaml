@@ -13,7 +13,7 @@ env:
 - extendedWaitUntil:
     visible: "(?s).*Status answer.*"
     timeout: 20000
-- tapOn: "Sessions on this host"
+- runFlow: common/sessions.yaml
 - extendedWaitUntil:
     visible: "Done, idle"
     timeout: 12000
