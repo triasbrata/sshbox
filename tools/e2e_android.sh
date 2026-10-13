@@ -2811,6 +2811,9 @@ run_unit() {
 for unit in "${MINE[@]}"; do
   started=$SECONDS
   limit=$(unit_limit "$unit")
+  # Whatever unit ran before it in this shard, each meets the app as it would
+  # alone after seed_host: no restored tabs, no outbox, no remembered folder.
+  app_fresh
   run_unit "$unit" "$limit"
   if [ -e "$TIMED_OUT" ]; then
     echo "::endgroup::"
