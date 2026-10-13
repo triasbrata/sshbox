@@ -825,15 +825,21 @@ chat_progress() {
 # a watched turn whose end is never written ends only when two looks at
 # `claude agents` find the session idle, and a listing that never answers
 # must not hold those looks for good. One case a fresh live session, with a
-# fresh listing so no row of the last case is read first; the cases are in
-# .maestro/chat_working_backstop.yaml.
-backstop_case() { # CASE WORD
+# fresh listing so no row of the last case is read first, and a session id of
+# its own: under one id, a case opened the last case's transcript, its turn
+# still open, and a message the chat still held for that session reached this
+# one's pane. The cases are in .maestro/chat_working_backstop.yaml.
+backstop_case() { # CASE WORD SID
   local status=0 home=/home/$SSH_USER
+  # live_session and end_live_session read LIVE_SID: this case's, for both.
+  local LIVE_SID=$3
   chat_stand_in
   end_live_session
-  sudo rm -f "$home/.e2e-agents-hang" "$home/.e2e-agents-hung"
+  sudo rm -f "$home/.e2e-agents-hang" "$home/.e2e-agents-hung" "$home/.e2e-pane-lines.log"
   live_session
   flow chat_working_backstop -e "CASE=$1" -e "WORD=$2" || status=1
+  echo "lines that reached the pane in $1:"
+  sudo cat "$home/.e2e-pane-lines.log" 2>/dev/null
   # Whether a listing hung, as the case asked: else it proved nothing.
   if [ "$1" = plain ]; then
     if sudo test -e "$home/.e2e-agents-hung"; then
@@ -849,16 +855,18 @@ backstop_case() { # CASE WORD
     sudo kill "$pid" 2>/dev/null
   done
   sudo rm -f "$home/.e2e-agents-hang" "$home/.e2e-agents-hung"
+  # This case's pane and its transcript, so nothing of it is left to the next.
+  end_live_session
+  sudo rm -f "$home/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl"
   echo "chat_working_backstop $1: $([ "$status" -eq 0 ] && echo passed || echo FAILED)"
   return "$status"
 }
 chat_working_backstop() {
   local status=0
-  backstop_case hang missed || status=1
-  backstop_case busy missedbusy || status=1
-  backstop_case plain missedplain || status=1
+  backstop_case hang missed e2e00006-0000-4000-8000-0000000000b1 || status=1
+  backstop_case busy missedbusy e2e00006-0000-4000-8000-0000000000b2 || status=1
+  backstop_case plain missedplain e2e00006-0000-4000-8000-0000000000b3 || status=1
   keep_shots 'chat-backstop-*.png'
-  end_live_session
   stand_in ''
   return "$status"
 }
