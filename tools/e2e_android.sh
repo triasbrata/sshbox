@@ -86,10 +86,86 @@ maestro_env=(
 )
 
 # flow NAME [-e KEY=VALUE ...]: extra -e values for this run only.
+#
+# Maestro now and then hangs in a call to its on-device driver and never
+# comes back: in the gate of 2026-10-13, three flows sat at `Launch app` (and
+# one earlier at `Stop`) until the unit's watchdog fired 10 to 16 minutes
+# later, where a launch takes 1 to 4 s on every shard. Maestro prints a step
+# when it ends, and no step waits longer than 120 s, so FLOW_SILENCE seconds
+# with no output is such a hang: the run is killed, and if the flow had done
+# nothing yet but stop and launch the app, it is run once more, since nothing
+# it does has happened twice. A hang later in a flow fails it, saying where.
+FLOW_SILENCE=${FLOW_SILENCE:-240}
 flow() {
-  local name=$1
+  local name=$1 out rc try
   shift
-  maestro test "${maestro_env[@]}" "$@" ".maestro/$name.yaml"
+  out=$(mktemp)
+  for try in 1 2; do
+    maestro_watched "$out" "${maestro_env[@]}" "$@" ".maestro/$name.yaml"
+    rc=$?
+    [ "$rc" -eq 124 ] || break
+    local at
+    at=$(tr '\r' '\n' <"$out" | grep -v '^[[:space:]]*$' | tail -1)
+    echo "::warning::$name: Maestro printed nothing for $FLOW_SILENCE s, at: $at"
+    if [ "$try" = 2 ] || ! only_app_lifecycle "$out"; then
+      rc=1
+      break
+    fi
+    echo "$name: nothing past stopping and launching the app had run; once more"
+  done
+  rm -f "$out"
+  return "$rc"
+}
+
+# Whether every step Maestro finished stops or launches the app.
+only_app_lifecycle() {
+  ! tr '\r' '\n' <"$1" | grep 'COMPLETED' |
+    grep -vqE '^[[:space:]]*(Stop [^ ]+|Launch app "[^"]+")\.\.\. COMPLETED'
+}
+
+# maestro_watched LOG ARGS...: `maestro test ARGS`, its output to the job log
+# as it comes and to LOG; 124, as timeout(1) says, when it fell silent for
+# FLOW_SILENCE seconds and was killed.
+maestro_watched() {
+  local log=$1 pid tailer size last=-1 changed=$SECONDS
+  shift
+  : >"$log"
+  maestro test "$@" >"$log" 2>&1 &
+  pid=$!
+  tail -f -n +1 "$log" &
+  tailer=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    size=$(stat -c %s "$log")
+    if [ "$size" != "$last" ]; then
+      last=$size
+      changed=$SECONDS
+    fi
+    if [ $((SECONDS - changed)) -ge "$FLOW_SILENCE" ]; then
+      # Maestro's launcher execs its JVM, so this is Maestro itself; what it
+      # started goes with it.
+      pkill -TERM -P "$pid" 2>/dev/null
+      kill -TERM "$pid" 2>/dev/null
+      sleep 5
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      stop_tailer "$tailer"
+      echo
+      return 124
+    fi
+    sleep 1
+  done
+  wait "$pid"
+  local rc=$?
+  stop_tailer "$tailer"
+  return "$rc"
+}
+
+# The tail -f copying a run's output to the job log: a moment for its last
+# lines, then gone.
+stop_tailer() {
+  sleep 2
+  kill "$1" 2>/dev/null
+  wait "$1" 2>/dev/null
 }
 
 # Screenshots taken as evidence, on success as well as failure, so a feature can
@@ -139,12 +215,38 @@ stand_in() {
   printf 'echo %s\n' "'$1'" | put_stand_in
 }
 
+# The app as a block alone meets it after seed_host, whatever the blocks
+# before it left: every flow launches with clearState false, so the open tabs
+# came back restored (a chat tab on the strip, a crowded strip with no ✕), a
+# message an earlier block's chat failed to send sat in the outbox at the top
+# of the next new chat, and a new chat started in the folder an earlier block
+# picked and then deleted. Those three are cleared here, the app stopped
+# first so it neither holds nor rewrites them; the host, its key and every
+# setting stay. Called at the start of a block, and at the end of one that
+# leaves tabs open.
+APP_PKG=cloud.brata.terminal
+APP_FRESH_SH=/data/local/tmp/e2e-app-fresh.sh
+app_fresh() {
+  adb shell am force-stop "$APP_PKG" >/dev/null 2>&1
+  printf '%s\n' \
+    'chmod -R u+rwx files/chat_outbox 2>/dev/null' \
+    'rm -rf files/chat_outbox' \
+    'p=shared_prefs/FlutterSharedPreferences.xml' \
+    '[ -f "$p" ] || exit 0' \
+    'sed -i -e "/name=\"flutter\.sshbox\.tabs\.v1\"/d" -e "/name=\"flutter\.sshbox\.chat\.folder\./d" "$p"' \
+    'echo "left: $(grep -cE "sshbox\.(tabs\.v1|chat\.folder\.)" "$p") saved tabs or folders, outbox $( [ -e files/chat_outbox ] && echo kept || echo gone)"' |
+    adb shell "cat > $APP_FRESH_SH"
+  echo "app_fresh: $(adb shell "run-as $APP_PKG sh $APP_FRESH_SH" 2>&1 | tr -d '\r')"
+}
+
 # Chat mode's host: three finished Claude Code sessions with transcripts where
 # the CLI keeps them, and a claude that lists them, answers a version chat
 # takes, and, run as a resumed session, waits quietly on stdin as one with
 # nothing new to say. The flows read what chat makes of the transcripts —
-# where a conversation comes back to, and how a tool's row reads.
+# where a conversation comes back to, and how a tool's row reads. Every chat
+# block starts here, so the app is made fresh here too (app_fresh).
 chat_stand_in() {
+  app_fresh
   local home=/home/$SSH_USER
   local projects=$home/.claude/projects/-home-$SSH_USER
   # Never beside sessions of someone's own: the transcripts go only where
@@ -448,8 +550,12 @@ editor_save() {
 # in the editor. Both files go in the login home, the root of the host's file
 # tree, and are gone with the runner.
 html_tab() {
+  app_fresh
   local home=/home/$SSH_USER
-  printf '<h1>Jeansh e2e heading</h1>\n' |
+  # A title of its own: the tab is named after it, and untitled it was named
+  # after the loopback address, a chip wider than the 320 dp emulator's strip
+  # that had its ✕ behind the + button.
+  printf '<title>E2E page</title>\n<h1>Jeansh e2e heading</h1>\n' |
     sudo -u "$SSH_USER" tee "$home/jeansh-e2e-page.html" >/dev/null
   printf 'Jeansh e2e plain note\n' |
     sudo -u "$SSH_USER" tee "$home/jeansh-e2e-notes.txt" >/dev/null
@@ -688,6 +794,10 @@ SH
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-continue-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   sudo rm -rf "$calls" "$home/e2e-cont" "$home/.e2e-cwd-claude.py" "$home/.claude/projects/-home-$SSH_USER-e2e-cont-app-x"
+  # Its flow leaves a shell and a chat tab open and the folder chip on
+  # e2e-cont/other, just deleted: the next chat_version found the chat tab
+  # restored, and every new chat after it was "Not started" there.
+  app_fresh
   stand_in ''
   return "$status"
 }
@@ -782,6 +892,7 @@ PY
 chat_version_case() {
   local label=$1 answer=$2 expect=$3 shot=chat-version-$1 found status=0
   echo "::group::chat_version: $label (report only)"
+  app_fresh
   stand_in "$answer"
   # Said here, from the host, so a run that finds no toast shows whether the
   # stand-in was in place or the toast simply came and went unseen.
@@ -881,6 +992,10 @@ end_live_session() {
   [ -n "$LIVE_SID" ] && sudo rm -rf "/home/$SSH_USER/.claude/tasks/$LIVE_SID"
   # Its sub-agents, if agents: wrote any: this session's folder alone.
   [ -n "$LIVE_SID" ] && sudo rm -rf "/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID"
+  # And its transcript, which live_session appends to: kept, every block's
+  # turns were still there for the next, a usage chip reading an earlier
+  # block's last request among them.
+  [ -n "$LIVE_SID" ] && sudo rm -f "/home/$SSH_USER/.claude/projects/-home-$SSH_USER/$LIVE_SID.jsonl"
   sudo find "/home/$SSH_USER/.claude/sessions" -name '*.json' \
     -exec grep -l "\"sessionId\":\"$LIVE_SID\"" {} + 2>/dev/null | xargs -r sudo rm -f
 }
@@ -994,6 +1109,19 @@ Current week (all models): 28% used · resets Oct 9, 2:59am (Asia/Example)
 Current week (Fable): 0% used · resets Oct 9, 3am (Asia/Example)
 TXT
   flow chat_usage || status=1
+  # On a failure the popup is still up, as Maestro left it: what Android's
+  # accessibility tree, which Maestro reads, holds of it (#303's run showed
+  # the row on screen and Maestro not finding it).
+  if [ "$status" != 0 ]; then
+    # A screenshot at the same moment, to say whether the popup is still up.
+    adb exec-out screencap -p >"$EVIDENCE/chat-usage-at-dump.png" 2>/dev/null &&
+      echo "evidence: chat-usage-at-dump.png"
+    code_ui | grep -o '<node [^>]*>' |
+      grep -E 'Context|Usage|claude-opus|as of' | sed 's/^/ui: /'
+    # And what Maestro itself reads, which may differ from uiautomator's.
+    maestro hierarchy 2>/dev/null | grep -E 'Context|Usage|claude-opus|as of' |
+      sed 's/^/maestro: /' | cut -c1-300
+  fi
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-usage-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   sudo rm -f "$home/.e2e-usage.txt"
@@ -1099,6 +1227,14 @@ PY
   end_live_session
   stand_in ''
   return "$status"
+}
+
+# For E2E_ONLY: chat_version right after chat_continue_cwd, as the full run
+# has them, which is where the chat tab and the folder chip left behind used
+# to make it fail. Fails if chat_version does.
+chat_version_after_cwd() {
+  chat_continue_cwd || echo "::warning::chat_continue_cwd failed (not what this block checks)"
+  chat_version
 }
 
 # The three hosts, one after another: a block of its own for E2E_ONLY.
@@ -1307,6 +1443,7 @@ pics_probe() {
 }
 
 chat_images() {
+  app_fresh
   local status=0 log=/home/$SSH_USER/.e2e-pics.log session started pid
   pics_host || return 1
   # Steps 1, 5 and 4, in this chat's own claude -p. A Ctrl+V is tried once,
@@ -2378,8 +2515,8 @@ ob_step3() {
   flow chat_outbox -e STEP=late || ob_fail "3: the late flow failed"
   # A second typing would have been read by now, and recorded at once.
   sleep 10
-  ob_expect "3: the pane read it exactly once" "$(ob_sent 'late: outbox three')" 1
-  ob_expect "3: the transcript holds it exactly once" "$(ob_turns 'late: outbox three')" 1
+  ob_expect "3: the pane read it exactly once" "$(ob_sent 'tardy: outbox three')" 1
+  ob_expect "3: the transcript holds it exactly once" "$(ob_turns 'tardy: outbox three')" 1
   ob_expect "3: marked delivered, so the device keeps nothing" "$(ob_kept 'outbox three')" 0
   echo "::endgroup::"
 }
@@ -2822,6 +2959,9 @@ run_unit() {
 for unit in "${MINE[@]}"; do
   started=$SECONDS
   limit=$(unit_limit "$unit")
+  # Whatever unit ran before it in this shard, each meets the app as it would
+  # alone after seed_host: no restored tabs, no outbox, no remembered folder.
+  app_fresh
   run_unit "$unit" "$limit"
   if [ -e "$TIMED_OUT" ]; then
     echo "::endgroup::"

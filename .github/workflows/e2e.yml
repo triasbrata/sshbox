@@ -89,6 +89,11 @@ jobs:
       - name: Test the splitter
         run: python3 tools/test_e2e_shards.py
 
+      # flow()'s watch for a Maestro that hangs, against a fake maestro.
+      - name: Test the hang watch
+        timeout-minutes: 5
+        run: bash tools/test_e2e_flow_watch.sh
+
       # Five: about 24 minutes of flows each at the measured seconds, with
       # room to grow before a shard nears the ceiling of the matrix's timeout.
       - name: Split the units

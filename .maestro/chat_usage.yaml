@@ -55,7 +55,7 @@ env:
 - tapOn: "(?s).*Context 85%.*"
 - extendedWaitUntil:
     visible: "(?s).*Context.*170k / 200k \\(85%\\).*"
-    timeout: 5000
+    timeout: 15000
 - assertVisible: "(?s).*claude-opus-5-5.*"
 - extendedWaitUntil:
     visible: "(?s).*Current session.*65% used.*"
