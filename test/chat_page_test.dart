@@ -8432,6 +8432,7 @@ void main() {
       WidgetTester tester, {
       int tokens = 90000,
       String usage = '',
+      Widget Function(Widget page)? around,
     }) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
@@ -8455,8 +8456,9 @@ void main() {
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
+      final page = ChatPage(session: session);
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(home: Scaffold(body: around?.call(page) ?? page)),
       );
       await _frames(tester);
       await tester.tap(find.text('the nightly build'));
@@ -8556,6 +8558,61 @@ void main() {
         },
       );
     }
+
+    // As on the e2e's emulator, where semantics are on before anything is
+    // tapped, the pixel ratio is 2.75 and Gboard is up: the popup's rows are
+    // in the semantics tree, not hidden, and on screen in physical pixels, as
+    // Android's bridge is given them. (The e2e found the popup drawn and its
+    // rows missing from uiautomator's tree; this holds Flutter's half.)
+    testWidgets('the popup is in the semantics tree a device reads', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      // Held as the tab shell holds a page: one of an IndexedStack's children.
+      await watching(
+        tester,
+        tokens: 170000,
+        around: (page) => IndexedStack(
+          index: 1,
+          children: [
+            const SizedBox(),
+            TickerMode(
+              enabled: true,
+              child: ExcludeFocus(excluding: false, child: page),
+            ),
+          ],
+        ),
+      );
+      tester.view
+        ..physicalSize = const Size(880, 1760)
+        ..devicePixelRatio = 2.75
+        ..viewInsets = const FakeViewPadding(bottom: 660);
+      await _frames(tester);
+      await tester.tap(find.byType(ContextGauge));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      for (final label in ['Context  170k / 200k (85%)', 'claude-opus-5-5']) {
+        final finder = find.bySemanticsLabel(label);
+        expect(finder, findsOneWidget, reason: label);
+        dynamic node = tester.getSemantics(finder);
+        var rect = node.rect as Rect;
+        var hidden = false;
+        while (node != null) {
+          hidden = hidden || node.flagsCollection.isHidden == true;
+          if (node.transform != null) {
+            rect = MatrixUtils.transformRect(node.transform as Matrix4, rect);
+          }
+          node = node.parent;
+        }
+        expect(hidden, isFalse, reason: label);
+        expect(rect.top, greaterThanOrEqualTo(0), reason: '$label at $rect');
+        expect(rect.left, greaterThanOrEqualTo(0), reason: '$label at $rect');
+        expect(rect.bottom, lessThanOrEqualTo(1760), reason: '$label at $rect');
+        expect(rect.right, lessThanOrEqualTo(880), reason: '$label at $rect');
+        expect(rect.top, greaterThan(275), reason: 'below the tab strip, $rect');
+      }
+      semantics.dispose();
+    });
 
     for (final shown in [true, false]) {
       testWidgets('a turn ending ${shown ? 'on a chat on show asks' : 'in a '

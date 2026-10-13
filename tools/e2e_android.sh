@@ -981,8 +981,16 @@ TXT
   # On a failure the popup is still up, as Maestro left it: what Android's
   # accessibility tree, which Maestro reads, holds of it (#303's run showed
   # the row on screen and Maestro not finding it).
-  [ "$status" = 0 ] || code_ui | grep -o '<node [^>]*>' |
-    grep -E 'Context|Usage|claude-opus|as of' | sed 's/^/ui: /'
+  if [ "$status" != 0 ]; then
+    # A screenshot at the same moment, to say whether the popup is still up.
+    adb exec-out screencap -p >"$EVIDENCE/chat-usage-at-dump.png" 2>/dev/null &&
+      echo "evidence: chat-usage-at-dump.png"
+    code_ui | grep -o '<node [^>]*>' |
+      grep -E 'Context|Usage|claude-opus|as of' | sed 's/^/ui: /'
+    # And what Maestro itself reads, which may differ from uiautomator's.
+    maestro hierarchy 2>/dev/null | grep -E 'Context|Usage|claude-opus|as of' |
+      sed 's/^/maestro: /' | cut -c1-300
+  fi
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-usage-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   sudo rm -f "$home/.e2e-usage.txt"
