@@ -4707,6 +4707,75 @@ void main() {
       expect(chat.progress, isNull);
     });
 
+    // A listing that hangs, once, at [where]: the look gives up rather than
+    // holding every later look off, and the backstop still ends the turn.
+    Future<void> hangsOnce(String where) async {
+      final host = _LiveHost('0\n', state: 'working');
+      var hang = false;
+      final closed = <bool>[];
+      final late = Completer<void>();
+      Future<CommandChannel> open(String command) async {
+        if (!hang || !command.contains('agents --json')) {
+          return host.open(command);
+        }
+        hang = false;
+        if (where == 'open') {
+          // Opens only once the look has given up.
+          await late.future;
+        }
+        final i = closed.length;
+        closed.add(false);
+        return (
+          output: where == 'open'
+              ? const Stream<Uint8List>.empty()
+              : StreamController<Uint8List>().stream,
+          write: (Uint8List data) {},
+          close: () => closed[i] = true,
+        );
+      }
+
+      final chat = ClaudeChat(
+        open: open,
+        listingTimeout: const Duration(milliseconds: 50),
+      );
+      addTearDown(chat.dispose);
+      await chat.continueFrom(_live);
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      hang = true;
+      // The hung look ends of itself, well before the test would.
+      await chat.checkState().timeout(const Duration(seconds: 2));
+      expect(chat.progress, isNotNull);
+      late.complete();
+      await _settle();
+      // Whatever was opened for the hung look is closed, late or not.
+      expect(closed, [true]);
+      await chat.checkState().timeout(const Duration(seconds: 2));
+      expect(chat.progress, isNotNull);
+      await chat.checkState().timeout(const Duration(seconds: 2));
+      expect(chat.progress, isNull);
+    }
+
+    test('a listing that never ends does not keep the backstop off', () async {
+      await hangsOnce('read');
+    });
+
+    test('a listing that never opens does not keep the backstop off', () async {
+      await hangsOnce('open');
+    });
+
+    test('a listing that answers in time is read whole', () async {
+      final (chat, host) = await watch();
+      host.adds(prompt());
+      await _settle();
+      host.state = 'done';
+      await chat.checkState();
+      await chat.checkState();
+      expect(chat.progress, isNull);
+      expect(await chat.agents(), hasLength(1));
+    });
+
     test(
       'idle shows nothing, and a turn that ends goes from the line',
       () async {

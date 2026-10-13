@@ -861,6 +861,7 @@ class ClaudeChat extends ChangeNotifier {
     this.backoff = outboxBackoff,
     this.askKeys = dialogKeys,
     this.connected,
+    this.listingTimeout = const Duration(seconds: 10),
   }) : _parent = null,
        _sub = null,
        _subRunning = null;
@@ -885,6 +886,7 @@ class ClaudeChat extends ChangeNotifier {
        backoff = outboxBackoff,
        askKeys = dialogKeys,
        connected = null,
+       listingTimeout = const Duration(seconds: 10),
        // ignore: prefer_initializing_formals
        _parent = parent,
        _sub = agent,
@@ -960,6 +962,10 @@ class ClaudeChat extends ChangeNotifier {
   /// session to come up to type into and then for it to record the message,
   /// before the chat says it did not arrive.
   final Duration deliveryTimeout;
+
+  /// How long [agents] waits for the host's listing, opening and reading
+  /// together, before it gives up.
+  final Duration listingTimeout;
 
   /// Starts a command on the host and hands back its pipes — the session's
   /// own [ChannelCapable.open], looked up at the moment it is called so a
@@ -2877,11 +2883,28 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// Throws with what the host said when it could not list them — an old
   /// Claude Code with no `agents` command, or none installed at all.
+  ///
+  /// Gives up after [listingTimeout]: a listing that never answers would
+  /// otherwise hold [checkState]'s look for the rest of the turn, and a turn
+  /// whose end was missed would spin for ever.
   Future<List<ClaudeAgent>> agents({bool all = false}) async {
-    final channel = await open(agentsCommand(all: all));
+    final clock = Stopwatch()..start();
+    final opening = open(agentsCommand(all: all));
+    final CommandChannel channel;
+    try {
+      channel = await opening.timeout(listingTimeout);
+    } on TimeoutException {
+      // Opened after all, too late: closed, so nothing is left on the host.
+      unawaited(opening.then((late) => late.close(), onError: (_) {}));
+      rethrow;
+    }
     final String output;
     try {
-      output = await utf8.decoder.bind(channel.output).join();
+      final left = listingTimeout - clock.elapsed;
+      output = await utf8.decoder
+          .bind(channel.output)
+          .join()
+          .timeout(left.isNegative ? Duration.zero : left);
     } finally {
       channel.close();
     }
