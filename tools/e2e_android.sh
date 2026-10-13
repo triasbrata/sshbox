@@ -2834,8 +2834,10 @@ gate_bare() {
 # What gates a release. smoke and connect_and_keybar from the start; then, in
 # October 2026, the blocks that were green in two whole sharded runs once
 # every unit started from a fresh app (#305): chat_version's three hosts,
-# html_tab and chat_edit_previous.
-GATING_UNITS=(smoke connect_and_keybar chat_version html_tab chat_edit_previous)
+# html_tab and chat_edit_previous; and chat_images, chat_follow_jump and
+# chat_usage, green in the two runs that proved those.
+GATING_UNITS=(smoke connect_and_keybar chat_version html_tab chat_edit_previous
+  chat_images chat_follow_jump chat_usage)
 
 # Their screenshots are evidence, wherever Maestro put them: see chat_version.
 # -maxdepth keeps the evidence folder itself, a level deeper, out of it.
@@ -2911,15 +2913,18 @@ u_chat_two_way() {
 
 u_html_tab() { gate html_tab html_tab; }
 u_html_site() { report_bare html_site html_site; }
-for name in chat_session_status chat_progress chat_working_backstop chat_images \
-  chat_subagents chat_usage chat_compact chat_model chat_cwd; do
+u_chat_images() { gate chat_images chat_images; }
+u_chat_usage() { gate chat_usage chat_usage; }
+for name in chat_session_status chat_progress chat_working_backstop \
+  chat_subagents chat_compact chat_model chat_cwd; do
   eval "u_$name() { report $name $name; }"
 done
 u_folder_zip() { report_bare folder_zip folder_zip; }
 u_chat_outbox() { report_bare chat_outbox chat_outbox; }
 u_chat_outbox_reconnect() { report_bare chat_outbox_reconnect chat_outbox_reconnect; }
 u_chat_edit_previous() { gate chat_edit_previous chat_edit_previous; }
-for name in chat_ask_watched chat_slash chat_ask chat_follow_jump \
+u_chat_follow_jump() { gate chat_follow_jump chat_follow_jump; }
+for name in chat_ask_watched chat_slash chat_ask \
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace; do
   eval "u_$name() { report $name $name; }"
 done
