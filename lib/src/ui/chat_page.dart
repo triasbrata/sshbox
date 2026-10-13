@@ -170,7 +170,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   // A block, not an arrow: an arrow would hand setState the future. Its
   // error is the list's to show, and it may not be showing yet.
   void _listAgents() {
-    final agents = _chat.agents(all: true);
+    final agents = _chat.agents(all: true, until: _gone.future);
     // The rows it had stay while it is asked again.
     final had = _listing.value.data;
     _listing.value = had == null
@@ -201,7 +201,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> _poll() async {
     _asking = true;
     try {
-      final rows = await _chat.agents(all: true);
+      final rows = await _chat.agents(all: true, until: _gone.future);
       if (!mounted) return;
       _stale.value = false;
       final before = _listing.value.data;
@@ -230,6 +230,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// A list asked for and not back yet: no second one goes after it.
   bool _asking = false;
+
+  /// Completes when the page goes: a list it asked for is no longer waited
+  /// for, the chat staying with the session.
+  final _gone = Completer<void>();
   /// Whether the last layout had the sidebar beside the chat, not a drawer.
   bool _sidebarWide = false;
 
@@ -468,6 +472,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       level.chat.dispose();
     }
     _looking?.cancel();
+    _gone.complete();
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     widget.session.removeListener(_onChanged);
     _chat.removeListener(_onChanged);

@@ -1,0 +1,108 @@
+# A watched turn whose end was missed stops spinning even when a listing
+# hangs (fix/chat-listing-timeout). The transcript never says the turn ended,
+# no stop_reason and no turn_duration, so only the look at `claude agents`
+# every 5 s can end it: idle twice running clears Working…. A listing that
+# never answered used to hold that look for good, and the turn spun for ever;
+# agents() now gives up after 10 s.
+#
+# The session is tools/e2e_live_claude.py in a tmux pane on the host, as for
+# chat_progress; tools/e2e_android.sh's chat_working_backstop runs this once
+# a case, each on a fresh live session:
+#
+#   hang   missed:       listing idle, the next listing hangs once:
+#                        Working… clears within 30 s
+#   busy   missedbusy:   the same hang, the listing busy: Working… still
+#                        there 30 s on
+#   plain  missedplain:  listing idle, no hang: Working… clears within 15 s
+#
+# CASE and WORD come from -e alone, with no default here: Maestro 2.10
+# applies a flow's own env: after the -e values, so a default would win.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Sessions on this host"
+    timeout: 20000
+- tapOn: "Sessions on this host"
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*in tmux pane.*"
+    timeout: 20000
+# Nothing spinning before the turn is sent.
+- assertNotVisible: "(?s).*Working….*"
+
+- tapOn: "Message “E2E live session”…"
+- inputText: "${WORD}: go"
+# Maestro waits for the screen to settle after a tap, and a ticking Working…
+# never does: kept short.
+- tapOn:
+    text: "Send"
+    waitToSettleTimeoutMs: 500
+
+# The half answer is in and the turn is open: Working… shows.
+- extendedWaitUntil:
+    visible: "(?s).*Missed answer: half.*"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "(?s).*Working….*"
+    timeout: 5000
+- takeScreenshot: chat-backstop-${CASE}-open
+
+# hang: the hung listing gives up after 10 s, the next two looks find the
+# session idle, and Working… goes, the answer staying.
+- runFlow:
+    when:
+      true: ${CASE == 'hang'}
+    commands:
+      - extendedWaitUntil:
+          notVisible: "(?s).*Working….*"
+          timeout: 30000
+      - assertNotVisible: "(?s).*Working….*"
+      - assertVisible: "(?s).*Missed answer: half.*"
+      - takeScreenshot: chat-backstop-hang-cleared
+
+# busy: the listing says the session is working, so the turn is not ended:
+# given 30 s to clear, Working… is still there.
+- runFlow:
+    when:
+      true: ${CASE == 'busy'}
+    commands:
+      - extendedWaitUntil:
+          notVisible: "(?s).*Working….*"
+          timeout: 30000
+          optional: true
+      - assertVisible: "(?s).*Working….*"
+      - assertVisible: "(?s).*Missed answer: half.*"
+      - takeScreenshot: chat-backstop-busy-still
+
+# plain: no hang, the listing idle: two looks 5 s apart end it.
+- runFlow:
+    when:
+      true: ${CASE == 'plain'}
+    commands:
+      - extendedWaitUntil:
+          notVisible: "(?s).*Working….*"
+          timeout: 15000
+      - assertNotVisible: "(?s).*Working….*"
+      - assertVisible: "(?s).*Missed answer: half.*"
+      - takeScreenshot: chat-backstop-plain-cleared

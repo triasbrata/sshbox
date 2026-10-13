@@ -861,6 +861,7 @@ class ClaudeChat extends ChangeNotifier {
     this.backoff = outboxBackoff,
     this.askKeys = dialogKeys,
     this.connected,
+    this.listingTimeout = const Duration(seconds: 10),
   }) : _parent = null,
        _sub = null,
        _subRunning = null;
@@ -885,6 +886,7 @@ class ClaudeChat extends ChangeNotifier {
        backoff = outboxBackoff,
        askKeys = dialogKeys,
        connected = null,
+       listingTimeout = const Duration(seconds: 10),
        // ignore: prefer_initializing_formals
        _parent = parent,
        _sub = agent,
@@ -960,6 +962,10 @@ class ClaudeChat extends ChangeNotifier {
   /// session to come up to type into and then for it to record the message,
   /// before the chat says it did not arrive.
   final Duration deliveryTimeout;
+
+  /// How long [agents] waits for the host's listing, opening and reading
+  /// together, before it gives up.
+  final Duration listingTimeout;
 
   /// Starts a command on the host and hands back its pipes — the session's
   /// own [ChannelCapable.open], looked up at the moment it is called so a
@@ -2884,13 +2890,64 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// Throws with what the host said when it could not list them — an old
   /// Claude Code with no `agents` command, or none installed at all.
-  Future<List<ClaudeAgent>> agents({bool all = false}) async {
-    final channel = await open(agentsCommand(all: all));
+  ///
+  /// Gives up after [listingTimeout]: a listing that never answers would
+  /// otherwise hold [checkState]'s look for the rest of the turn, and a turn
+  /// whose end was missed would spin for ever. Gives up as well once [until]
+  /// completes: a page that asked and has gone, while the chat stays.
+  Future<List<ClaudeAgent>> agents({
+    bool all = false,
+    Future<void>? until,
+  }) async {
+    // One timer for opening and reading together, in [_timers] so that a
+    // chat disposed meanwhile leaves none behind.
+    final expired = Completer<Never>();
+    late final Timer timer;
+    void giveUp(Object why) {
+      timer.cancel();
+      _timers.remove(timer);
+      if (!expired.isCompleted) expired.completeError(why);
+    }
+
+    timer = Timer(
+      listingTimeout,
+      () => giveUp(
+        TimeoutException(
+          'The host did not list its Claude sessions in time.',
+          listingTimeout,
+        ),
+      ),
+    );
+    _timers.add(timer);
+    expired.future.ignore();
+    unawaited(
+      until?.then(
+        (_) => giveUp(StateError('Nobody waits for the listing any more.')),
+      ),
+    );
     final String output;
     try {
-      output = await utf8.decoder.bind(channel.output).join();
+      final opening = open(agentsCommand(all: all));
+      final CommandChannel channel;
+      try {
+        channel = await Future.any([opening, expired.future]);
+      } catch (_) {
+        if (!expired.isCompleted) rethrow;
+        // Opened after all, too late: closed, so nothing is left on the host.
+        unawaited(opening.then((late) => late.close(), onError: (_) {}));
+        rethrow;
+      }
+      try {
+        output = await Future.any([
+          utf8.decoder.bind(channel.output).join(),
+          expired.future,
+        ]);
+      } finally {
+        channel.close();
+      }
     } finally {
-      channel.close();
+      timer.cancel();
+      _timers.remove(timer);
     }
     // The listing, then the pins after a line of their own: see
     // [agentsCommand].
