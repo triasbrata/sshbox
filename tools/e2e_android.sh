@@ -402,7 +402,22 @@ editor_save() {
   local before
   mtime() { sudo stat -c %Y "$file"; }
   esses() { sudo grep -o s "$file" | wc -l; }
-  chord() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_S; }
+  # What the app logged of the chord ("key Ctrl+S (editor)" or "key S"),
+  # which keyboard is in use, and what the IME made of it.
+  # Printed, not asserted.
+  diag() {
+    sleep 2
+    echo "--- the app's log after $1:"
+    adb shell run-as cloud.brata.terminal cat files/applog.current | tail -30
+    echo "--- the input method: $(adb shell settings get secure default_input_method)"
+    echo "--- the IME's log after $1:"
+    adb logcat -d | grep -i -E "ImeTracker|InputMethod|KeyEvent" | tail -40
+  }
+  chord() {
+    adb logcat -c
+    adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_S
+    diag Ctrl+S
+  }
   # written [yes|no]: whether the file was written since its mtime went back.
   written() {
     if [ "$1" = yes ]; then
@@ -428,7 +443,9 @@ editor_save() {
   flow editor_save -e STEP=open || return 1
 
   # S alone: an s typed, nothing written.
+  adb logcat -c
   adb shell input keyevent KEYCODE_S
+  diag 'S alone'
   check 'S alone wrote nothing' written no
   check 'S alone left the file as it was' \
     [ "$(sudo cat "$file")" = 'hello e2e' ]
