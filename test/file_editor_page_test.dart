@@ -1757,8 +1757,10 @@ After it.
       await chord(tester, LogicalKeyboardKey.keyS, other());
       expect(browser.writes, 0);
       expect(_canSave(tester), isTrue);
-      // Not the page's key, so it goes on as any other key would.
-      expect(behind, contains(LogicalKeyboardKey.keyS));
+      // Ctrl on a Mac is not the page's key, so it goes on as any other key
+      // would; Super elsewhere types nothing, so the page keeps it.
+      expect(behind.contains(LogicalKeyboardKey.keyS), apple());
+      expect(_editor(tester).text, 'edited\n');
       behind.clear();
 
       await chord(tester, LogicalKeyboardKey.keyS, command());
