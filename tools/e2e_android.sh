@@ -405,10 +405,22 @@ editor_save() {
   # What the app logged of the chord ("key Ctrl+S (editor)" or "key S"),
   # which keyboard is in use, and what the IME made of it.
   # Printed, not asserted.
+  # The app writes its log to disk only when it pauses, so Home first, then
+  # back to the same task, and a tap on the text (50%,70%, as the flow taps)
+  # so the next step types where it did.
   diag() {
     sleep 2
-    echo "--- the app's log after $1:"
+    adb shell input keyevent KEYCODE_HOME
+    sleep 2
+    echo "--- the app's log after $1 (key lines: Ctrl+S seen, or S alone):"
     adb shell run-as cloud.brata.terminal cat files/applog.current | tail -30
+    adb shell monkey -p cloud.brata.terminal -c android.intent.category.LAUNCHER 1 \
+      >/dev/null 2>&1
+    sleep 3
+    local size
+    size=$(adb shell wm size | grep -oE '[0-9]+x[0-9]+' | tail -1)
+    adb shell input tap $((${size%x*} / 2)) $((${size#*x} * 7 / 10))
+    sleep 1
     echo "--- the input method: $(adb shell settings get secure default_input_method)"
     echo "--- the IME's log after $1:"
     adb logcat -d | grep -i -E "ImeTracker|InputMethod|KeyEvent" | tail -40
