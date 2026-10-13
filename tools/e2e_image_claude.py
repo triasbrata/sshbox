@@ -260,8 +260,14 @@ def tui(args):
                                 'type': 'base64', 'media_type': 'image/png',
                                 'data': base64.b64encode(b).decode()}} for b in blobs)]}})
                     said = answer(text, blobs)
+                    # The turn ends as the CLI ends one: end_turn on its last
+                    # message, then turn_duration. Without them chat stays at
+                    # "Working…", ticking each second, for the rest of the run.
                     record(path, {'type': 'assistant', 'message': {
-                        'role': 'assistant', 'content': [{'type': 'text', 'text': said}]}})
+                        'role': 'assistant', 'stop_reason': 'end_turn',
+                        'content': [{'type': 'text', 'text': said}]}})
+                    record(path, {'type': 'system', 'subtype': 'turn_duration',
+                                  'durationMs': 1000})
                     listed(sid, state='done')
                     write('\r\n' + said + '\r\n')
                     buf, images, pending = '', [], []
