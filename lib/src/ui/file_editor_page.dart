@@ -287,7 +287,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     bool shift = false,
   }) => switch (defaultTargetPlatform) {
     TargetPlatform.macOS ||
-    TargetPlatform.iOS => SingleActivator(key, meta: true, shift: shift),
+    TargetPlatform.iOS => SingleActivator(key, control: true, shift: shift),
     _ => SingleActivator(key, control: true, shift: shift),
   };
 
@@ -303,6 +303,7 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// Taken whether or not there is anything to save, so it never goes on to
   /// type an s or reach whatever is behind the page.
   KeyEventResult _onPageKey(FocusNode _, KeyEvent event) {
+    if (!_editorFocus.hasPrimaryFocus) return KeyEventResult.ignored;
     final save = _command(LogicalKeyboardKey.keyS);
     if (!save.accepts(event, HardwareKeyboard.instance)) {
       return KeyEventResult.ignored;
