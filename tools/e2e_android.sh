@@ -35,8 +35,8 @@ UNITS=(smoke connect_and_keybar
   folder_zip chat_outbox chat_outbox_reconnect
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
-  # Last but one, since it leaves its session's tab open; text_size last of all.
-  file_editor text_size)
+  # Near the end, since they leave their session's tab open; text_size last.
+  editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -387,6 +387,82 @@ file_editor() {
   sudo od -c "$file" | head -8
   [ "$(sudo grep -o maestro "$file" | wc -l)" -ge 2 ] &&
     [ "$(sudo grep -c $'\r$' "$file")" -eq "$(sudo wc -l <"$file")" ]
+}
+
+# Ctrl+S saves the code editor from anywhere on its page
+# (.maestro/editor_save.yaml), as a hardware chord: `input keycombination`,
+# which API 33 and later have (the emulator is 34). A 2x2, read off the host:
+# Ctrl+S with an edit writes it, with the text focused and with the find bar's
+# field focused; S alone, and Ctrl+S with nothing edited, write nothing. The
+# file's mtime is put back to 2020 before each, so any write at all shows.
+# Nothing typed holds an s but S alone's own, so the file holds exactly one:
+# none came from a chord.
+editor_save() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-save.txt old=1577836800 i
+  local before
+  mtime() { sudo stat -c %Y "$file"; }
+  esses() { sudo grep -o s "$file" | wc -l; }
+  chord() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_S; }
+  # written [yes|no]: whether the file was written since its mtime went back.
+  written() {
+    if [ "$1" = yes ]; then
+      for i in $(seq 30); do
+        [ "$(mtime)" != "$old" ] && return 0
+        sleep 0.5
+      done
+      return 1
+    fi
+    sleep 3
+    [ "$(mtime)" = "$old" ]
+  }
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::editor_save: $what"
+      status=1
+    fi
+  }
+  printf 'hello e2e\n' | sudo -u "$SSH_USER" tee "$file" >/dev/null
+  sudo touch -d "@$old" "$file"
+  flow editor_save -e STEP=open || return 1
+
+  # S alone: an s typed, nothing written.
+  adb shell input keyevent KEYCODE_S
+  check 'S alone wrote nothing' written no
+  check 'S alone left the file as it was' \
+    [ "$(sudo cat "$file")" = 'hello e2e' ]
+  flow editor_save -e STEP=dirty || status=1
+
+  # Ctrl+S with the text focused: written, with S alone's s and no other.
+  chord
+  check 'Ctrl+S in the text wrote the file' written yes
+  echo "The file after Ctrl+S in the text:"
+  sudo od -c "$file" | head -4
+  check 'the edit and S alone'"'"'s s are in it' sudo grep -q edits "$file"
+  check 'no s came from the chord' [ "$(esses)" -eq 1 ]
+  flow editor_save -e STEP=saved || status=1
+
+  # Ctrl+S with nothing edited: nothing written.
+  before=$(sudo cat "$file")
+  sudo touch -d "@$old" "$file"
+  chord
+  check 'Ctrl+S unedited wrote nothing' written no
+  check 'Ctrl+S unedited left the text as it was' \
+    [ "$(sudo cat "$file")" = "$before" ]
+  flow editor_save -e STEP=saved || status=1
+
+  # Ctrl+S with the find bar's field focused: written, no s from the chord.
+  flow editor_save -e STEP=find || status=1
+  sudo touch -d "@$old" "$file"
+  chord
+  check 'Ctrl+S in the find bar wrote the file' written yes
+  echo "The file after Ctrl+S in the find bar:"
+  sudo od -c "$file" | head -4
+  check 'the find bar'"'"'s save holds the new edit' sudo grep -q zz "$file"
+  check 'no s came from the chord in the find bar' [ "$(esses)" -eq 1 ]
+  flow editor_save -e STEP=found || status=1
+  return "$status"
 }
 
 # #253: an .html file opens rendered in a web tab, and a .txt file still opens
@@ -2711,6 +2787,7 @@ done
 # Not swipe_cursor, which reads the shell's working directory off the tab's
 # title: a saved host's tab now shows its label, so it never sees a `cd`
 # land, on main or in the redesign. It wants its checks moved to this host.
+u_editor_save() { report editor_save editor_save; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.
