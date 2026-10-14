@@ -1,0 +1,84 @@
+# A selected tab's ✕ stays in view on a phone-width strip: the chip's name is
+# capped to the strip's visible room, and the selected tab is brought into view
+# again when its name changes. The runner (tools/e2e_android.sh
+# tab_close_narrow) puts three pages in the login home and runs this once each,
+# with STEP, FILE and TITLE (the tab's name once the page has said it):
+#
+#   long    a <title> over 80 characters: the chip is cut, and its ✕ is tapped
+#           straight away, with no scroll of the strip, and closes the tab
+#   short   a short <title>: the chip is whole, and its ✕ closes it as well
+#   rename  a short <title> that a script makes long three seconds after load:
+#           once renamed, its ✕ is tapped straight away and closes the tab
+#
+# With the cap taken out (the mutation) the long chip is wider than the strip,
+# its ✕ sits behind +, and the tap closes nothing.
+#
+# Whether the name is drawn cut cannot be read off the accessibility tree,
+# which holds the whole of it: the screenshot tab-close-narrow-<STEP> shows it.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Browse files"
+    timeout: 30000
+- tapOn: "Browse files"
+- extendedWaitUntil:
+    visible: "Filter by name"
+    timeout: 30000
+- tapOn: "Filter by name"
+- inputText: "${FILE}"
+- tapOn: "(?s)\\W*${FILE}.html"
+- extendedWaitUntil:
+    visible: "Save to host"
+    timeout: 20000
+- tapOn: "More"
+- tapOn: "(?s).*Open in browser tab.*"
+- extendedWaitUntil:
+    visible: "Jeansh narrow heading"
+    timeout: 20000
+- assertVisible: "Reload"
+
+# rename: the short name first, then the long one the script gives it.
+- runFlow:
+    when:
+      true: ${STEP == 'rename'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Close E2E rename"
+          timeout: 10000
+      - extendedWaitUntil:
+          notVisible: "Close E2E rename"
+          timeout: 20000
+
+- extendedWaitUntil:
+    visible: "Close ${TITLE}"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: tab-close-narrow-${STEP}
+
+# Straight at the ✕, with no scroll of the strip first, and once: a tap that
+# lands on + instead must not be tried again.
+- tapOn:
+    text: "Close ${TITLE}"
+    retryTapIfNoChange: false
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# The tab is gone, and the shell is what is shown.
+- assertNotVisible: "Close ${TITLE}"
+- assertNotVisible: "Jeansh narrow heading"
+- assertNotVisible: "Reload"
+- assertVisible: "Browse files"
+- tapOn: "Close ${HOST_LABEL}.*"

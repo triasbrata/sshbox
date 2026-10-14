@@ -30,7 +30,8 @@ UNITS=(smoke connect_and_keybar
   port_forward_no_host terminal_selection
   single_instance jeansh_open2 jeansh_open share_text share_chat chat_continue_cwd
   chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
-  html_tab html_site chat_session_status chat_progress chat_working_backstop
+  html_tab html_site tab_close_narrow chat_session_status chat_progress
+  chat_working_backstop
   chat_images chat_subagents chat_usage chat_compact chat_model chat_cwd
   folder_zip chat_outbox chat_outbox_reconnect
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
@@ -561,6 +562,42 @@ html_tab() {
     sudo -u "$SSH_USER" tee "$home/jeansh-e2e-notes.txt" >/dev/null
   flow html_tab || return 1
   flow html_tab_text
+}
+
+# A selected tab's ✕ stays in view on a phone-width strip
+# (.maestro/tab_close_narrow.yaml): a page whose <title> is over 80
+# characters, one whose title is short, and one a script renames from short to
+# long after it has loaded. Each is opened from a fresh app and its ✕ tapped
+# with no scroll of the strip first.
+tab_close_narrow() {
+  local status=0 home=/home/$SSH_USER step title
+  local long='Jeansh narrow strip e2e page with a title far too long for a phone strip to show whole'
+  printf '<title>%s</title>\n<h1>Jeansh narrow heading</h1>\n' "$long" |
+    sudo -u "$SSH_USER" tee "$home/jeansh-e2e-narrow-long.html" >/dev/null
+  printf '<title>E2E short</title>\n<h1>Jeansh narrow heading</h1>\n' |
+    sudo -u "$SSH_USER" tee "$home/jeansh-e2e-narrow-short.html" >/dev/null
+  # history.pushState, so the web view says the page moved and its new title
+  # is read: a title set alone is never heard.
+  printf '<title>E2E rename</title>\n<h1>Jeansh narrow heading</h1>\n<script>setTimeout(function(){document.title="%s";history.pushState(null,"","#renamed")},3000)</script>\n' \
+    "$long" | sudo -u "$SSH_USER" tee "$home/jeansh-e2e-narrow-rename.html" >/dev/null
+  for step in long short rename; do
+    case $step in
+      short) title='E2E short' ;;
+      *) title=$long ;;
+    esac
+    echo "::group::tab_close_narrow: $step"
+    app_fresh
+    flow tab_close_narrow -e "STEP=$step" -e "FILE=jeansh-e2e-narrow-$step" \
+      -e "TITLE=$title" || {
+      status=1
+      echo "::error::tab_close_narrow $step failed"
+    }
+    echo "::endgroup::"
+  done
+  keep_shots 'tab-close-narrow-*.png'
+  sudo -u "$SSH_USER" rm -f "$home/jeansh-e2e-narrow-long.html" \
+    "$home/jeansh-e2e-narrow-short.html" "$home/jeansh-e2e-narrow-rename.html"
+  return "$status"
 }
 
 # #272: an HTML file opens with the files beside it, and only those
@@ -2913,6 +2950,7 @@ u_chat_two_way() {
 
 u_html_tab() { gate html_tab html_tab; }
 u_html_site() { report_bare html_site html_site; }
+u_tab_close_narrow() { report_bare tab_close_narrow tab_close_narrow; }
 u_chat_images() { gate chat_images chat_images; }
 u_chat_usage() { gate chat_usage chat_usage; }
 for name in chat_session_status chat_progress chat_working_backstop \
