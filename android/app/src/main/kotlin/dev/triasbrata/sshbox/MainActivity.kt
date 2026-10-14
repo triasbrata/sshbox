@@ -11,6 +11,10 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Log
+import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -39,6 +43,31 @@ class MainActivity : FlutterActivity() {
 
     // A download waiting in the save dialog: Dart's copy, and who to tell.
     private var saving: Pair<File, MethodChannel.Result>? = null
+
+    // Ctrl+S for the file editor, taken before the IME: see SaveChord.
+    private val saveChord = SaveChord()
+
+    // FlutterActivity's view goes into a frame of ours, the one place a key
+    // can be seen before the IME: ViewRootImpl hands it down the focus path
+    // through dispatchKeyEventPreIme first. Only what saveChord takes stops
+    // here, given to the FlutterView's own key handling; everything else
+    // passes on untouched.
+    override fun setContentView(view: View) {
+        val frame = object : FrameLayout(this) {
+            override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
+                if (!saveChord.take(event.action, event.keyCode, event.metaState)) {
+                    return super.dispatchKeyEventPreIme(event)
+                }
+                view.dispatchKeyEvent(event)
+                return true
+            }
+        }
+        frame.addView(
+            view,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        super.setContentView(frame)
+    }
 
     // One Jeansh at a time, however it was started. A second MainActivity is
     // a second FlutterEngine: another SessionManager, notification handler
@@ -117,6 +146,9 @@ class MainActivity : FlutterActivity() {
                     clipboardImage((call.arguments as Number).toLong(), result)
                 } else if (call.method == "open") {
                     result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
+                } else if (call.method == "saveChord") {
+                    saveChord.wanted = call.arguments as Boolean
+                    result.success(null)
                 } else if (call.method == "isTestLab") {
                     // Firebase Test Lab, which Play's pre-launch robot runs on.
                     result.success(NativeCrashes.isTestLab(this@MainActivity))

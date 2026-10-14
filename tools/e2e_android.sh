@@ -492,21 +492,51 @@ file_editor() {
 }
 
 # The code editor's save shortcut on Android (.maestro/editor_save.yaml): what
-# holds, read off the host. A hardware key sent with `input keyevent` or
-# `input keycombination` (API 33 and later; the emulator is 34) is taken by
-# Gboard before Flutter sees it: Ctrl+S reaches the app as a committed "s",
-# with no key event, so Ctrl+S cannot save here yet (a follow-up). Asserted:
-# Ctrl+S with nothing edited writes nothing, and S alone types an s and
-# writes nothing. Ctrl+S after an edit is logged as a baseline, not asserted.
+# holds, read off the host. A Ctrl+S sent with `input keycombination` (API 33
+# and later; the emulator is 34) goes to Gboard before the app, and Gboard
+# types it as an "s"; MainActivity now takes Ctrl+S before the IME while an
+# editor page holds the focus (SaveChord). Asserted:
+#   - Ctrl+S with nothing edited writes nothing and types no s;
+#   - S alone after an edit types an s and writes nothing;
+#   - Ctrl+S after an edit saves, and types no s;
+#   - the same through the emulator's own keyboard device (`adb emu event
+#     send`), a real input device rather than adb's virtual one -1;
+#   - a terminal hears Ctrl+S the same with the editor gone as before it was
+#     ever opened: the claim is let go, and nothing else is taken.
 # The file's mtime is put back to 2020 first, so any write at all shows.
 editor_save() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-save.txt old=1577836800
+  local heard=/home/$SSH_USER/jeansh-e2e-ctrls.txt before after stamp
   mtime() { sudo stat -c %Y "$file"; }
   chord() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_S; }
+  # Through the emulator's keyboard device. Says so and fails if the console
+  # will not take it, so a run never mistakes "not sent" for "not saved".
+  hw_chord() {
+    local said
+    said=$(adb emu event send EV_KEY:KEY_LEFTCTRL:1 EV_SYN:0:0 \
+      EV_KEY:KEY_S:1 EV_SYN:0:0 EV_KEY:KEY_S:0 EV_SYN:0:0 \
+      EV_KEY:KEY_LEFTCTRL:0 EV_SYN:0:0 2>&1)
+    echo "adb emu event send: ${said:-(nothing)}"
+    case $said in *KO*|*rror*) return 1 ;; esac
+  }
   # Nothing written in the 3 s after a key.
   unwritten() {
     sleep 3
     [ "$(mtime)" = "$old" ]
+  }
+  esses() { sudo tr -cd s <"$file" | wc -c | tr -d ' '; }
+  # What the terminal's shell reads for one Ctrl+S, as od prints it: XON/XOFF
+  # off so ^S is a byte like any other, one line read and the rest restored.
+  term_heard() {
+    sudo rm -f "$heard"
+    adb shell "input text 'stty%s-ixon;head%s-n1%s>jeansh-e2e-ctrls.txt;stty%sixon'"
+    adb shell input keyevent KEYCODE_ENTER
+    sleep 2
+    chord
+    sleep 1
+    adb shell input keyevent KEYCODE_ENTER
+    sleep 2
+    sudo od -An -c "$heard" 2>/dev/null | tr -s ' ' | sed 's/^ //'
   }
   check() {
     local what=$1
@@ -516,15 +546,28 @@ editor_save() {
       status=1
     fi
   }
+  echo "keyboards the emulator has:"
+  adb shell dumpsys input | grep -E '^ +[0-9]+: |KeyboardType' | head -20
   printf 'hello e2e\n' | sudo -u "$SSH_USER" tee "$file" >/dev/null
   sudo touch -d "@$old" "$file"
+
+  # The terminal before any editor was opened: how it hears Ctrl+S today.
+  flow editor_save -e STEP=terminal || return 1
+  before=$(term_heard)
+  echo "terminal heard, no editor yet: ${before:-(nothing)}"
+  check 'the terminal heard Ctrl+S before the editor' [ -n "$before" ]
+
   flow editor_save -e STEP=open || return 1
 
-  # Ctrl+S with nothing edited: nothing written.
+  # Ctrl+S with nothing edited: nothing written, no s typed.
   chord
   check 'Ctrl+S unedited wrote nothing' unwritten
   check 'Ctrl+S unedited left the file as it was' \
     [ "$(sudo cat "$file")" = 'hello e2e' ]
+  flow editor_save -e STEP=saved || {
+    echo "::error::editor_save: Ctrl+S unedited typed something"
+    status=1
+  }
 
   # S alone after an edit: an s typed, nothing written.
   flow editor_save -e STEP=edit || status=1
@@ -534,15 +577,38 @@ editor_save() {
     [ "$(sudo cat "$file")" = 'hello e2e' ]
   flow editor_save -e STEP=dirty || status=1
 
-  # Baseline for the follow-up, not asserted: what Ctrl+S does after an edit.
+  # Ctrl+S after the edit: saved, with the one s S typed and no other.
   chord
   sleep 3
-  if [ "$(mtime)" = "$old" ]; then
-    echo "baseline: Ctrl+S after an edit wrote nothing (Gboard takes the chord)"
+  check 'Ctrl+S after an edit wrote the file' [ "$(mtime)" != "$old" ]
+  echo "the file now holds:"
+  sudo od -c "$file" | head -4
+  check 'the save holds the edit' sudo grep -q edit "$file"
+  check 'Ctrl+S typed no s (one s, from S alone)' [ "$(esses)" = 1 ]
+  flow editor_save -e STEP=saved || status=1
+
+  # The emulator's keyboard device: edited again, saved again, no s.
+  flow editor_save -e STEP=edit || status=1
+  stamp=$(mtime)
+  sleep 2
+  if hw_chord; then
+    sleep 3
+    check 'Ctrl+S from the keyboard device wrote the file' \
+      [ "$(mtime)" != "$stamp" ]
+    check 'Ctrl+S from the keyboard device typed no s' [ "$(esses)" = 1 ]
+    flow editor_save -e STEP=saved || status=1
   else
-    echo "baseline: Ctrl+S after an edit WROTE the file:"
-    sudo od -c "$file" | head -4
+    echo "::error::editor_save: the emulator console took no key events"
+    status=1
   fi
+
+  # The editor gone: the terminal hears Ctrl+S as it did before.
+  flow editor_save -e STEP=close || status=1
+  after=$(term_heard)
+  echo "terminal heard, editor closed: ${after:-(nothing)}"
+  check 'the terminal hears Ctrl+S as before the editor' \
+    [ "$after" = "$before" ]
+  sudo rm -f "$heard"
   return "$status"
 }
 

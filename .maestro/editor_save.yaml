@@ -5,9 +5,12 @@
 # changes", Save to host enabled or not), and the host holds the proof.
 #
 # STEP comes from -e alone (see chat_images.yaml):
-#   open    the file opened from the drawer, nothing to save
-#   edit    "edit" typed into the text
-#   dirty   still Unsaved changes after S alone: nothing saved
+#   terminal  the host's terminal shown, and tapped for its keyboard
+#   open      the file opened from the drawer, nothing to save
+#   edit      "edit" typed into the text
+#   dirty     still Unsaved changes after S alone: nothing saved
+#   saved     nothing left unsaved after Ctrl+S
+#   close     the file tab closed, the terminal shown and tapped again
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -15,7 +18,7 @@ env:
 ---
 - runFlow:
     when:
-      true: ${STEP == 'open'}
+      true: ${STEP == 'terminal'}
     commands:
       - stopApp
       - launchApp:
@@ -28,8 +31,17 @@ env:
           text: "Trust"
           optional: true
       - extendedWaitUntil:
-          visible: "Browse files"
-          timeout: 20000
+          visible: "ESC"
+          timeout: 30000
+      # A tap on the terminal is how a user asks for the keyboard.
+      - tapOn:
+          point: "50%,35%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
       - tapOn: "Browse files"
       - extendedWaitUntil:
           visible: "Filter by name"
@@ -69,3 +81,28 @@ env:
           text: "Save to host"
           enabled: true
       - takeScreenshot: editor-save-dirty
+
+- runFlow:
+    when:
+      true: ${STEP == 'saved'}
+    commands:
+      - extendedWaitUntil:
+          notVisible: "(?s).*Unsaved changes.*"
+          timeout: 5000
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      - takeScreenshot: editor-save-saved
+
+- runFlow:
+    when:
+      true: ${STEP == 'close'}
+    commands:
+      # Saved, so it closes with no question.
+      - tapOn: "Close file"
+      - extendedWaitUntil:
+          visible: "ESC"
+          timeout: 10000
+      - tapOn:
+          point: "50%,35%"
+      - waitForAnimationToEnd

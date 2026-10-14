@@ -18,6 +18,7 @@ import 'code_languages.dart';
 import 'file_download.dart';
 import 'key_bar.dart';
 import 'mermaid_view.dart';
+import 'save_chord.dart';
 import 'selection_separators.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
@@ -302,6 +303,10 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// ⌘S or Ctrl+S saves, as the Save button does, from anywhere on the page.
   /// Taken whether or not there is anything to save, so it never goes on to
   /// type an s or reach whatever is behind the page.
+  /// Android's Ctrl+S reaches [_onPageKey] past Gboard only while an editor
+  /// page holds the focus and has said so (see [SaveChord]).
+  void _claimSaveChord() => SaveChord.want(this, _pageFocus.hasFocus);
+
   KeyEventResult _onPageKey(FocusNode _, KeyEvent event) {
     final keys = HardwareKeyboard.instance;
     final save = _command(LogicalKeyboardKey.keyS);
@@ -444,6 +449,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     super.initState();
     appLog.add('action editor open');
     _controller.addListener(_onEdited);
+    _pageFocus.addListener(_claimSaveChord);
     unawaited(_restoreLook());
     _load();
   }
@@ -477,6 +483,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     }
     _find.dispose();
     _editorFocus.dispose();
+    SaveChord.want(this, false);
     _pageFocus.dispose();
     _images.dispose();
     _controller.removeListener(_onEdited);
