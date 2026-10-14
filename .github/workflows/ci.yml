@@ -168,6 +168,8 @@ jobs:
           echo "$RUNNER_TEMP/gradle-$v/bin" >> "$GITHUB_PATH"
 
       - name: Android unit tests
+        # A minute when well; a stuck Gradle once held the job to its 40.
+        timeout-minutes: 15
         working-directory: android
         run: gradle :app:testDebugUnitTest --tests 'dev.triasbrata.sshbox.NativeCrashesTest'
 
