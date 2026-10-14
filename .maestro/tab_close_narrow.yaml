@@ -10,8 +10,12 @@
 #   rename  a short <title> that a script makes long three seconds after load:
 #           once renamed, its ✕ is tapped straight away and closes the tab
 #
-# With the cap taken out (the mutation) the long chip is wider than the strip,
-# its ✕ sits behind +, and the tap closes nothing.
+# This flow opens the page and stops at the screenshot. The runner then reads
+# the ✕'s bounds off the view tree -- wholly left of +, right of Home, and as
+# wide as the short step's whole ✕ -- and tab_close_narrow_close.yaml taps it.
+# With the cap taken out (the mutation) the long chip is wider than the strip
+# and its ✕ is half under +: Maestro's tap on the visible half still closes
+# the tab, so the bounds are what tell the two apart.
 #
 # Whether the name is drawn cut cannot be read off the accessibility tree,
 # which holds the whole of it: the screenshot tab-close-narrow-<STEP> shows it.
@@ -67,18 +71,5 @@ env:
 - waitForAnimationToEnd:
     timeout: 3000
 - takeScreenshot: tab-close-narrow-${STEP}
-
-# Straight at the ✕, with no scroll of the strip first, and once: a tap that
-# lands on + instead must not be tried again.
-- tapOn:
-    text: "Close ${TITLE}"
-    retryTapIfNoChange: false
-- waitForAnimationToEnd:
-    timeout: 3000
-
-# The tab is gone, and the shell is what is shown.
-- assertNotVisible: "Close ${TITLE}"
-- assertNotVisible: "Jeansh narrow heading"
-- assertNotVisible: "Reload"
-- assertVisible: "Browse files"
-- tapOn: "Close ${HOST_LABEL}.*"
+# The runner now measures the ✕ against + off the view tree, and then
+# tab_close_narrow_close.yaml taps it.
