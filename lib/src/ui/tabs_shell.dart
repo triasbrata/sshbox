@@ -1403,7 +1403,7 @@ class _TabChip extends StatelessWidget {
       0.0,
       math.min(
         selected ? _selectedText : _idleText,
-        strip == null ? double.infinity : strip - rest,
+        double.infinity,
       ),
     );
     Text text(String data) => Text(
