@@ -492,46 +492,42 @@ file_editor() {
 }
 
 # The code editor's save shortcut on Android (.maestro/editor_save.yaml): what
-# holds, read off the host. A Ctrl+S sent with `input keycombination` (API 33
-# and later; the emulator is 34) goes to Gboard before the app, and Gboard
-# types it as an "s"; MainActivity now takes Ctrl+S before the IME while an
-# editor page holds the focus (SaveChord). Asserted:
+# holds, read off the host and off MainActivity's SaveChord log (a debug
+# build's, Ctrl and S keys alone). Ctrl+S is sent with `input keycombination`
+# (API 33 and later; the emulator is 34). While an editor page holds the
+# focus, MainActivity takes it before the IME and asks Dart to save; anywhere
+# else it goes on as before. Asserted:
 #   - Ctrl+S with nothing edited writes nothing and types no s;
 #   - S alone after an edit types an s and writes nothing;
 #   - Ctrl+S after an edit saves, and types no s;
-#   - the same through the emulator's own keyboard device (`adb emu event
-#     send`), a real input device rather than adb's virtual one -1;
-#   - a terminal hears Ctrl+S the same with the editor gone as before it was
-#     ever opened: the claim is let go, and nothing else is taken.
+#   - in a terminal, before any editor and after one closed, Ctrl+S reaches
+#     the app and MainActivity takes none of it, and the shell reads the
+#     same bytes both times: the claim is let go.
+# Reported only: whether the emulator's own keyboard device (`adb emu event
+# send`) reaches the app at all; in run 38498928025 it did not.
 # The file's mtime is put back to 2020 first, so any write at all shows.
 editor_save() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-save.txt old=1577836800
-  local heard=/home/$SSH_USER/jeansh-e2e-ctrls.txt before after stamp
+  local heard=/home/$SSH_USER/jeansh-e2e-ctrls.txt before after said
+  local last_trail="" heard_bytes=""
   mtime() { sudo stat -c %Y "$file"; }
-  # What MainActivity saw of Ctrl and S, before and after the IME (a debug
-  # build's SaveChord log), since the last trail.
+  # What MainActivity saw of Ctrl and S since the last trail, into
+  # last_trail, and printed to stderr so a $( ) round it keeps only its own.
   trail() {
-    echo "SaveChord trail ($1):"
-    adb logcat -d -s SaveChord:I 2>/dev/null | grep -v '^-' | tail -20
+    last_trail=$(adb logcat -d -s SaveChord:I 2>/dev/null | grep -v '^-' | tail -20)
     adb logcat -c 2>/dev/null
+    { echo "SaveChord trail ($1):"; echo "$last_trail"; } >&2
   }
   chord() {
     adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_S
     sleep 1
     trail 'input keycombination'
   }
-  # Through the emulator's keyboard device. Says so and fails if the console
-  # will not take it, so a run never mistakes "not sent" for "not saved".
-  hw_chord() {
-    local said
-    said=$(adb emu event send EV_KEY:KEY_LEFTCTRL:1 EV_SYN:0:0 \
-      EV_KEY:KEY_S:1 EV_SYN:0:0 EV_KEY:KEY_S:0 EV_SYN:0:0 \
-      EV_KEY:KEY_LEFTCTRL:0 EV_SYN:0:0 2>&1)
-    echo "adb emu event send: ${said:-(nothing)}"
-    sleep 1
-    trail "adb emu event send"
-    case $said in *KO*|*rror*) return 1 ;; esac
-  }
+  # The chord reached the app (an S down with Ctrl in its meta), and was or
+  # was not taken before the IME.
+  reached() { grep -q 'pre-IME KEYCODE_S action=0 meta=0x3000' <<<"$last_trail"; }
+  took() { grep -q 'pre-IME KEYCODE_S action=0 .*taken=true' <<<"$last_trail"; }
+  passed_on() { reached && ! took; }
   # Nothing written in the 3 s after a key.
   unwritten() {
     sleep 3
@@ -540,6 +536,7 @@ editor_save() {
   esses() { sudo tr -cd s <"$file" | wc -c | tr -d ' '; }
   # What the terminal's shell reads for one Ctrl+S, as od prints it: XON/XOFF
   # off so ^S is a byte like any other, one line read and the rest restored.
+  # Into heard_bytes, and the chord's trail into last_trail, for the caller.
   term_heard() {
     sudo rm -f "$heard"
     adb shell "input text 'stty%s-ixon;head%s-n1%s>jeansh-e2e-ctrls.txt;stty%sixon'"
@@ -549,7 +546,11 @@ editor_save() {
     sleep 1
     adb shell input keyevent KEYCODE_ENTER
     sleep 2
-    sudo od -An -c "$heard" 2>/dev/null | tr -s ' ' | sed 's/^ //'
+    if sudo test -e "$heard"; then
+      heard_bytes=$(sudo od -An -c "$heard" | tr -s " " | sed "s/^ //")
+    else
+      heard_bytes='(no file: the line never reached the shell)'
+    fi
   }
   check() {
     local what=$1
@@ -559,22 +560,24 @@ editor_save() {
       status=1
     fi
   }
-  echo "keyboards the emulator has:"
-  adb shell dumpsys input | grep -E '^ +[0-9]+: |KeyboardType' | head -20
   printf 'hello e2e\n' | sudo -u "$SSH_USER" tee "$file" >/dev/null
   sudo touch -d "@$old" "$file"
 
   # The terminal before any editor was opened: how it hears Ctrl+S today.
   flow editor_save -e STEP=terminal || return 1
   trail launch
-  before=$(term_heard)
-  echo "terminal heard, no editor yet: ${before:-(nothing)}"
-  check 'the terminal heard Ctrl+S before the editor' [ -n "$before" ]
+  check 'the pre-IME frame is in' grep -q 'frame around' <<<"$last_trail"
+  term_heard
+  before=$heard_bytes
+  echo "terminal heard, no editor yet: $before"
+  check "the probe reached the terminal's shell" [ "${before#(no file}" = "$before" ]
+  check 'a terminal Ctrl+S reaches the app, not taken (no editor)' passed_on
 
   flow editor_save -e STEP=open || return 1
 
-  # Ctrl+S with nothing edited: nothing written, no s typed.
+  # Ctrl+S with nothing edited: taken, nothing written, no s typed.
   chord
+  check 'Ctrl+S in the editor is taken before the IME' took
   check 'Ctrl+S unedited wrote nothing' unwritten
   check 'Ctrl+S unedited left the file as it was' \
     [ "$(sudo cat "$file")" = 'hello e2e' ]
@@ -586,6 +589,8 @@ editor_save() {
   # S alone after an edit: an s typed, nothing written.
   flow editor_save -e STEP=edit || status=1
   adb shell input keyevent KEYCODE_S
+  sleep 1
+  trail 'S alone'
   check 'S alone wrote nothing' unwritten
   check 'S alone left the file as it was' \
     [ "$(sudo cat "$file")" = 'hello e2e' ]
@@ -601,27 +606,26 @@ editor_save() {
   check 'Ctrl+S typed no s (one s, from S alone)' [ "$(esses)" = 1 ]
   flow editor_save -e STEP=saved || status=1
 
-  # The emulator's keyboard device: edited again, saved again, no s.
-  flow editor_save -e STEP=edit || status=1
-  stamp=$(mtime)
-  sleep 2
-  if hw_chord; then
-    sleep 3
-    check 'Ctrl+S from the keyboard device wrote the file' \
-      [ "$(mtime)" != "$stamp" ]
-    check 'Ctrl+S from the keyboard device typed no s' [ "$(esses)" = 1 ]
-    flow editor_save -e STEP=saved || status=1
+  # Report only: does the emulator's own keyboard device reach the app?
+  said=$(adb emu event send EV_KEY:KEY_LEFTCTRL:1 EV_SYN:0:0 \
+    EV_KEY:KEY_S:1 EV_SYN:0:0 EV_KEY:KEY_S:0 EV_SYN:0:0 \
+    EV_KEY:KEY_LEFTCTRL:0 EV_SYN:0:0 2>&1)
+  sleep 1
+  trail "adb emu event send: ${said:-(nothing)}"
+  if grep -q KEYCODE_S <<<"$last_trail"; then
+    echo "report: the emulator's keyboard device reaches the app"
   else
-    echo "::error::editor_save: the emulator console took no key events"
-    status=1
+    echo "report: the emulator's keyboard device does not reach the app"
   fi
 
-  # The editor gone: the terminal hears Ctrl+S as it did before.
+  # The editor gone, with no relaunch, so a claim never let go would still
+  # be held: the terminal hears Ctrl+S as before, and nothing is taken.
   flow editor_save -e STEP=close || status=1
-  after=$(term_heard)
-  echo "terminal heard, editor closed: ${after:-(nothing)}"
-  check 'the terminal hears Ctrl+S as before the editor' \
-    [ "$after" = "$before" ]
+  term_heard
+  after=$heard_bytes
+  echo "terminal heard, editor closed: $after"
+  check 'a terminal Ctrl+S reaches the app, not taken (editor closed)' passed_on
+  check 'the terminal hears Ctrl+S as before the editor' [ "$after" = "$before" ]
   sudo rm -f "$heard"
   return "$status"
 }

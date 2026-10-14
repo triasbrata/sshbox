@@ -10,7 +10,7 @@
 #   edit      "edit" typed into the text
 #   dirty     still Unsaved changes after S alone: nothing saved
 #   saved     nothing left unsaved after Ctrl+S
-#   close     the file tab closed, the terminal shown and tapped again
+#   close     the file tab closed, a terminal shown and tapped again
 appId: cloud.brata.terminal
 env:
   HOST_LABEL: "WSL via"
@@ -100,9 +100,21 @@ env:
     commands:
       # Saved, so it closes with no question.
       - tapOn: "Close file"
+      - waitForAnimationToEnd
+      # Closing it shows Home rather than the shell (run 38498928025): a
+      # terminal from the host's card then, with no relaunch, so the editor's
+      # claim is let go or still held in this same run of the app.
+      - runFlow:
+          when:
+            notVisible: "ESC"
+          commands:
+            - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+            - tapOn:
+                text: "Trust"
+                optional: true
       - extendedWaitUntil:
           visible: "ESC"
-          timeout: 10000
+          timeout: 30000
       - tapOn:
           point: "50%,35%"
       - waitForAnimationToEnd

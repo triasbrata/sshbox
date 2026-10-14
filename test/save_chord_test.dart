@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
+import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/save_chord.dart';
 
@@ -25,26 +26,45 @@ void main() {
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
+    SaveChord.reset();
   });
 
+  /// MainActivity's call when it takes a Ctrl+S.
+  Future<void> nativeSave() => TestDefaultBinaryMessengerBinding
+      .instance
+      .defaultBinaryMessenger
+      .handlePlatformMessage(
+        'sshbox/keys',
+        const StandardMethodCodec().encodeMethodCall(const MethodCall('save')),
+        (_) {},
+      );
+
   group('SaveChord', () {
-    test('tells Android only when whether any editor wants it changes', () {
+    test('tells Android only when whether any editor wants it changes, and '
+        'saves with the newest claim', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final saved = <String>[];
       final a = Object(), b = Object();
-      SaveChord.want(a, true);
-      SaveChord.want(b, true);
-      SaveChord.want(a, false);
+      SaveChord.want(a, () => saved.add('a'));
+      SaveChord.want(b, () => saved.add('b'));
+      await nativeSave();
+      expect(saved, ['b']);
+      SaveChord.want(b, null);
+      await nativeSave();
+      expect(saved, ['b', 'a']);
       expect(told, [true]);
-      SaveChord.want(b, false);
-      SaveChord.want(b, false);
+      SaveChord.want(a, null);
+      SaveChord.want(a, null);
       expect(told, [true, false]);
+      await nativeSave();
+      expect(saved, ['b', 'a']);
     });
 
     test('tells nothing anywhere but Android', () {
       debugDefaultTargetPlatformOverride = TargetPlatform.linux;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
-      SaveChord.want(Object(), true);
+      SaveChord.want(Object(), () {});
       expect(told, isEmpty);
     });
 
@@ -55,17 +75,19 @@ void main() {
           .setMockMethodCallHandler(channel, (_) async {
             throw PlatformException(code: 'nope');
           });
-      SaveChord.want(Object(), true);
+      SaveChord.want(Object(), () {});
       await pumpEventQueue();
     });
   });
 
-  testWidgets('the editor page claims Ctrl+S while it holds the focus, and '
-      'lets go when the focus leaves and when it closes', (tester) async {
+  testWidgets('the editor page claims Ctrl+S while it holds the focus, saves '
+      'on the native call only with something to save, and lets go when the '
+      'focus leaves and when it closes', (tester) async {
     final away = FocusNode();
     addTearDown(away.dispose);
     final open = ValueNotifier(true);
     addTearDown(open.dispose);
+    final browser = _CountingBrowser();
     await tester.pumpWidget(
       MaterialApp(
         home: Column(
@@ -76,7 +98,7 @@ void main() {
                 valueListenable: open,
                 builder: (_, on, _) => on
                     ? FileEditorPage(
-                        browser: FakeFileBrowser(),
+                        browser: browser,
                         path: '/home/me/notes.txt',
                       )
                     : const SizedBox(),
@@ -90,6 +112,22 @@ void main() {
     // The page takes the focus as it opens.
     expect(told, [true]);
 
+    // Nothing edited: nothing to save.
+    await nativeSave();
+    await tester.pumpAndSettle();
+    expect(browser.writes, 0);
+
+    tester
+            .widget<CodeEditor>(find.byType(CodeEditor, skipOffstage: false))
+            .controller!
+            .text =
+        'edited\n';
+    await tester.pumpAndSettle();
+    await nativeSave();
+    await tester.pumpAndSettle();
+    expect(browser.writes, 1);
+    expect(browser.contents['/home/me/notes.txt'], 'edited\n');
+
     away.requestFocus();
     await tester.pumpAndSettle();
     expect(told, [true, false]);
@@ -102,4 +140,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(told, [true, false, true, false]);
   }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+}
+
+class _CountingBrowser extends FakeFileBrowser {
+  int writes = 0;
+
+  @override
+  Future<FileStamp> writeText(
+    String path,
+    String content, {
+    FileStamp? expected,
+  }) {
+    writes++;
+    return super.writeText(path, content, expected: expected);
+  }
 }

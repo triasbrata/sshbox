@@ -303,9 +303,14 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// ⌘S or Ctrl+S saves, as the Save button does, from anywhere on the page.
   /// Taken whether or not there is anything to save, so it never goes on to
   /// type an s or reach whatever is behind the page.
-  /// Android's Ctrl+S reaches [_onPageKey] past Gboard only while an editor
-  /// page holds the focus and has said so (see [SaveChord]).
-  void _claimSaveChord() => SaveChord.want(this, _pageFocus.hasFocus);
+  /// Android's hardware Ctrl+S, taken before the input method, saves here
+  /// while this page holds the focus (see [SaveChord]), as [_onPageKey] does.
+  void _claimSaveChord() =>
+      SaveChord.want(this, _pageFocus.hasFocus ? _saveFromChord : null);
+
+  void _saveFromChord() {
+    if (_canSave) _save();
+  }
 
   KeyEventResult _onPageKey(FocusNode _, KeyEvent event) {
     final keys = HardwareKeyboard.instance;
@@ -483,7 +488,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     }
     _find.dispose();
     _editorFocus.dispose();
-    SaveChord.want(this, false);
+    SaveChord.want(this, null);
     _pageFocus.dispose();
     _images.dispose();
     _controller.removeListener(_onEdited);

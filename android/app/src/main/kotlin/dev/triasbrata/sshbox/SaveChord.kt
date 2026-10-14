@@ -7,7 +7,7 @@ import android.view.KeyEvent
 // Android hands a key to the IME first, and Gboard types Ctrl+S as an "s",
 // so Flutter never hears it. While Dart says an editor page holds the focus
 // ([wanted], set over the channel), Ctrl+S with no Alt, Shift or Meta is
-// taken here and given to Flutter's own key handling. Every other key, and
+// taken here, and MainActivity asks Dart to save. Every other key, and
 // Ctrl+S with no editor focused, goes on to the IME exactly as before.
 //
 // Plain numbers rather than a KeyEvent, so the JVM tests need no Android.
@@ -16,8 +16,8 @@ class SaveChord {
     var wanted = false
 
     // An S down was taken: its repeats and its up are taken too, whatever the
-    // modifiers by then, or Flutter would think S still held and the IME
-    // would see an up with no down.
+    // modifiers by then, or Flutter and the IME would see a repeat or an up
+    // with no down.
     private var holding = false
 
     /** Whether this key goes to Flutter before the IME rather than through it. */

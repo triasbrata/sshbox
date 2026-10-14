@@ -47,11 +47,16 @@ class MainActivity : FlutterActivity() {
     // Ctrl+S for the file editor, taken before the IME: see SaveChord.
     private val saveChord = SaveChord()
 
+    // Native to Dart: "save", when saveChord takes a Ctrl+S.
+    private var keys: MethodChannel? = null
+
     // FlutterActivity's view goes into a frame of ours, the one place a key
     // can be seen before the IME: ViewRootImpl hands it down the focus path
-    // through dispatchKeyEventPreIme first. Only what saveChord takes stops
-    // here, given to the FlutterView's own key handling; everything else
-    // passes on untouched.
+    // through dispatchKeyEventPreIme first. What saveChord takes stops here:
+    // its first down asks Dart to save, and none of it goes on, so neither
+    // the IME nor Flutter's key handling sees an S. Flutter's own path was
+    // tried first and lost the chord: on the emulator a Ctrl+S it was handed
+    // came back unhandled. Everything else passes on untouched.
     override fun setContentView(view: View) {
         trace("frame around ${view.javaClass.simpleName}")
         val frame = object : FrameLayout(this) {
@@ -59,7 +64,9 @@ class MainActivity : FlutterActivity() {
                 val taken = saveChord.take(event.action, event.keyCode, event.metaState)
                 trace(event, "pre-IME", taken)
                 if (!taken) return super.dispatchKeyEventPreIme(event)
-                view.dispatchKeyEvent(event)
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    keys?.invokeMethod("save", null)
+                }
                 return true
             }
         }
@@ -162,6 +169,7 @@ class MainActivity : FlutterActivity() {
         // The copy finished in onCreate: it must not clear the cache the
         // running Jeansh may still be uploading shared files from.
         if (isFinishing) return
+        keys = MethodChannel(engine.dartExecutor.binaryMessenger, "sshbox/keys")
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 if (call.method == "takeShared") {
