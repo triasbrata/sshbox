@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -48,6 +49,7 @@ Future<void> _pump(
   void Function(String hostId)? onDuplicate,
   Future<void> Function(LiveSession from)? onAttach,
   Future<void> Function(LiveSession session)? onDetach,
+  int activeIndex = 1,
 }) => tester.pumpWidget(
   MaterialApp(
     home: Scaffold(
@@ -55,7 +57,7 @@ Future<void> _pump(
         children: [
           TabStrip(
             tabs: tabs,
-            activeIndex: 1,
+            activeIndex: activeIndex,
             onSelect: (_, {kind = TabKind.terminal, path, web}) {},
             onClose: onClose ?? (_) {},
             onReconnect: onReconnect ?? (_) {},
@@ -87,6 +89,11 @@ TabRef _file(TabRef shell, String path) =>
 
 TabRef _chat(TabRef shell) =>
     (session: shell.session, kind: TabKind.chat, path: null, web: null);
+
+final _touchAndDesktop = TargetPlatformVariant({
+  TargetPlatform.android,
+  TargetPlatform.linux,
+});
 
 Rect _pill(WidgetTester tester, String label) => tester.getRect(
   find.ancestor(of: find.text(label), matching: find.byType(Material)).first,
@@ -211,30 +218,31 @@ void main() {
     expect(closed?.kind, TabKind.chat);
   });
 
-  testWidgets('long-pressing a shell that failed to connect offers to close it', (
-    tester,
-  ) async {
-    final tab = _shell(tester, 'host-1', 'box');
-    TabRef? closed;
-    void onClose(TabRef tab) => closed = tab;
+  testWidgets(
+    'long-pressing a shell that failed to connect offers to close it',
+    (tester) async {
+      final tab = _shell(tester, 'host-1', 'box');
+      TabRef? closed;
+      void onClose(TabRef tab) => closed = tab;
 
-    // Still live: the close button is right there on the chip.
-    await _pump(tester, [tab], onClose: onClose);
-    await tester.longPress(find.text('box'));
-    await tester.pumpAndSettle();
-    expect(find.text('Close tab'), findsNothing);
-    await tester.tapAt(Offset.zero);
-    await tester.pumpAndSettle();
+      // Still live: the close button is right there on the chip.
+      await _pump(tester, [tab], onClose: onClose);
+      await tester.longPress(find.text('box'));
+      await tester.pumpAndSettle();
+      expect(find.text('Close tab'), findsNothing);
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
 
-    await tab.session.connect(secrets: _NoSecrets());
-    await _pump(tester, [tab], onClose: onClose);
-    await tester.longPress(find.text('box'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Close tab'));
-    await tester.pumpAndSettle();
+      await tab.session.connect(secrets: _NoSecrets());
+      await _pump(tester, [tab], onClose: onClose);
+      await tester.longPress(find.text('box'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Close tab'));
+      await tester.pumpAndSettle();
 
-    expect(closed, same(tab));
-  });
+      expect(closed, same(tab));
+    },
+  );
 
   testWidgets('a file tab reads host · file, and gives up the host for room', (
     tester,
@@ -313,12 +321,7 @@ void main() {
     // Detaching a plain shell would be killing it, and listing sessions on a
     // host with no tmux could only fail.
     final tab = _shell(tester, 'host-1', 'box');
-    await _pump(
-      tester,
-      [tab],
-      onAttach: (_) async {},
-      onDetach: (_) async {},
-    );
+    await _pump(tester, [tab], onAttach: (_) async {}, onDetach: (_) async {});
     await tester.longPress(find.text('box'));
     await tester.pumpAndSettle();
     expect(find.text('Duplicate session'), findsOneWidget);
@@ -449,6 +452,127 @@ void main() {
         expect(find.text('Duplicate session'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+  });
+
+  group('a selected tab with a long name on a narrow strip', () {
+    const long =
+        '127.0.0.1:40123/some/deep/folder/of/pages/that/never/stop/index.html';
+
+    void sized(WidgetTester tester, double width) {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = Size(width, 640);
+      addTearDown(tester.view.reset);
+    }
+
+    // The room the tabs scroll in, between the home chip and +.
+    Rect visible(WidgetTester tester) => tester.getRect(
+      find.descendant(
+        of: find.byType(TabStrip),
+        matching: find.byType(SingleChildScrollView),
+      ),
+    );
+
+    TabRef web(TabRef shell, WebTab tab) =>
+        (session: shell.session, kind: TabKind.web, path: null, web: tab);
+
+    // A page of its own each time: the same address goes back to its tab.
+    var pages = 0;
+    WebTab page(TabRef shell, String? title) {
+      final tab = shell.session.openWeb(
+        Uri.parse('http://box.ts.net/${pages++}'),
+      );
+      if (title != null) {
+        shell.session.updateWeb(tab, url: tab.url, title: title);
+      }
+      return tab;
+    }
+
+    for (final width in [320.0, 360.0]) {
+      testWidgets('keeps its close button in view and tappable at ${width}dp', (
+        tester,
+      ) async {
+        sized(tester, width);
+        final shell = _shell(tester, 'host-1', 'box');
+        final tabs = [
+          shell,
+          web(shell, page(shell, '$long a')),
+          web(shell, page(shell, '$long b')),
+        ];
+        TabRef? closed;
+        await _pump(tester, tabs, onClose: (tab) => closed = tab);
+        // Selecting the last tab is what scrolls it into view.
+        await _pump(
+          tester,
+          tabs,
+          onClose: (tab) => closed = tab,
+          activeIndex: 3,
+        );
+        await tester.pumpAndSettle();
+
+        final strip = visible(tester);
+        final button = tester.getRect(find.byTooltip('Close $long b'));
+        expect(button.left, greaterThanOrEqualTo(strip.left));
+        expect(button.right, lessThanOrEqualTo(strip.right));
+        // The whole chip fits, not only its button.
+        final chip = _pill(tester, '$long b');
+        expect(chip.left, greaterThanOrEqualTo(strip.left));
+        expect(chip.right, lessThanOrEqualTo(strip.right));
+        // The name gives way rather than the button.
+        final RenderParagraph name = tester.renderObject(find.text('$long b'));
+        expect(name.didExceedMaxLines, isTrue);
+
+        // Tapped where it is, with no scrolling by hand.
+        await tester.tapAt(button.center);
+        expect(closed, same(tabs[2]));
+      });
+    }
+
+    testWidgets('comes back into view when its name grows', (tester) async {
+      sized(tester, 360);
+      final shell = _shell(tester, 'host-1', 'box');
+      final first = page(shell, '$long a');
+      final last = page(shell, null);
+      List<TabRef> tabs() => [shell, web(shell, first), web(shell, last)];
+
+      await _pump(tester, tabs());
+      await _pump(tester, tabs(), activeIndex: 3);
+      await tester.pumpAndSettle();
+
+      // The page names its tab once it has loaded, and the chip grows past
+      // the strip's end, where it had been scrolled to.
+      shell.session.updateWeb(last, url: last.url, title: '$long b');
+      await _pump(tester, tabs(), activeIndex: 3);
+      await tester.pumpAndSettle();
+
+      final strip = visible(tester);
+      final button = tester.getRect(find.byTooltip('Close $long b'));
+      expect(button.left, greaterThanOrEqualTo(strip.left));
+      expect(button.right, lessThanOrEqualTo(strip.right));
+    });
+
+    testWidgets(
+      'is left as it was on a wide strip',
+      variant: _touchAndDesktop,
+      (tester) async {
+        sized(tester, 1000);
+        // On a touch screen the close button is padded out to a tap target.
+        final close = defaultTargetPlatform == TargetPlatform.android ? 40 : 24;
+        final shell = _shell(tester, 'host-1', 'box');
+        await _pump(tester, [
+          shell,
+          web(shell, page(shell, long)),
+        ], activeIndex: 2);
+        await tester.pumpAndSettle();
+
+        // 180dp of name, as before, beside its insets, icon and close button,
+        // and an idle tab its 110.
+        expect(_pill(tester, long).width, 12 + 14 + 6 + 180 + 4 + close);
+        expect(
+          _pill(tester, 'box').width,
+          lessThanOrEqualTo(12 + 14 + 6 + 110 + 4 + close),
+        );
+      },
     );
   });
 }
