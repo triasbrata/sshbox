@@ -506,10 +506,27 @@ Future<String> _xdo(List<String> args) async {
 }
 
 /// Jeansh's window on the display.
-Future<String> _window() async =>
-    (await _xdo(['search', '--onlyvisible', '--name', r'^Jeansh$']))
-        .split('\n')
-        .first;
+///
+/// Looked for again, for up to 5 s, when a search finds nothing or fails:
+/// xdotool walks every window on the display, and one that goes while it
+/// walks makes the search exit 1 with the app's own window mapped all along.
+/// The rail test met it after the sidebar folded (tag run 38503185765).
+Future<String> _window() async {
+  const args = ['search', '--onlyvisible', '--name', r'^Jeansh$'];
+  late ProcessResult last;
+  for (var tries = 0; tries < 20; tries++) {
+    if (tries > 0) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    last = await Process.run('xdotool', args);
+    final id = '${last.stdout}'.trim().split('\n').first;
+    if (last.exitCode == 0 && id.isNotEmpty) {
+      if (tries > 0) debugPrint('xdotool found the window at try ${tries + 1}');
+      return id;
+    }
+  }
+  fail('xdotool $args, 20 tries: exit ${last.exitCode} ${last.stderr}');
+}
 
 /// Escape as a keyboard sends it: on Linux a real key, through X and GTK to
 /// the embedder, which is how a menu is shut.
@@ -836,7 +853,15 @@ Finder _named(String label) => find.byWidgetPredicate(
 /// do.
 Future<Rect> _windowRect() async {
   if (Platform.isWindows) return (await _winMouse(const [])).rect;
-  final info = await Process.run('xwininfo', ['-id', await _window()]);
+  // xwininfo fails the same way for a window that went as it looked, so a
+  // failed read is taken again.
+  var info = await Process.run('xwininfo', ['-id', await _window()]);
+  for (var tries = 1; info.exitCode != 0 && tries < 10; tries++) {
+    debugPrint('xwininfo failed, try $tries: ${info.stderr}');
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    info = await Process.run('xwininfo', ['-id', await _window()]);
+  }
+  expect(info.exitCode, 0, reason: 'xwininfo: ${info.stderr}');
   double value(String key) => double.parse(
     RegExp('$key:\\s+(-?\\d+)').firstMatch('${info.stdout}')!.group(1)!,
   );
