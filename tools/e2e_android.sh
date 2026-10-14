@@ -569,6 +569,101 @@ html_tab() {
 # characters, one whose title is short, and one a script renames from short to
 # long after it has loaded. Each is opened from a fresh app and its ✕ tapped
 # with no scroll of the strip first.
+#
+# A ✕ half under + still takes Maestro's tap on its visible half, so the tap
+# alone passes with the cap taken out. What the user sees is measured instead,
+# off the view tree (uiautomator's, and Maestro's own): the ✕ "Close TITLE"
+# ends at or before + ("New tab") begins, starts at or after Home ends, and is
+# as wide as the short step's whole ✕ -- a node the strip clips is reported
+# clipped, so a ✕ cut at the strip's edge comes out narrower.
+narrow_close_in_view() {
+  local title=$1 step=$2 xml json out rc
+  xml=$(mktemp)
+  json=$(mktemp)
+  code_ui >"$xml"
+  maestro hierarchy >"$json" 2>/dev/null
+  out=$(TITLE="$title" STEP="$step" WHOLE="$NARROW_WHOLE" \
+    DENSITY="$(adb shell wm density | grep -oE '[0-9]+' | tail -1)" \
+    XML="$xml" JSON="$json" python3 - <<'PY'
+import json, os, re, sys
+
+title = 'Close ' + os.environ['TITLE']
+nodes = []  # (source, label, left, top, right, bottom)
+
+def bounds(text):
+    m = re.fullmatch(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', text or '')
+    return tuple(int(v) for v in m.groups()) if m else None
+
+for tag in re.findall(r'<node [^>]*>', open(os.environ['XML'], errors='replace').read()):
+    attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+    b = bounds(attrs.get('bounds'))
+    if b:
+        for k, v in attrs.items():
+            if k != 'bounds' and v:
+                nodes.append(('ui', v) + b)
+
+raw = open(os.environ['JSON'], errors='replace').read()
+try:
+    tree = json.loads(raw[raw.index('{'):])
+except ValueError:
+    tree = None
+
+def walk(node):
+    if isinstance(node, dict):
+        attrs = node.get('attributes')
+        if isinstance(attrs, dict):
+            b = bounds(attrs.get('bounds'))
+            if b:
+                for k, v in attrs.items():
+                    if k != 'bounds' and isinstance(v, str) and v:
+                        nodes.append(('maestro', v) + b)
+        for v in node.values():
+            walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            walk(v)
+
+walk(tree)
+
+def find(label):
+    found = sorted({n for n in nodes if n[1] == label}, key=lambda n: (n[0] != 'ui', n[2:]))
+    for n in found:
+        print('%s %r: [%d,%d][%d,%d] width %d' % ((n[0], n[1]) + n[2:] + (n[4] - n[2],)))
+    return found[0] if found else None
+
+close, plus, home = find(title), find('New tab'), find('Home')
+if not close or not plus:
+    print('FAIL: no %s' % ('✕ ' + repr(title) if not close else '+ (New tab)'))
+    sys.exit(1)
+width = close[4] - close[2]
+whole = int(os.environ['WHOLE'] or 0)
+if not whole:
+    # No short step to go by: a whole 28 dp button, less a little.
+    whole = int(26 * int(os.environ.get('DENSITY') or 160) / 160)
+fails = []
+if close[4] > plus[2] + 1:
+    fails.append('the ✕ ends at %d, past + at %d' % (close[4], plus[2]))
+if home and close[2] < home[4] - 1:
+    fails.append('the ✕ starts at %d, before Home ends at %d' % (close[2], home[4]))
+if width < whole - 2:
+    fails.append('the ✕ is %d px wide where a whole one is %d: cut' % (width, whole))
+for f in fails:
+    print('FAIL: ' + f)
+if not fails:
+    print('the ✕ is wholly in view, %d px wide, left of + at %d' % (width, plus[2]))
+    print('WIDTH %d' % width)
+sys.exit(1 if fails else 0)
+PY
+  )
+  rc=$?
+  echo "$out" | grep -v '^WIDTH '
+  if [ "$rc" = 0 ] && [ "$step" = short ]; then
+    NARROW_WHOLE=$(echo "$out" | sed -n 's/^WIDTH //p')
+  fi
+  rm -f "$xml" "$json"
+  return "$rc"
+}
+
 tab_close_narrow() {
   local status=0 home=/home/$SSH_USER step title
   local long='Jeansh narrow strip e2e page with a title far too long for a phone strip to show whole'
@@ -580,18 +675,27 @@ tab_close_narrow() {
   # is read: a title set alone is never heard.
   printf '<title>E2E rename</title>\n<h1>Jeansh narrow heading</h1>\n<script>setTimeout(function(){document.title="%s";history.pushState(null,"","#renamed")},3000)</script>\n' \
     "$long" | sudo -u "$SSH_USER" tee "$home/jeansh-e2e-narrow-rename.html" >/dev/null
-  for step in long short rename; do
+  # short first: its ✕ is whole in either build, so its width is what a whole
+  # ✕ measures, for the long ones to be held to.
+  NARROW_WHOLE=
+  for step in short long rename; do
     case $step in
       short) title='E2E short' ;;
       *) title=$long ;;
     esac
     echo "::group::tab_close_narrow: $step"
     app_fresh
-    flow tab_close_narrow -e "STEP=$step" -e "FILE=jeansh-e2e-narrow-$step" \
-      -e "TITLE=$title" || {
+    if ! flow tab_close_narrow -e "STEP=$step" -e "FILE=jeansh-e2e-narrow-$step" \
+      -e "TITLE=$title"; then
       status=1
-      echo "::error::tab_close_narrow $step failed"
-    }
+      echo "::error::tab_close_narrow $step failed before the ✕ was measured"
+    elif ! narrow_close_in_view "$title" "$step"; then
+      status=1
+      echo "::error::tab_close_narrow $step: the ✕ is not wholly in view"
+    elif ! flow tab_close_narrow_close -e "TITLE=$title"; then
+      status=1
+      echo "::error::tab_close_narrow $step: a tap on the ✕ did not close the tab"
+    fi
     echo "::endgroup::"
   done
   keep_shots 'tab-close-narrow-*.png'
