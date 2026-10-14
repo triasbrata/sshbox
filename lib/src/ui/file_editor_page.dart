@@ -305,7 +305,7 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// type an s or reach whatever is behind the page.
   /// Android's Ctrl+S reaches [_onPageKey] past Gboard only while an editor
   /// page holds the focus and has said so (see [SaveChord]).
-  void _claimSaveChord() => SaveChord.want(this, _pageFocus.hasFocus);
+  void _claimSaveChord() => SaveChord.want(this, true); // MUTANT: never lets go
 
   KeyEventResult _onPageKey(FocusNode _, KeyEvent event) {
     final keys = HardwareKeyboard.instance;
@@ -483,7 +483,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     }
     _find.dispose();
     _editorFocus.dispose();
-    SaveChord.want(this, false);
+    // MUTANT: no let-go on close
     _pageFocus.dispose();
     _images.dispose();
     _controller.removeListener(_onEdited);
