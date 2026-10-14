@@ -64,7 +64,7 @@ class MainActivity : FlutterActivity() {
                 val taken = saveChord.take(event.action, event.keyCode, event.metaState)
                 trace(event, "pre-IME", taken)
                 if (!taken) return super.dispatchKeyEventPreIme(event)
-                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                if (false && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) { // MUTANT: never asks Dart to save
                     keys?.invokeMethod("save", null)
                 }
                 return true
