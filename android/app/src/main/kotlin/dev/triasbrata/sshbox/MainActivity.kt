@@ -33,6 +33,9 @@ import java.util.Locale
 // cannot open — so it is copied into our own cache first, and only the path
 // crosses the channel. A link or a snippet arrives as text and crosses as it
 // is, for Dart to paste at the prompt.
+// MUTANT: the frame that takes Ctrl+S before the IME is never put in.
+private const val MUTANT = true
+
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
 
@@ -53,6 +56,7 @@ class MainActivity : FlutterActivity() {
     // here, given to the FlutterView's own key handling; everything else
     // passes on untouched.
     override fun setContentView(view: View) {
+        if (MUTANT) return super.setContentView(view)
         val frame = object : FrameLayout(this) {
             override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
                 if (!saveChord.take(event.action, event.keyCode, event.metaState)) {
