@@ -39,16 +39,21 @@ the user has tried it.
    feature baru"): `tag.yml` releases once ten commits that change the app
    have gathered since the last release, or at once when one of them is a
    new feature. **A commit that adds a new feature ends its message with a
-   `Release: feature` trailer**, beside `Co-Authored-By:`; without it the
+   `Release: feature` trailer**, in the same last paragraph as
+   `Co-Authored-By:` (a blank line between them makes it plain text and the
+   release never fires); without it the
    feature waits for the batch. A fix, a polish or a follow-up to a failed
    UAT does not carry it. A release is tagged `vX.Y.Z-rc.N` first and must
    pass `e2e.yml` before it becomes `vX.Y.Z` and goes to Play's closed
    testing, the desktop builds to R2 and the notes to the website; a failed
-   candidate opens an issue instead. The gate runs three flows —
-   `seed_host`, `smoke` and `connect_and_keybar` — on a CI emulator, since
-   Maestro's driver will not install on the tablet's HyperOS; `tabs` and
-   `file_browser` run too but only report, and a flow joins the gate once it
-   has been green there. (From the rc gate's merge until its flows landed,
+   candidate opens an issue instead. The Android gate runs on CI emulators,
+   since Maestro's driver will not install on the tablet's HyperOS, as five
+   parallel shards balanced by `e2e/android_durations.tsv` (about 45
+   minutes). After `seed_host` it gates on eight flows — `smoke`,
+   `connect_and_keybar`, `chat_version`, `html_tab`, `chat_edit_previous`,
+   `chat_images`, `chat_follow_jump` and `chat_usage`; every other flow runs
+   too but only reports, and a flow joins the gate once it has been green in
+   whole sharded runs. (From the rc gate's merge until its flows landed,
    both on 2026-09-22, `e2e.yml` had none and released nothing.) The
    coordinator does this step for
    sub-agents, because git against the main checkout is blocked from their
