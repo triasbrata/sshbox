@@ -306,7 +306,7 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// Android's hardware Ctrl+S, taken before the input method, saves here
   /// while this page holds the focus (see [SaveChord]), as [_onPageKey] does.
   void _claimSaveChord() =>
-      SaveChord.want(this, _pageFocus.hasFocus ? _saveFromChord : null);
+      SaveChord.want(this, _saveFromChord); // MUTANT: never lets go
 
   void _saveFromChord() {
     if (_canSave) _save();
@@ -488,7 +488,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     }
     _find.dispose();
     _editorFocus.dispose();
-    SaveChord.want(this, null);
+    // MUTANT: no let-go on close
     _pageFocus.dispose();
     _images.dispose();
     _controller.removeListener(_onEdited);
