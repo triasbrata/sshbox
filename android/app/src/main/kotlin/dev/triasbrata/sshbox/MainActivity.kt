@@ -53,11 +53,12 @@ class MainActivity : FlutterActivity() {
     // here, given to the FlutterView's own key handling; everything else
     // passes on untouched.
     override fun setContentView(view: View) {
+        trace("frame around ${view.javaClass.simpleName}")
         val frame = object : FrameLayout(this) {
             override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
-                if (!saveChord.take(event.action, event.keyCode, event.metaState)) {
-                    return super.dispatchKeyEventPreIme(event)
-                }
+                val taken = saveChord.take(event.action, event.keyCode, event.metaState)
+                trace(event, "pre-IME", taken)
+                if (!taken) return super.dispatchKeyEventPreIme(event)
                 view.dispatchKeyEvent(event)
                 return true
             }
@@ -67,6 +68,34 @@ class MainActivity : FlutterActivity() {
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
         super.setContentView(frame)
+    }
+
+    // After the IME: what reached the window at all.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        trace(event, "post-IME", null)
+        return super.dispatchKeyEvent(event)
+    }
+
+    // A debug build's trail for the e2e, `adb logcat -s SaveChord`: Ctrl and
+    // S alone, never another key, so it is no record of what is typed.
+    private val debuggable by lazy {
+        applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+    }
+
+    private fun trace(event: KeyEvent, where: String, taken: Boolean?) {
+        val code = event.keyCode
+        if (code != KeyEvent.KEYCODE_S && code != KeyEvent.KEYCODE_CTRL_LEFT &&
+            code != KeyEvent.KEYCODE_CTRL_RIGHT
+        ) return
+        trace(
+            "$where ${KeyEvent.keyCodeToString(code)} action=${event.action} " +
+                "meta=0x${Integer.toHexString(event.metaState)} device=${event.deviceId} " +
+                "flags=0x${Integer.toHexString(event.flags)} wanted=${saveChord.wanted} taken=$taken",
+        )
+    }
+
+    private fun trace(what: String) {
+        if (debuggable) Log.i("SaveChord", what)
     }
 
     // One Jeansh at a time, however it was started. A second MainActivity is
@@ -148,6 +177,7 @@ class MainActivity : FlutterActivity() {
                     result.success(open(Uri.parse(call.argument("uri")!!), call.argument("name")!!))
                 } else if (call.method == "saveChord") {
                     saveChord.wanted = call.arguments as Boolean
+                    trace("wanted=${saveChord.wanted}")
                     result.success(null)
                 } else if (call.method == "isTestLab") {
                     // Firebase Test Lab, which Play's pre-launch robot runs on.
