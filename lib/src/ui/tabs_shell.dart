@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -322,9 +323,8 @@ class _TabsShellState extends State<TabsShell> {
   /// notice, where it has none (Linux and Windows).
   void Function(String path)? _onOpenHtml(TabRef tab) => hasWebView
       ? (path) => widget.sessions.openHtml(tab.session.id, path)
-      : (path) => unawaited(
-          openHtmlOutside(context, tab.session.fileBrowser, path),
-        );
+      : (path) =>
+            unawaited(openHtmlOutside(context, tab.session.fileBrowser, path));
 
   Widget _pageFor(TabRef tab) => switch (tab.kind) {
     TabKind.terminal => TerminalPage(
@@ -750,6 +750,18 @@ class TabStrip extends StatefulWidget {
 String _idOf(TabRef tab) =>
     '${tab.kind.name}:${tab.session.id}:${tab.path ?? tab.web?.id ?? ''}';
 
+/// What [tab]'s chip on the strip says.
+String _nameOf(TabRef tab) => switch (tab.kind) {
+  // As a file tab reads: the host, then what the tab is.
+  TabKind.chat => '${tab.session.fileTabHost} · Claude',
+  TabKind.git => 'Git',
+  // The diff's own name already says what it is: "main.dart · diff".
+  TabKind.diff => tab.session.diffTabTitle(tab.path!),
+  TabKind.file => tab.session.fileTabTitle(tab.path!),
+  TabKind.web => tab.web!.title,
+  TabKind.terminal => tab.session.title,
+};
+
 /// The same, for a database's tab.
 String _dbIdOf(DbTab tab) => 'database:${tab.id}';
 
@@ -767,6 +779,11 @@ class _TabStripState extends State<TabStrip> {
   /// One key per tab, so the selected one can be scrolled into view.
   final Map<String, GlobalKey> _keys = {};
   String? _shown;
+
+  /// What the selected tab was called when it was brought into view: a web
+  /// page names its tab once it has loaded, and a longer name can push the
+  /// close button off the strip's end.
+  String? _shownName;
 
   @override
   void initState() {
@@ -798,15 +815,23 @@ class _TabStripState extends State<TabStrip> {
       ...widget.databases.map(_dbIdOf),
       if (widget.showTransfers) _transfersId,
     ];
+    final names = [
+      ...widget.tabs.map(_nameOf),
+      ...widget.databases.map((tab) => tab.title),
+      if (widget.showTransfers) 'Transfers',
+    ];
     final index = widget.activeIndex - 1;
     if (index < 0 || index >= ids.length) {
       _shown = null;
+      _shownName = null;
       return;
     }
 
     final id = ids[index];
-    if (id == _shown) return;
+    final name = names[index];
+    if (id == _shown && name == _shownName) return;
     _shown = id;
+    _shownName = name;
 
     // After the frame: a tab opened in this same build has no context to
     // scroll to yet.
@@ -1073,16 +1098,7 @@ class _TabStripState extends State<TabStrip> {
 
     for (final tab in tabs) {
       final id = _idOf(tab);
-      final name = names[id] = switch (tab.kind) {
-        // As a file tab reads: the host, then what the tab is.
-        TabKind.chat => '${tab.session.fileTabHost} · Claude',
-        TabKind.git => 'Git',
-        // The diff's own name already says what it is: "main.dart · diff".
-        TabKind.diff => tab.session.diffTabTitle(tab.path!),
-        TabKind.file => tab.session.fileTabTitle(tab.path!),
-        TabKind.web => tab.web!.title,
-        TabKind.terminal => tab.session.title,
-      };
+      final name = names[id] = _nameOf(tab);
       final select = selects[id] = () => widget.onSelect(
         tab.session.id,
         kind: tab.kind,
@@ -1225,13 +1241,22 @@ class _TabStripState extends State<TabStrip> {
               Expanded(
                 child: single
                     ? strip.single
-                    : SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        // What the tabs leave empty passes a press on, to the
-                        // title bar behind the strip on a Mac.
-                        hitTestBehavior: HitTestBehavior.translucent,
-                        child: Row(
-                          children: [...strip, if (followsTabs) addTab],
+                    // The room the tabs are shown in, so that no chip is
+                    // wider than it: a phone's strip is narrower than a
+                    // selected tab with a long name, whose close button
+                    // would sit past the end, behind +.
+                    : LayoutBuilder(
+                        builder: (context, room) => _StripRoom(
+                          width: room.maxWidth,
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            // What the tabs leave empty passes a press on, to
+                            // the title bar behind the strip on a Mac.
+                            hitTestBehavior: HitTestBehavior.translucent,
+                            child: Row(
+                              children: [...strip, if (followsTabs) addTab],
+                            ),
+                          ),
                         ),
                       ),
               ),
@@ -1262,6 +1287,19 @@ class _TabStripState extends State<TabStrip> {
       ],
     );
   }
+}
+
+/// How wide the strip's visible room is, for each chip to fit in it.
+class _StripRoom extends InheritedWidget {
+  const _StripRoom({required this.width, required super.child});
+
+  final double width;
+
+  static double? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_StripRoom>()?.width;
+
+  @override
+  bool updateShouldNotify(_StripRoom oldWidget) => oldWidget.width != width;
 }
 
 class _TabChip extends StatelessWidget {
@@ -1331,6 +1369,18 @@ class _TabChip extends StatelessWidget {
   static const double _height = 39;
   static const double _iconSize = 14;
   static const double _inset = 12;
+  static const double _closeSize = 32;
+
+  /// How wide the close button comes out: its compact density takes from
+  /// its size, and on a touch screen it is padded out to the tap target
+  /// Material wants, less the same.
+  static double _closeWidth(ThemeData theme) {
+    final dense = VisualDensity.compact.baseSizeAdjustment.dx;
+    final own = _closeSize + dense;
+    return theme.materialTapTargetSize == MaterialTapTargetSize.padded
+        ? math.max(own, kMinInteractiveDimension + dense)
+        : own;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1339,9 +1389,23 @@ class _TabChip extends StatelessWidget {
     final foreground = selected ? p.accent : p.muted;
     final name = label;
     final cut = cutFirst;
-    final room = selected ? _selectedText : _idleText;
     final reconnect = onReconnect != null;
     final onEnd = onReconnect ?? onClose;
+    // Never wider than the strip shows: besides its name a chip has its
+    // insets, its icon and the gap after it, and its close button.
+    final strip = _StripRoom.of(context);
+    final rest =
+        _inset +
+        _iconSize +
+        6 +
+        (onEnd == null ? _inset : 4 + _closeWidth(theme));
+    final room = math.max(
+      0.0,
+      math.min(
+        selected ? _selectedText : _idleText,
+        strip == null ? double.infinity : strip - rest,
+      ),
+    );
     Text text(String data) => Text(
       data,
       overflow: TextOverflow.ellipsis,
@@ -1418,8 +1482,8 @@ class _TabChip extends StatelessWidget {
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(
-                    minWidth: 32,
-                    minHeight: 32,
+                    minWidth: _closeSize,
+                    minHeight: _closeSize,
                   ),
                   icon: Icon(
                     reconnect ? Icons.cable : Icons.close,

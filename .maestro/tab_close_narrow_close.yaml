@@ -1,0 +1,19 @@
+# The second half of tab_close_narrow.yaml, once the runner has measured the
+# selected web tab's ✕: tapped straight away, with no scroll of the strip
+# first, and once, as a tap that lands on + instead must not be tried again.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- tapOn:
+    text: "Close ${TITLE}"
+    retryTapIfNoChange: false
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# The tab is gone, and the shell is what is shown.
+- assertNotVisible: "Close ${TITLE}"
+- assertNotVisible: "Jeansh narrow heading"
+- assertNotVisible: "Reload"
+- assertVisible: "Browse files"
+- tapOn: "Close ${HOST_LABEL}.*"
