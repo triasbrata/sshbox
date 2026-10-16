@@ -32,7 +32,7 @@ UNITS=(smoke connect_and_keybar
   chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
   html_tab html_site tab_close_narrow chat_session_status chat_progress
   chat_working_backstop
-  chat_images chat_subagents chat_usage chat_compact chat_model chat_cwd
+  chat_images chat_attach_deliver chat_subagents chat_usage chat_compact chat_model chat_cwd
   folder_zip chat_outbox chat_outbox_reconnect
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
@@ -1728,6 +1728,102 @@ print(" ".join(str(r["pid"]) for r in json.load(open(sys.argv[1]))
   return "$status"
 }
 
+# Typing into a running `claude --bg` session through `claude attach`
+# (.maestro/chat_attach_deliver.yaml), against chat_images' host and its
+# "E2E pictures live" session, whose attach is the stand-in's raw input line.
+# Measured on 2.1.287: a turn over while a shell it started in the background
+# runs is listed busy and done, and takes a message typed then; the input line
+# is one for every attach, so a draft at a terminal is in it.
+#   1. busy, done:    typed at once, not Queued          (positive, (a))
+#   2. busy, working: Queued, nothing typed; then done,  (negative, (a))
+#                     typed, the shell still running
+#   3. a draft there: refused, nothing typed, no Enter   (negative, (b))
+# 1 is also (b)'s positive: an empty line is typed into.
+attach_row() { # status state
+  sudo -u "$SSH_USER" -H python3 - "${PICS_SIDS[1]}" "$@" <<'PY'
+import json, os, sys
+sid, status, state = sys.argv[1:4]
+path = os.path.join(os.environ['HOME'], '.e2e-agents.json')
+rows = json.load(open(path))
+for row in rows:
+    if row.get('sessionId') == sid:
+        row.update(status=status, state=state)
+json.dump(rows, open(path, 'w'))
+PY
+}
+
+# The events the stand-in's input line logged for MSG: text typed, or an Enter.
+attach_got() { # ev MSG
+  sudo python3 - "/home/$SSH_USER/.e2e-pics.log" "$@" <<'PY'
+import json, sys
+log, ev, msg = sys.argv[1:4]
+n = 0
+for line in open(log):
+    e = json.loads(line) if line.strip() else {}
+    if e.get("ev") == ev and msg.lower() in (e.get("v") or e.get("text") or "").lower():
+        n += 1
+print(n)
+PY
+}
+
+chat_attach_deliver() {
+  app_fresh
+  local status=0 log=/home/$SSH_USER/.e2e-pics.log s=(-e "SESSION=E2E pictures live")
+  attach_check() { # what count want
+    if [ "$2" = "$3" ]; then echo "✅ $1"; else echo "::error::❌ $1: $2, not $3"; status=1; fi
+  }
+  pics_host || return 1
+  # The host user's own, as the stand-in writes it: a `sudo truncate` of a
+  # log pics_host removed makes it root's, and the stand-in's attach then
+  # dies at its first line.
+  sudo -u "$SSH_USER" -H touch "$log"
+  sudo rm -f "/home/$SSH_USER/.e2e-attach-draft"
+  flow chat_attach_deliver -e STEP=open "${s[@]}" || status=1
+
+  echo "::group::chat_attach_deliver 1: busy and done, a shell still running"
+  sudo truncate -s 0 "$log"
+  attach_row busy done
+  flow chat_attach_deliver -e STEP=send "${s[@]}" -e "MSG=shell still runs" \
+    -e "SEE=(?i)Echo: shell still runs" -e SHOT=shell || status=1
+  attach_check "1: typed into the session once" "$(attach_got enter 'shell still runs')" 1
+  echo "::endgroup::"
+
+  echo "::group::chat_attach_deliver 2: busy and working, mid-turn"
+  sudo truncate -s 0 "$log"
+  attach_row busy working
+  flow chat_attach_deliver -e STEP=send "${s[@]}" -e "MSG=wait for the turn" \
+    -e "SEE=Queued: it runs after" -e SHOT=queued || status=1
+  sleep 8
+  attach_check "2: no attach opened mid-turn" "$(attach_got tui '')" 0
+  attach_check "2: nothing typed mid-turn" "$(attach_got text 'wait for the turn')" 0
+  attach_row busy done
+  flow chat_attach_deliver -e STEP=see "${s[@]}" -e "SEE=(?i)Echo: wait for the turn" \
+    -e SHOT=released || status=1
+  attach_check "2: typed once the turn ended, the shell still running" \
+    "$(attach_got enter 'wait for the turn')" 1
+  echo "::endgroup::"
+
+  echo "::group::chat_attach_deliver 3: a draft at the terminal"
+  sudo truncate -s 0 "$log"
+  attach_row idle done
+  printf 'half typed' | sudo -u "$SSH_USER" -H tee "/home/$SSH_USER/.e2e-attach-draft" >/dev/null
+  flow chat_attach_deliver -e STEP=send "${s[@]}" -e "MSG=not with the draft" \
+    -e "SEE=Something is typed into" -e SHOT=draft || status=1
+  sleep 3
+  echo "the stand-in's log:"; sudo cat "$log"
+  attach_check "3: the attach saw the draft" "$(attach_got draft 'half typed')" 1
+  attach_check "3: nothing typed after it" "$(attach_got text 'not with the draft')" 0
+  attach_check "3: no Enter" "$(attach_got enter '')" 0
+  sudo rm -f "/home/$SSH_USER/.e2e-attach-draft"
+  echo "::endgroup::"
+
+  keep_shots 'chat-attach-*.png'
+  sudo -u "$SSH_USER" -H tmux kill-session -t e2e-pics 2>/dev/null
+  for pid in "${pics_pids[@]}"; do sudo kill "$pid" 2>/dev/null; done
+  stand_in ''
+  return "$status"
+}
+
 # #159: the live marks in chat's sessions sidebar. One pinned background
 # session on the stand-in listing, its process a sleep of the host user's own,
 # rewritten between three flows that keep the app as it is: working, then
@@ -3140,6 +3236,7 @@ u_html_tab() { gate html_tab html_tab; }
 u_html_site() { report_bare html_site html_site; }
 u_tab_close_narrow() { report_bare tab_close_narrow tab_close_narrow; }
 u_chat_images() { gate chat_images chat_images; }
+u_chat_attach_deliver() { report_bare chat_attach_deliver chat_attach_deliver; }
 u_chat_usage() { gate chat_usage chat_usage; }
 for name in chat_session_status chat_progress chat_working_backstop \
   chat_subagents chat_compact chat_model chat_cwd; do

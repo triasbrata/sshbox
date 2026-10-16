@@ -3724,17 +3724,30 @@ class ClaudeChat extends ChangeNotifier {
   /// Whether [said] is held here, and so can be taken back.
   bool isHeld(ChatSaid said) => _held.any((held) => held.said == said);
 
-  /// Mid-turn, with nothing asked of the user: what the session's list row
-  /// says, whichever kind of session it is.
   /// A session in a tmux pane that is not waiting for a message: mid-turn, or
   /// asking something at its terminal. Nothing is typed into it, and a
   /// message for it waits.
   static bool _paneNotReady(ClaudeAgent agent) =>
       agent.interactive && (agent.waitingFor != null || agent.status != 'idle');
 
+  /// Mid-turn, with nothing asked of the user: what the session's list row
+  /// says, whichever kind of session it is.
+  ///
+  /// A background session whose turn is over while a shell it started with
+  /// `run_in_background` still runs is not mid-turn, though `claude agents`
+  /// calls it `busy`. Measured on 2.1.287 with a throwaway `claude --bg`
+  /// that started `sleep 600` that way and ended its turn: its row read
+  /// `"status":"busy","state":"done"`, its `~/.claude/sessions/<pid>.json`
+  /// `"status":"shell"`, with no `waitingFor` in either, and the attach drew
+  /// `done … · 1 shell still running` over an empty `❯`. A message typed
+  /// into it through `claude attach` then was taken at once as a new turn
+  /// and answered, the row going `working` and back to `busy`, `done`. So
+  /// `done` wins over `busy`: held, a message waited for the shell — hours,
+  /// for a polling loop — where Claude Code itself takes it.
   static bool _busyNow(ClaudeAgent agent) =>
       agent.waitingFor == null &&
-      (agent.state == 'working' || agent.status == 'busy');
+      (agent.state == 'working' ||
+          (agent.status == 'busy' && agent.state != 'done'));
 
   void _hold(
     ChatSaid said,
@@ -3918,12 +3931,18 @@ class ClaudeChat extends ChangeNotifier {
       // A moment for the rest of the screen to settle under the prompt.
       await Future<void>.delayed(const Duration(milliseconds: 500));
       if (!_current(target)) return _movedOn(said, agent);
+      // Somebody's draft at a terminal attached to it: typed after, this
+      // would go as one message with it. Nothing is typed, no Enter.
+      if (inputLine(shown)?.isNotEmpty ?? false) {
+        return _undelivered(said, 'Not typed: ${_draftWhy(agent)}');
+      }
+      final parts = segments(said.text, paths);
       // Counted from what the line already shows, and with every
       // `[Image #N]` typed as text: a picture goes on once there is one more
       // than those, never at a count text of the user's own could make.
       var chips = chipsIn(_screenLines(shown));
       var wrote = false;
-      for (final part in segments(said.text, paths)) {
+      for (final part in parts) {
         // Before each part, not once: a picture waits for its chip, and a
         // chat that moved on meanwhile writes no more of it. What was written
         // before is in the session's input line, which is what is said.
@@ -3940,6 +3959,18 @@ class ClaudeChat extends ChangeNotifier {
       // Typed, and the chat has moved on since: not sent with Enter, which
       // would answer in a session nobody is looking at.
       if (!_current(target)) return _movedOn(said, agent, typed: true);
+      // Again right before Enter, as [paneCommand] does: what was typed at
+      // the terminal meanwhile is in the same line, and Enter would send
+      // both. A paste is not checked, Claude Code drawing it as a
+      // placeholder of its own, and chips are left out on both sides, a
+      // picture whose chip never came having gone on without it.
+      final typed = typedLine(parts);
+      if (typed != null &&
+          inputLine(shown)?.replaceAll('[Image]', '') != typed) {
+        return _undelivered(said, 'Typed into “${agent.name}” but not sent — '
+            '${_draftWhy(agent, meanwhile: true)} It is in its input line at '
+            'the terminal.');
+      }
       terminal.write(Uint8List.fromList(const [13]));
       if (!confirm) {
         said.delivery = null;
@@ -4060,9 +4091,7 @@ class ClaudeChat extends ChangeNotifier {
             'terminal first.',
         'dialog' => '$name is showing a question or a picker at its '
             'terminal. Answer it there first.',
-        'draft' => 'Something is typed into $name at its terminal and not '
-            'sent yet. Send or clear it there first, so the two do not go '
-            'as one.',
+        'draft' => _draftWhy(agent),
         _ => answer.trim().isEmpty
             ? 'The host said nothing.'
             : 'tmux would not take it: ${answer.trim()}',
@@ -4211,6 +4240,72 @@ class ClaudeChat extends ChangeNotifier {
     return lines
         .skip(at)
         .fold(0, (count, line) => count + _anyChip.allMatches(line).length);
+  }
+
+  /// Why nothing went into [agent]: text of somebody's at its terminal was
+  /// in its input line — there already, or, with [meanwhile], typed there
+  /// while this went in.
+  static String _draftWhy(ClaudeAgent agent, {bool meanwhile = false}) =>
+      meanwhile
+      ? 'something was typed into “${agent.name}” at its terminal while '
+            'this went in. Send or clear it there, so the two do not go as '
+            'one.'
+      : 'Something is typed into “${agent.name}” at its terminal and not '
+            'sent yet. Send or clear it there first, so the two do not go as '
+            'one.';
+
+  /// What Claude Code's input line holds on [shown], an attach's screen:
+  /// from its last line starting with `❯` down to the rule under the box,
+  /// with no whitespace and every `[Image #N]` read as `[Image]`. Empty when
+  /// nothing is typed there; null when no input line shows.
+  ///
+  /// The input line is one for every attach to a session, measured on
+  /// 2.1.287: a draft typed at one terminal showed in an attach opened after
+  /// it, and what that attach typed went on the end of it. So a draft of the
+  /// user's at a terminal is read here before anything is typed, and the
+  /// line again before Enter.
+  @visibleForTesting
+  static String? inputLine(Terminal shown) {
+    final lines = _screenLines(shown);
+    final at = lines.lastIndexWhere(
+      (line) => line.trimLeft().startsWith('❯'),
+    );
+    if (at < 0) return null;
+    final first = lines[at];
+    final prompt = first.indexOf('❯');
+    // A suggestion Claude Code shows in an empty line is drawn after the
+    // cursor, which stays just after the `❯` (measured on 2.1.287: column 2
+    // with the line empty, 9 with `abc def` in it): not a draft.
+    final buffer = shown.buffer;
+    if (buffer.absoluteCursorY == at && buffer.cursorX <= prompt + 2) {
+      return '';
+    }
+    final text = StringBuffer(first.substring(prompt + 1));
+    for (final line in lines.skip(at + 1)) {
+      if (line.startsWith('─')) break;
+      text.write(line);
+    }
+    return text
+        .toString()
+        .replaceAll(_anyChip, '[Image]')
+        .replaceAll(RegExp(r'\s'), '');
+  }
+
+  /// What [inputLine] reads once [parts] are typed into an empty line, with
+  /// no chips, or null when that cannot be said: a part pasted shows as
+  /// Claude Code's own `[Pasted text #N]`, not as itself.
+  @visibleForTesting
+  static String? typedLine(List<({String keys, bool picture})> parts) {
+    final line = StringBuffer();
+    for (final part in parts) {
+      if (part.picture) continue;
+      if (part.keys.startsWith('\x1b[200~')) return null;
+      line.write(part.keys);
+    }
+    return line
+        .toString()
+        .replaceAll(_anyChip, '')
+        .replaceAll(RegExp(r'\s'), '');
   }
 
   /// Text as it may go into a paste: no escape, and no control but a newline
