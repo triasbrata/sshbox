@@ -93,7 +93,10 @@ void main() {
       'dexterous.com/flutter/local_notifications',
       'com.llfbandit.app_links/messages',
     ]) {
-      messenger.setMockMethodCallHandler(MethodChannel(name), (_) async => null);
+      messenger.setMockMethodCallHandler(
+        MethodChannel(name),
+        (_) async => null,
+      );
     }
     messenger.setMockStreamHandler(
       const EventChannel('com.llfbandit.app_links/events'),
@@ -141,9 +144,16 @@ void main() {
       'are done, and comes once after Skip', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final messenger = tester.binding.defaultBinaryMessenger;
-    for (final name in ['sshbox/share', 'com.llfbandit.app_links/messages']) {
-      messenger.setMockMethodCallHandler(MethodChannel(name), (_) async => null);
-    }
+    // MainActivity answers the notification icon's id, as the app does:
+    // without it the plugin is not started and nothing asks (JEANSH-8).
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('sshbox/share'),
+      (call) async => call.method == 'notificationIcon' ? '2131165312' : null,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('com.llfbandit.app_links/messages'),
+      (_) async => null,
+    );
     messenger.setMockStreamHandler(
       const EventChannel('com.llfbandit.app_links/events'),
       MockStreamHandler.inline(onListen: (_, _) {}),
