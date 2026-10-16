@@ -5801,7 +5801,7 @@ class ClaudeChat extends ChangeNotifier {
   /// none or for any other text, which never reaches the shell.
   static String _effortFlag(String? level) {
     final known = ChatEffort.known(level);
-    return known == null ? '' : ' --effort $known';
+    return known == null ? '' : '';
   }
 
   /// What the host runs to list its Claude sessions.
