@@ -379,6 +379,43 @@ class ChatModel {
   }
 }
 
+/// The effort levels a chat offers: what `claude --effort` takes, measured on
+/// 2.1.287 as low, medium, high, xhigh and max. No pick is no flag at all, so
+/// the host's own default stays in charge.
+///
+/// How a running session changes it, measured on 2.1.287 with stream-json:
+/// there is no `set_effort` control request, but `apply_flag_settings` with
+/// `{"effortLevel": "high"}` changes it at once, and `null` puts the default
+/// back — `get_settings` then reports `applied.effort` as `high`, and after
+/// `null` as `medium`, even in a process started with `--effort high`. A
+/// value it does not know is answered success and changes nothing, which is
+/// why only these levels are ever sent. `/effort <level>` exists too, and
+/// `/effort auto` puts the default back; under `-p` it answers `Set effort
+/// level to xhigh (this session only)`, while in an interactive session the
+/// CLI also saves the level as the host's default for new sessions — the
+/// same as typing it at that terminal.
+class ChatEffort {
+  const ChatEffort._();
+
+  /// Shown for no pick; never sent.
+  static const defaultLabel = 'Default';
+
+  static const levels = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+  /// A level this offers, else null: the only text that ever reaches a
+  /// command line or a session.
+  static String? known(String? level) => levels.contains(level) ? level : null;
+
+  /// The level a `/effort` command's output says it set: `Set effort level
+  /// to high (…)` gives `high`, `Effort level set to auto …` gives
+  /// [defaultLabel]; null for anything else, a refusal included.
+  static String? fromOutput(String output) {
+    if (output.startsWith('Effort level set to auto')) return defaultLabel;
+    final m = RegExp(r'^Set effort level to ([a-z]+)').firstMatch(output);
+    return known(m?.group(1));
+  }
+}
+
 /// How much of its context window a session uses, from the usage of the last
 /// request it made: what went in, whether new or read from the cache, plus what
 /// came out, which is what the next request carries. The window is not in a
@@ -1074,6 +1111,69 @@ class ClaudeChat extends ChangeNotifier {
     } else {
       _alias = known == ChatModel.defaultAlias ? null : known;
       _model = null;
+    }
+    notifyListeners();
+  }
+
+  /// The effort level picked for what this chat starts, or null for the
+  /// host's own default; kept across [restart] as [_alias] is.
+  String? _effort;
+
+  /// A watched session's level as its last `/effort` reported it, or null
+  /// when nothing said: [ChatEffort.defaultLabel] after `/effort auto`.
+  String? _watchedEffort;
+  final _effortAsks = <String, String?>{};
+  int _effortRequests = 0;
+
+  /// The level to show and to mark as chosen, null when not known or none
+  /// was picked.
+  String? get effort {
+    final level = _watching == null ? _effort : _watchedEffort;
+    return level == ChatEffort.defaultLabel ? null : level;
+  }
+
+  /// Taken where a model pick is taken, for the same reasons.
+  bool get canPickEffort => canPickModel;
+
+  /// Why effort cannot be changed from here, for a hint.
+  static const effortReadOnlyHint =
+      'Read-only from here: change its effort in its own terminal with /effort.';
+
+  /// Picks [level], one of [ChatEffort.levels], or null for the default. A
+  /// chat of this app's own changes it at once with `apply_flag_settings`
+  /// (see [ChatEffort]); a new chat starts with `--effort`, and a restart
+  /// keeps it. A watched session is sent `/effort <level>`, or `/effort auto`
+  /// for the default, as a message is, and the chip follows its record.
+  Future<void> setEffort(String? level) async {
+    final known = ChatEffort.known(level);
+    if ((level != null && known == null) || !canPickEffort || modelStarting) {
+      return;
+    }
+    if (_watching != null) return send('/effort ${known ?? 'auto'}');
+    if (!_composing && _ready && _channel != null) {
+      // Taken only once the CLI accepts it, as a model pick is.
+      final id = 'sshbox-effort-${++_effortRequests}';
+      _effortAsks[id] = known;
+      final sent = _write({
+        'type': 'control_request',
+        'request_id': id,
+        'request': {
+          'subtype': 'apply_flag_settings',
+          'settings': {'effortLevel': known},
+        },
+      });
+      if (!sent) {
+        _effortAsks.remove(id);
+        _say(
+          ChatNotice(
+            'The effort was not changed: Claude is not running.',
+            failed: true,
+          ),
+        );
+        return;
+      }
+    } else {
+      _effort = known;
     }
     notifyListeners();
   }
@@ -2088,6 +2188,7 @@ class ClaudeChat extends ChangeNotifier {
           permission: _permission,
           resume: _sessionId,
           model: _alias,
+          effort: _effort,
           resumeAt: _resumeAt,
           fork: _fork,
         ),
@@ -3169,6 +3270,8 @@ class ClaudeChat extends ChangeNotifier {
     _model = null;
     // A model picked was for the chat left, not for the next session.
     _alias = null;
+    _effort = null;
+    _watchedEffort = null;
     // What was waiting to ask about the session being left, and how often it
     // had asked, is of no use to the one that replaces it.
     _askWhenSeen = false;
@@ -3301,6 +3404,7 @@ class ClaudeChat extends ChangeNotifier {
           cwd: startFolder,
           permission: _permission,
           model: _alias,
+          effort: _effort,
         ),
       );
       final String output;
@@ -4652,6 +4756,9 @@ class ClaudeChat extends ChangeNotifier {
         if (last.name == 'model' && output.startsWith('Set model to')) {
           _model = ChatModel.known(last.args) ?? _model;
         }
+        if (last.name == 'effort') {
+          _watchedEffort = ChatEffort.fromOutput(output) ?? _watchedEffort;
+        }
       } else if (output.isNotEmpty) {
         _entries.add(ChatNotice(output));
       }
@@ -4854,6 +4961,22 @@ class ClaudeChat extends ChangeNotifier {
             _say(
               ChatNotice(
                 'The model was not changed: ${response['error'] ?? 'refused'}',
+                failed: true,
+              ),
+            );
+          }
+          notifyListeners();
+        }
+        if (response is Map &&
+            _effortAsks.containsKey(response['request_id'])) {
+          final level = _effortAsks.remove(response['request_id']);
+          if (response['subtype'] == 'success') {
+            _effort = level;
+          } else {
+            _say(
+              ChatNotice(
+                'The effort was not changed: '
+                '${response['error'] ?? 'refused'}',
                 failed: true,
               ),
             );
@@ -5637,6 +5760,7 @@ class ClaudeChat extends ChangeNotifier {
     ChatPermission permission = ChatPermission.acceptEdits,
     String? resume,
     String? model,
+    String? effort,
     String? resumeAt,
     bool fork = false,
   }) {
@@ -5648,7 +5772,7 @@ class ClaudeChat extends ChangeNotifier {
         : '';
     final again =
         '${resume == null ? '' : ' --resume ${_shellQuote(resume)}'}$at';
-    final picked = _modelFlag(model);
+    final picked = '${_modelFlag(model)}${_effortFlag(effort)}';
     // Quoted once for each shell it passes through: the directory and the
     // session for sh, then the whole script for the login shell that runs sh.
     // Splicing a quoted value into an outer '…' closes that quote instead, so
@@ -5671,6 +5795,13 @@ class ClaudeChat extends ChangeNotifier {
     return known == null || known == ChatModel.defaultAlias
         ? ''
         : ' --model $known';
+  }
+
+  /// ` --effort <level>` for a level [ChatEffort.levels] offers; nothing for
+  /// none or for any other text, which never reaches the shell.
+  static String _effortFlag(String? level) {
+    final known = ChatEffort.known(level);
+    return known == null ? '' : ' --effort $known';
   }
 
   /// What the host runs to list its Claude sessions.
@@ -5809,12 +5940,14 @@ class ClaudeChat extends ChangeNotifier {
     String? cwd,
     ChatPermission permission = ChatPermission.acceptEdits,
     String? model,
+    String? effort,
   }) {
     final start = cwd == null || cwd.trim().isEmpty
         ? ''
         : 'cd ${_shellQuote(cwd)} || exit 1; ';
     final script = '$_findClaude$start'
         '"\$c" --bg --permission-mode ${permission.flag}${_modelFlag(model)}'
+        '${_effortFlag(effort)}'
         // With none, the session waits for its first message.
         '${prompt.isEmpty ? '' : ' -- ${_shellQuote(_pasteable(prompt))}'}'
         ' </dev/null 2>&1';

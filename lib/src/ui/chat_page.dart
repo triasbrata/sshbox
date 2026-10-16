@@ -2037,6 +2037,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                 ),
                               ),
                             Flexible(child: _ModelChip(chat: chat)),
+                            Flexible(child: _EffortChip(chat: chat)),
                           ],
                         ),
                       ),
@@ -4051,6 +4052,91 @@ class _ModelChip extends StatelessWidget {
                 : starting
                 ? null
                 : () => showToast(context, ClaudeChat.modelReadOnlyHint),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 32, maxWidth: 120),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Center(
+                  widthFactor: 1,
+                  child: TuiText(
+                    can ? '$label ▾' : label,
+                    size: 12,
+                    tone: TuiTextTone.dim,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// TODO(termul): a compact chip that opens a picker; see _ModelChip.
+/// The effort level picked (`Effort high`), and the choice of another, built
+/// as [_ModelChip] is: for a session watched on the host it types `/effort`,
+/// and one that is read-only from here shows the level only, with the hint.
+class _EffortChip extends StatelessWidget {
+  const _EffortChip({required this.chat});
+
+  final ClaudeChat chat;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final starting = chat.modelStarting;
+    final can = chat.canPickEffort && !starting;
+    final level = chat.effort;
+    final label = level == null ? 'Effort' : 'Effort $level';
+    const waiting = 'Claude is starting; pick an effort once it is up.';
+    return Builder(
+      builder: (chipContext) => TuiTooltip(
+        message: can
+            ? label
+            : starting
+            ? waiting
+            : ClaudeChat.effortReadOnlyHint,
+        excludeFromSemantics: true,
+        child: Semantics(
+          container: true,
+          button: can,
+          label: label,
+          hint: can
+              ? null
+              : starting
+              ? waiting
+              : ClaudeChat.effortReadOnlyHint,
+          excludeSemantics: true,
+          child: InkWell(
+            hoverColor: p.selection,
+            onTap: can
+                ? () async {
+                    final picked = await showTuiMenu<String>(
+                      context,
+                      anchor: chipContext,
+                      entries: [
+                        TuiMenuItem(
+                          value: ChatEffort.defaultLabel,
+                          label: ChatEffort.defaultLabel,
+                          checked: level == null,
+                        ),
+                        for (final l in ChatEffort.levels)
+                          TuiMenuItem(value: l, label: l, checked: level == l),
+                      ],
+                    );
+                    if (picked == null) return;
+                    unawaited(
+                      chat.setEffort(
+                        picked == ChatEffort.defaultLabel ? null : picked,
+                      ),
+                    );
+                  }
+                : starting
+                ? null
+                : () => showToast(context, ClaudeChat.effortReadOnlyHint),
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 32, maxWidth: 120),
               child: Padding(

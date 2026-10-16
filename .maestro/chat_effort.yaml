@@ -1,0 +1,131 @@
+# The effort chip beside the model chip in chat's composer, as a 2x2. A new
+# chat left on Default reaches `claude --bg` with no --effort, and one on high
+# with --effort high; chat's own Claude, once up, is sent apply_flag_settings
+# for low and the chip follows its answer; a session watched live in a tmux
+# pane is typed /effort max; one only watched, read-only, says how to change
+# its effort there, and nothing is sent.
+#
+# The host's stand-ins (tools/e2e_android.sh's chat_effort) keep every --bg's
+# arguments in order, every apply_flag_settings, and what the live pane was
+# typed, which the runner checks after the flow.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+
+# Negative: a new chat with no effort picked. The runner finds no --effort in
+# the first `claude --bg`.
+- tapOn: "Chat with Claude"
+- extendedWaitUntil:
+    visible: "Start a new chat…"
+    timeout: 20000
+- assertVisible: "Effort"
+- assertNotVisible: "Effort high"
+- tapOn: "Start a new chat…"
+- inputText: "hello default"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "Model Opus 5.5.*"
+    timeout: 60000
+- assertVisible: "Effort"
+- takeScreenshot: chat-effort-default
+
+# Positive: another new chat, on high. The chip offers Default and the five,
+# and the runner finds --effort high in the second `claude --bg`.
+- tapOn: "Chat settings"
+- tapOn: "New chat"
+- extendedWaitUntil:
+    visible: "Start a new chat…"
+    timeout: 10000
+- tapOn: "Effort.*"
+- extendedWaitUntil:
+    visible: "xhigh"
+    timeout: 5000
+- assertVisible: "(?s)\\W*Default.*"
+- assertVisible: "low"
+- assertVisible: "medium"
+- assertVisible: "max"
+- tapOn: "high"
+- extendedWaitUntil:
+    visible: "Effort high"
+    timeout: 5000
+- takeScreenshot: chat-effort-high
+- tapOn: "Start a new chat…"
+- inputText: "hello effort"
+- tapOn: "Send"
+- extendedWaitUntil:
+    visible: "Model Opus 5.5.*"
+    timeout: 60000
+
+# Chat's own Claude: low is sent as apply_flag_settings, and the chip reads it
+# once the stand-in has answered with success.
+- tapOn: "Effort.*"
+- extendedWaitUntil:
+    visible: "low"
+    timeout: 5000
+- tapOn: "low"
+- extendedWaitUntil:
+    visible: "Effort low"
+    timeout: 20000
+- assertNotVisible: "Effort high"
+- takeScreenshot: chat-effort-own
+
+# A session watched live in its tmux pane: max is typed into it as
+# /effort max, which the stand-in answers as 2.1.287 does, and the chip follows
+# that record. A session's own effort is not chat's, so the chip starts over.
+- runFlow: common/sessions.yaml
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E live session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E live session.*"
+- extendedWaitUntil:
+    visible: "(?s).*in tmux pane.*"
+    timeout: 20000
+- assertVisible: "Effort"
+- assertNotVisible: "Effort low"
+- tapOn: "Effort.*"
+- extendedWaitUntil:
+    visible: "max"
+    timeout: 5000
+- tapOn: "max"
+- extendedWaitUntil:
+    visible: "Effort max"
+    timeout: 30000
+- assertVisible: "(?s).*Set effort level to max.*"
+- takeScreenshot: chat-effort-watched
+
+# A session at a terminal outside tmux, only watched: read-only, and its chip
+# with it. A tap says so and opens no picker; nothing is typed into it (the
+# runner checks its transcript holds no /effort).
+- runFlow: common/sessions.yaml
+- extendedWaitUntil:
+    visible: "(?s)\\W*E2E terminal session.*"
+    timeout: 20000
+- tapOn: "(?s)\\W*E2E terminal session.*"
+- extendedWaitUntil:
+    visible: "(?s).*read-only: it runs in a terminal outside tmux.*"
+    timeout: 20000
+- tapOn: "Effort"
+- extendedWaitUntil:
+    visible: "(?s).*Read-only from here: change its effort in its own terminal with /effort.*"
+    timeout: 5000
+- assertNotVisible: "xhigh"
+- assertNotVisible: "Effort max"
+- takeScreenshot: chat-effort-read-only
+
+- tapOn: "(?s)Close .*Claude.*"
+- tapOn: "Close ${HOST_LABEL}.*"

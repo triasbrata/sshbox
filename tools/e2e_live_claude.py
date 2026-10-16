@@ -385,6 +385,8 @@ pane_lines = os.path.join(os.environ['HOME'], '.e2e-pane-lines.log')
 # The aliases /model takes, and the names the CLI says it set.
 MODELS = {'default': 'Default', 'opus': 'Opus 5.5', 'sonnet': 'Sonnet 5.5',
           'fable': 'Fable 5.1', 'haiku': 'Haiku 4.5'}
+# The levels /effort takes.
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 release = os.path.join(os.environ['HOME'], '.e2e-release')
 # While this file is there, an echoed turn carries a uuid and a time.
 stamped = os.path.join(os.environ['HOME'], '.e2e-stamped')
@@ -543,6 +545,10 @@ while True:
         # /model <alias>, as 2.1.287 answers it with no dialog.
         if name == 'model' and args.strip() in MODELS:
             printed = f'Set model to {MODELS[args.strip()]}'
+        # /effort <level>, as 2.1.287 answers it in an interactive session.
+        if name == 'effort' and args.strip() in EFFORTS:
+            printed = (f'Set effort level to {args.strip()} (saved as your '
+                       'default for new sessions)')
         record({'type': 'system', 'subtype': 'local_command', 'content':
                 f'<local-command-stdout>{printed}</local-command-stdout>'})
         sys.stdout.write(printed + '\n')

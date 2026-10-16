@@ -32,7 +32,7 @@ UNITS=(smoke connect_and_keybar
   chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
   html_tab html_site tab_close_narrow chat_session_status chat_progress
   chat_working_backstop
-  chat_images chat_subagents chat_usage chat_compact chat_model chat_cwd
+  chat_images chat_subagents chat_usage chat_compact chat_model chat_effort chat_cwd
   folder_zip chat_outbox chat_outbox_reconnect
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
@@ -276,6 +276,7 @@ case "$1" in
   # (the model chosen shows in them), and the line a real one prints, naming a
   # session the agents list holds.
   --bg) printf '%s\n' "$*" >"$HOME/.e2e-bg-args"
+    printf '%s\n' "$*" >>"$HOME/.e2e-bg-args.log"
     echo 'backgrounded · e2e0newc · New chat' ;;
   # chat_ask's stand-in for a `-p` that asks and waits for the answer, where
   # a flow put one; it answers the `initialize` as well.
@@ -290,6 +291,10 @@ case "$1" in
       case $line in
         *'"initialize"'*) cat "$HOME/.e2e-commands.json" 2>/dev/null ;;
         *'"set_model"'*) printf '%s\n' "$line" >>"$HOME/.e2e-model-requests"
+          id=${line#*'"request_id":"'}; id=${id%%'"'*}
+          printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id" ;;
+        # An effort picked for chat's own claude, kept and answered alike.
+        *'"apply_flag_settings"'*) printf '%s\n' "$line" >>"$HOME/.e2e-effort-requests"
           id=${line#*'"request_id":"'}; id=${id%%'"'*}
           printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id" ;;
       esac
@@ -1448,6 +1453,89 @@ PY
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   [ -n "$ro_pid" ] && sudo kill "$ro_pid" 2>/dev/null
   sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-model-requests" "$home/.e2e-model" \
+    "$home/.e2e-pane-lines.log" "$projects/$RO_SID.jsonl"
+  end_live_session
+  stand_in ''
+  return "$status"
+}
+
+# The effort chip beside the model chip, its 2x2: a new chat left on Default
+# runs `claude --bg` with no --effort, and one on high with --effort high
+# (both kept, in order, in ~/.e2e-bg-args.log); chat's own claude is sent
+# apply_flag_settings with effortLevel low and its chip follows the answer; a
+# session watched live in a tmux pane is typed /effort max; one at a terminal
+# outside tmux, read-only, takes nothing. The same stand-ins as chat_model.
+chat_effort() {
+  local status=0 home=/home/$SSH_USER ro_pid lines first second
+  local projects=/home/$SSH_USER/.claude/projects/-home-$SSH_USER
+  chat_stand_in
+  end_live_session
+  live_session
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-bg-args.log" \
+    "$home/.e2e-effort-requests" "$home/.e2e-pane-lines.log"
+  sudo -u "$SSH_USER" touch "$home/.e2e-model"
+  ro_pid=$(sudo -u "$SSH_USER" sh -c 'setsid sleep 900 </dev/null >/dev/null 2>&1 & echo $!')
+  sudo -u "$SSH_USER" HOME="$home" python3 - "$RO_SID" "$ro_pid" <<'PY'
+import json, os, sys
+home, sid, pid = os.environ['HOME'], sys.argv[1], int(sys.argv[2])
+path = os.path.join(home, '.e2e-agents.json')
+rows = json.load(open(path))
+rows.append({'id': 'e2e0newc', 'cwd': home, 'kind': 'background',
+             'startedAt': 1790000000100, 'sessionId': 'e2e00002-0000-4000-8000-000000000002',
+             'name': 'New chat', 'state': 'done'})
+rows.append({'kind': 'interactive', 'pid': pid, 'sessionId': sid,
+             'name': 'E2E terminal session', 'cwd': home, 'status': 'idle',
+             'startedAt': 1790000000200})
+json.dump(rows, open(path, 'w'))
+d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+with open(os.path.join(d, sid + '.jsonl'), 'w') as f:
+    for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'At the desk'}},
+              {'type': 'assistant', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': 'Answered at the desk'}]}}):
+        f.write(json.dumps(e) + '\n')
+PY
+  adb shell settings put global animator_duration_scale 1
+  flow chat_effort || status=1
+  adb shell settings put global animator_duration_scale 0
+  echo "claude --bg was given: $(sudo cat "$home/.e2e-bg-args.log" 2>/dev/null)"
+  first=$(sudo sed -n 1p "$home/.e2e-bg-args.log" 2>/dev/null)
+  second=$(sudo sed -n 2p "$home/.e2e-bg-args.log" 2>/dev/null)
+  # Negative: no pick, no flag.
+  if [ -z "$first" ] || printf '%s' "$first" | grep -q -- '--effort'; then
+    echo "::error::the new chat left on Default was not started without --effort: $first" >&2
+    status=1
+  fi
+  # Positive: high picked, --effort high.
+  if ! printf '%s' "$second" | grep -q -- '--effort high'; then
+    echo "::error::the new chat on high was not given --effort high: $second" >&2
+    status=1
+  fi
+  echo "effort requests: $(sudo cat "$home/.e2e-effort-requests" 2>/dev/null)"
+  if ! sudo grep -q '"subtype":"apply_flag_settings","settings":{"effortLevel":"low"}' \
+    "$home/.e2e-effort-requests" 2>/dev/null; then
+    echo "::error::chat's claude was never sent effortLevel low" >&2
+    status=1
+  fi
+  lines=$(sudo cat "$home/.e2e-pane-lines.log" 2>/dev/null)
+  echo "lines typed into the live pane: ${lines:-none}"
+  if [ "$lines" != '/effort max' ]; then
+    echo "::error::the live pane was not typed exactly /effort max" >&2
+    status=1
+  fi
+  if ! sudo grep -q 'command-name>/effort<' "$projects/$LIVE_SID.jsonl" 2>/dev/null; then
+    echo "::error::the live session's record holds no /effort" >&2
+    status=1
+  fi
+  if sudo grep -q 'effort' "$projects/$RO_SID.jsonl" 2>/dev/null ||
+    [ "$(sudo wc -l <"$projects/$RO_SID.jsonl")" != 2 ]; then
+    echo "::error::something reached the read-only session" >&2
+    status=1
+  fi
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'chat-effort-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  [ -n "$ro_pid" ] && sudo kill "$ro_pid" 2>/dev/null
+  sudo rm -f "$home/.e2e-bg-args" "$home/.e2e-bg-args.log" \
+    "$home/.e2e-effort-requests" "$home/.e2e-model" \
     "$home/.e2e-pane-lines.log" "$projects/$RO_SID.jsonl"
   end_live_session
   stand_in ''
@@ -3142,7 +3230,7 @@ u_tab_close_narrow() { report_bare tab_close_narrow tab_close_narrow; }
 u_chat_images() { gate chat_images chat_images; }
 u_chat_usage() { gate chat_usage chat_usage; }
 for name in chat_session_status chat_progress chat_working_backstop \
-  chat_subagents chat_compact chat_model chat_cwd; do
+  chat_subagents chat_compact chat_model chat_effort chat_cwd; do
   eval "u_$name() { report $name $name; }"
 done
 u_folder_zip() { report_bare folder_zip folder_zip; }
