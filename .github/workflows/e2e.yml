@@ -48,7 +48,7 @@ on:
       only:
         description: Run every job, or one of them alone
         type: choice
-        options: [all, android, linux-desktop, windows-desktop, macos-desktop]
+        options: [all, android, android-api30, linux-desktop, windows-desktop, macos-desktop]
         default: all
       block:
         description: One Android block to run alone after seed_host, or empty for every flow
@@ -409,6 +409,76 @@ jobs:
           path: build/e2e-durations/*.tsv
           retention-days: 30
           if-no-files-found: ignore
+
+  # JEANSH-8: Android 11 reading a sparse resource table past its end in
+  # LoadedPackage::FindEntryByName, which killed the app as its notifications
+  # started. A single APK cannot carry it -- the table is sparse only with gaps
+  # in its entry ids, which density-splitting makes and `aapt2 optimize` does
+  # not -- so this builds the device-split set from the AAB the way Play does
+  # (tools/e2e_sparse_apk.sh: bundletool, then the base forced sparse) and
+  # cold-launches it on an API 30 emulator (tools/e2e_api30.sh). A hand run
+  # alone, `only: android-api30`, and report-only: no gate needs it, and it
+  # builds its own AAB rather than the shards' APK.
+  android-api30:
+    if: ${{ inputs.only == 'android-api30' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sed -i.orig "s/^version: .*/version: $VERSION/" pubspec.yaml && rm pubspec.yaml.orig
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: ./.github/actions/flutter
+        timeout-minutes: 15
+
+      - name: Restore Gradle's downloads
+        id: gradle
+        timeout-minutes: 10
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # The bundle, not an APK: bundletool splits it by density, and those
+      # splits are where the base's drawable type gets the gaps that make it
+      # sparse. Debug, so no signing key is needed.
+      - run: flutter build appbundle --debug
+
+      - name: Build the device-split set, base forced sparse
+        run: |
+          mkdir -p build/e2e-api30
+          tools/e2e_sparse_apk.sh build/app/outputs/bundle/debug/app-debug.aab build/e2e-api30
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cold launch on Android 11
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: tools/e2e_api30.sh build/e2e-api30/splits
 
   # The Android gate's one answer, and the job tag.yml's `coverage` comes
   # from: it fails unless the plan, the build and every shard succeeded, so a
