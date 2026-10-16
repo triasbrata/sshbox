@@ -12,6 +12,9 @@ Run through e2e_live_claude.py, which hands these modes here:
     --bg [args]                        `claude --bg`: a background session
         listed in ~/.e2e-agents.json, waiting for its first message
 
+With ~/.e2e-attach-draft there, --tui starts with its text in the input line,
+as somebody's draft at another terminal shows in every attach.
+
 Everything it is given and does goes to ~/.e2e-pics.log, one JSON line an
 event, for tools/e2e_android.sh to check the order of: a paste, its chip,
 then the text after it.
@@ -193,7 +196,13 @@ def tui(args):
     def write(text):
         os.write(1, text.encode())
 
-    buf = ''
+    # A draft typed at another terminal attached to the session: the input
+    # line is one for every attach, measured on 2.1.287, so it shows here too.
+    try:
+        buf = open(os.path.join(HOME, '.e2e-attach-draft')).read()
+        log('draft', v=buf)
+    except OSError:
+        buf = ''
     images = []  # (number, path), in the order their chips went in
     pending = []  # (due, path)
 

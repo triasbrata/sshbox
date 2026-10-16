@@ -33,6 +33,7 @@ chat_session_status	76
 chat_progress	144
 chat_working_backstop	120
 chat_images	478
+chat_attach_deliver	300
 chat_subagents	56
 chat_usage	49
 chat_compact	55
