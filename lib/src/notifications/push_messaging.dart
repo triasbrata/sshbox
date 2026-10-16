@@ -41,11 +41,12 @@ class PushMessaging {
     // or Windows, and no desktop build carries a Firebase config, so there
     // the direct way — see SessionManager — is how a host reaches the app.
     if (isDesktop) return;
-    // Firebase.initializeApp reads google_app_id from the APK's resources by
-    // name, the lookup that crashed Play's pre-launch robot (Firebase Test Lab)
-    // in AssetManager2::GetResourceId (JEANSH-8, JEANSH-4), a signal no Dart
-    // catch sees. Skipping the local notifications alone did not stop it, this
-    // running next. Nobody reads a push there.
+    // Not on Firebase Test Lab, where nobody reads a push. This was first
+    // taken for JEANSH-8's cause, Firebase reading google_app_id by name; but
+    // FirebaseInitProvider reads it the same way before Sentry is even up, so
+    // the robot that reported the crash had survived it. The crash was the
+    // notification icon's lookup, see NotificationGateway._initialize, and
+    // that robot does not report itself as Test Lab anyway.
     if (defaultTargetPlatform == TargetPlatform.android &&
         await NotificationGateway.onTestLab()) {
       return;
@@ -71,7 +72,9 @@ class PushMessaging {
       final token = await messaging.getToken();
       if (token != null) unawaited(notifyKeys.useFcmToken(token));
     } catch (error) {
-      debugPrint('sshbox: FCM registration failed, will retry on next launch ($error)');
+      debugPrint(
+        'sshbox: FCM registration failed, will retry on next launch ($error)',
+      );
     }
     messaging.onTokenRefresh.listen(
       (token) => unawaited(notifyKeys.useFcmToken(token)),
@@ -96,10 +99,12 @@ class PushMessaging {
 
     await notifications.showForHost(
       hostId: hostId,
-      title: message.data['title'] as String? ??
+      title:
+          message.data['title'] as String? ??
           message.notification?.title ??
           'Jeansh',
-      body: message.data['body'] as String? ??
+      body:
+          message.data['body'] as String? ??
           message.notification?.body ??
           'Tap to return to your session',
     );

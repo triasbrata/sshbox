@@ -30,7 +30,7 @@ void main() {
     );
     messenger.setMockMethodCallHandler(
       const MethodChannel('sshbox/share'),
-      (_) async => null,
+      (call) async => call.method == 'notificationIcon' ? '2131165312' : null,
     );
     messenger.setMockMethodCallHandler(
       const MethodChannel('com.llfbandit.app_links/messages'),
@@ -64,38 +64,48 @@ void main() {
     expect(pushStarted, isTrue);
   });
 
-  // JEANSH-4, JEANSH-8: Play's pre-launch robot is Firebase Test Lab, where
-  // the plugin's drawable lookup crashed the process.
-  for (final (testLab, inits) in [(true, 0), (false, 1)]) {
-    testWidgets(
-      testLab
-          ? 'on Test Lab the notification plugin is not started'
-          : 'on a normal device the notification plugin is started',
-      (tester) async {
+  // JEANSH-8: the plugin turns its icon's name into an id with
+  // Resources.getIdentifier, whose lookup by name crashed Android 11 in
+  // AssetManager2::GetResourceId. A number is returned before any lookup, so
+  // the icon goes as MainActivity's id for it, on Test Lab or not; anything
+  // but a number and the plugin is not started.
+  for (final (answer, sent) in [
+    ('2131165312', '2131165312'),
+    (null, null),
+    ('@drawable/ic_stat_jeansh', null),
+  ]) {
+    for (final testLab in [true, false]) {
+      testWidgets('the notification icon answered $answer (Test Lab $testLab) '
+          'starts the plugin with ${sent ?? 'nothing'}', (tester) async {
         final messenger = tester.binding.defaultBinaryMessenger;
         AndroidFlutterLocalNotificationsPlugin.registerWith();
-        var started = 0;
+        final icons = <Object?>[];
         messenger.setMockMethodCallHandler(
           const MethodChannel('dexterous.com/flutter/local_notifications'),
           (call) async {
-            if (call.method == 'initialize') started++;
-            return switch (call.method) {
-              'initialize' => true,
-              'getNotificationAppLaunchDetails' => null,
-              _ => null,
-            };
+            if (call.method == 'initialize') {
+              icons.add((call.arguments as Map)['defaultIcon']);
+              return true;
+            }
+            return null;
           },
         );
         messenger.setMockMethodCallHandler(
           const MethodChannel('sshbox/share'),
-          (call) async => call.method == 'isTestLab' ? testLab : null,
+          (call) async => switch (call.method) {
+            'notificationIcon' => answer,
+            'isTestLab' => testLab,
+            _ => null,
+          },
         );
 
         await NotificationGateway(onOpenLink: (_) async {}).initialize();
 
-        expect(started, inits);
-      },
-    );
+        expect(icons, sent == null ? isEmpty : [sent]);
+        expect(icons, isNot(contains('@drawable/ic_stat_jeansh')));
+        expect(tester.takeException(), isNull);
+      });
+    }
   }
 
   // JEANSH-8 went on after the notification plugin was skipped: FCM's start

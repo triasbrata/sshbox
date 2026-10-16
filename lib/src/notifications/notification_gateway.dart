@@ -33,13 +33,15 @@ class NotificationGateway {
   Future<void> initialize() => _quietly(_initialize);
 
   Future<void> _initialize() async {
-    // Play's pre-launch robot (Firebase Test Lab) runs ARM code translated on
-    // x86_64, where the plugin's drawable lookup by name crashed in
-    // AssetManager2::GetResourceId (JEANSH-4, JEANSH-8) — a signal no Dart
-    // catch sees. Nobody reads notifications there, so they are not started.
-    if (defaultTargetPlatform == TargetPlatform.android && await onTestLab()) {
-      return;
-    }
+    // The small icon by its resource id, in decimal, never by name. The
+    // plugin looks a name up with Resources.getIdentifier at its start and at
+    // every notification, and on Android 8 to 11 that lookup reads a sparse
+    // resource table past its end and dies of a SIGSEGV no Dart catch sees
+    // (JEANSH-8, in AssetManager2::GetResourceId). A number is returned
+    // before any lookup. Without one the plugin is not started at all.
+    final icon = defaultTargetPlatform == TargetPlatform.android
+        ? await _androidIcon()
+        : '';
     await _plugin.initialize(
       // Every platform the app is built for has to be named here, or the
       // plugin throws "settings must be set when targeting <platform>" as it
@@ -48,12 +50,12 @@ class NotificationGateway {
       // icon is the app's own there, so there is nothing to name. Windows
       // names the app to its toasts by the Play package name, and the GUID is
       // Jeansh's own, made once: it is what a tapped toast activates.
-      settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@drawable/ic_stat_jeansh'),
-        iOS: DarwinInitializationSettings(),
-        macOS: DarwinInitializationSettings(),
-        linux: LinuxInitializationSettings(defaultActionName: 'Open'),
-        windows: WindowsInitializationSettings(
+      settings: InitializationSettings(
+        android: AndroidInitializationSettings(icon),
+        iOS: const DarwinInitializationSettings(),
+        macOS: const DarwinInitializationSettings(),
+        linux: const LinuxInitializationSettings(defaultActionName: 'Open'),
+        windows: const WindowsInitializationSettings(
           appName: 'Jeansh',
           appUserModelId: 'cloud.brata.terminal',
           guid: '526e8ae7-be97-40b8-b1f8-fbd5e998b685',
@@ -80,6 +82,18 @@ class NotificationGateway {
           AndroidFlutterLocalNotificationsPlugin
         >()
         ?.requestNotificationsPermission();
+  }
+
+  /// The small icon's resource id from MainActivity, as the decimal string
+  /// Resources.getIdentifier hands straight back. Anything but a number is
+  /// refused: a name would take the lookup that crashed.
+  static Future<String> _androidIcon() async {
+    final icon = await const MethodChannel('sshbox/share')
+        .invokeMethod<String>('notificationIcon');
+    if (icon == null || int.tryParse(icon) == null) {
+      throw StateError('No notification icon id: $icon');
+    }
+    return icon;
   }
 
   /// Whether this is Firebase Test Lab, which Play's pre-launch robot runs on.

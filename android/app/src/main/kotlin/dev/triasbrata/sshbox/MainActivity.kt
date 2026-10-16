@@ -187,6 +187,9 @@ class MainActivity : FlutterActivity() {
                     saveChord.wanted = call.arguments as Boolean
                     trace("wanted=${saveChord.wanted}")
                     result.success(null)
+                } else if (call.method == "notificationIcon") {
+                    // By id, never by name: JEANSH-8, see NotificationIcon.
+                    result.success(NotificationIcon.name())
                 } else if (call.method == "isTestLab") {
                     // Firebase Test Lab, which Play's pre-launch robot runs on.
                     result.success(NativeCrashes.isTestLab(this@MainActivity))
