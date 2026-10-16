@@ -3107,8 +3107,8 @@ class ClaudeChat extends ChangeNotifier {
   /// seconds to write its first line.
   ///
   /// A session listed as running with no pid ([ClaudeAgent.liveWithoutPid],
-  /// or any row with [running], for one this chat has just started or the
-  /// CLI has just said runs) is neither: there is nothing to follow it by,
+  /// or any row with [running], for one the CLI has just said runs) is
+  /// neither: there is nothing to follow it by,
   /// and `--resume` of it is refused. Its history is shown, and [restart]
   /// looks for its process again.
   Future<void> continueFrom(
