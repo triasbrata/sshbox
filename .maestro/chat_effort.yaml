@@ -121,11 +121,12 @@ env:
 - extendedWaitUntil:
     visible: "(?s).*read-only: it runs in a terminal outside tmux.*"
     timeout: 20000
+# The chip itself carries the hint. Its toast lasts a second, often gone
+# before Maestro looks, and chat_page_test holds its text.
+- assertVisible: "(?s)Effort\\W*Read-only from here: change its effort in its own terminal with /effort.*"
 - tapOn: "(?s)Effort\\W*Read-only from here.*"
-- extendedWaitUntil:
-    visible: "\\W*Read-only from here: change its effort in its own terminal with /effort\\.\\W*"
-    timeout: 5000
 - assertNotVisible: "xhigh"
+- assertNotVisible: "medium"
 - assertNotVisible: "(?s)Effort max.*"
 - takeScreenshot: chat-effort-read-only
 
