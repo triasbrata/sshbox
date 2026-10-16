@@ -6,6 +6,9 @@ import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
 import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
+import 'package:sshbox/src/telemetry/input_log.dart';
+import 'package:sshbox/src/ui/pan_zoom_heal.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
 import 'package:xterm2/xterm.dart';
 
@@ -92,6 +95,8 @@ void main() {
     }
     await g.panZoomEnd();
     await tester.pump(const Duration(milliseconds: 300));
+    // The app log's line for it, written now rather than by a timer.
+    inputLog.flush();
   }
 
   testWidgets('a trackpad scrolls the scrollback on a Mac', (tester) async {
@@ -787,4 +792,182 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     expect(shell.sent, isNotEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  // Sentry JEANSH-G: in a tmux pane running Claude Code on a Mac the wheel
+  // and the trackpad stopped scrolling while PageUp and PageDown still did.
+  group('a scroll for a program that reads the mouse', () {
+    final mac = TargetPlatformVariant.only(TargetPlatform.macOS);
+
+    Future<void> claudeCode(WidgetTester tester) async {
+      await pumpPage(tester);
+      session.terminal.write('\x1b[?1049h\x1b[?1003h\x1b[?1006h');
+      await tester.pump();
+    }
+
+    Future<void> wheel(WidgetTester tester) async {
+      final at = tester.getCenter(find.byType(TerminalView));
+      final mouse = TestPointer(9, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(at));
+      await tester.sendEventToBinding(mouse.scroll(const Offset(0, -40)));
+      await tester.pump(const Duration(milliseconds: 50));
+      inputLog.flush();
+    }
+
+    bool wheeled() => shell.sent.any((each) => each.contains('\x1b[<64;'));
+
+    /// What a Mac's engine sends once it has dropped a scroll's end: a
+    /// start, updates, no end; a touch while it glides; and the next scroll
+    /// seconds later as more updates of the same pointer.
+    Future<void> wedgedThenScrolled(
+      WidgetTester tester,
+      List<PointerEvent> Function(PointerEvent) through,
+    ) async {
+      final at = tester.getCenter(find.byType(TerminalView));
+      var t = 0;
+      var pan = Offset.zero;
+      Future<void> send(PointerEvent event) async {
+        for (final each in through(event)) {
+          tester.binding.handlePointerEvent(each);
+        }
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+
+      Future<void> moves() async {
+        for (var i = 0; i < 10; i++) {
+          t += 16;
+          pan += const Offset(0, 6);
+          await send(
+            PointerPanZoomUpdateEvent(
+              pointer: 50,
+              device: 1,
+              timeStamp: Duration(milliseconds: t),
+              position: at,
+              pan: pan,
+              panDelta: const Offset(0, 6),
+            ),
+          );
+        }
+      }
+
+      await send(
+        PointerPanZoomStartEvent(pointer: 50, device: 1, position: at),
+      );
+      await moves();
+      await send(
+        PointerScrollInertiaCancelEvent(
+          device: 1,
+          kind: PointerDeviceKind.trackpad,
+          timeStamp: Duration(milliseconds: t + 50),
+          position: at,
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      shell.sent.clear();
+      t += 3000;
+      await moves();
+      inputLog.flush();
+    }
+
+    testWidgets('a trackpad still scrolls it after its engine dropped a '
+        'scroll\'s end', (tester) async {
+      await claudeCode(tester);
+      await wedgedThenScrolled(tester, PanZoomHeal().convert);
+      expect(wheeled(), isTrue, reason: shown(shell.sent));
+    }, variant: mac);
+
+    testWidgets('without the heal that same scroll reaches nothing: the '
+        'stuck recogniser JEANSH-G was', (tester) async {
+      await claudeCode(tester);
+      await wedgedThenScrolled(tester, (event) => [event]);
+      expect(wheeled(), isFalse, reason: shown(shell.sent));
+    }, variant: mac);
+
+    testWidgets('a right press whose release never came keeps the wheel only '
+        'until the pointer moves or scrolls', (tester) async {
+      await claudeCode(tester);
+      final at = tester.getCenter(find.byType(TerminalView));
+      // A right press kept from the program, its release lost.
+      await tester.startGesture(
+        at,
+        kind: PointerDeviceKind.mouse,
+        pointer: 33,
+        buttons: kSecondaryMouseButton,
+      );
+      await tester.pump();
+      expect(controller(tester).suspendedPointerInputs, isTrue);
+      // A hover with the button held is a drag that says nothing.
+      tester.binding.handlePointerEvent(
+        PointerHoverEvent(
+          kind: PointerDeviceKind.mouse,
+          position: at,
+          buttons: kSecondaryMouseButton,
+        ),
+      );
+      expect(controller(tester).suspendedPointerInputs, isTrue);
+
+      shell.sent.clear();
+      await wheel(tester);
+      expect(wheeled(), isTrue, reason: shown(shell.sent));
+      expect(controller(tester).suspendedPointerInputs, isFalse);
+    }, variant: mac);
+
+    testWidgets('a hover or a trackpad gives the mouse back after a lost '
+        'right release too', (tester) async {
+      await claudeCode(tester);
+      final at = tester.getCenter(find.byType(TerminalView));
+      var pointer = 34;
+      for (final lift in <PointerEvent>[
+        PointerHoverEvent(kind: PointerDeviceKind.mouse, position: at),
+        PointerPanZoomStartEvent(pointer: 61, device: 2, position: at),
+      ]) {
+        await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+          pointer: pointer++,
+          buttons: kSecondaryMouseButton,
+        );
+        await tester.pump();
+        expect(controller(tester).suspendedPointerInputs, isTrue);
+        tester.binding.handlePointerEvent(lift);
+        await tester.pump();
+        expect(controller(tester).suspendedPointerInputs, isFalse);
+      }
+      tester.binding.handlePointerEvent(
+        PointerPanZoomEndEvent(pointer: 61, device: 2, position: at),
+      );
+    }, variant: mac);
+
+    testWidgets('says in the app log where each scroll went, without the '
+        'screen', (tester) async {
+      await pumpPage(tester);
+      session.terminal.write(text * 3);
+      await tester.pump();
+      String logged() {
+        inputLog.flush();
+        return appLog.current.split('\n').last;
+      }
+
+      await wheel(tester);
+      expect(logged(), endsWith('scroll wheel → scrollback'));
+
+      // The alternate screen with no mouse: xterm2 sends arrows.
+      session.terminal.write('\x1b[?1049h');
+      await tester.pump();
+      await wheel(tester);
+      expect(logged(), endsWith('scroll wheel → program as arrows'));
+
+      session.terminal.write('\x1b[?1003h\x1b[?1006h');
+      await tester.pump();
+      await wheel(tester);
+      expect(logged(), endsWith('scroll wheel → program as wheel'));
+      expect(appLog.current, isNot(contains('hello')));
+
+      await trackpad(tester, const Offset(0, 20));
+      expect(logged(), contains('scroll trackpad → program as wheel ×'));
+
+      controller(tester).setSuspendPointerInput(true);
+      await wheel(tester);
+      expect(logged(), endsWith('scroll wheel → held from the program'));
+    }, variant: mac);
+  });
 }

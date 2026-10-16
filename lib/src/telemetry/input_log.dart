@@ -154,7 +154,7 @@ class InputLog {
     if (_pasteChord(event, keys) && (where == 'field' || where == 'editor')) {
       paste(where, 'text');
     }
-    _note('$label ($where)');
+    _note('key $label ($where)');
     return false;
   }
 
@@ -173,12 +173,16 @@ class InputLog {
     _timer = Timer(settle, flush);
   }
 
-  /// Writes the key being held, with how many times it came.
+  /// A scroll over a terminal and what became of it — [what] is the app's
+  /// own words, never what is on screen — one line for a run of the same.
+  void scroll(String what) => _note('scroll $what');
+
+  /// Writes the key or scroll being held, with how many times it came.
   void flush() {
     _timer?.cancel();
     final label = _label;
     if (label == null) return;
-    log.add('key $label${_count > 1 ? ' ×$_count' : ''}');
+    log.add('$label${_count > 1 ? ' ×$_count' : ''}');
     _label = null;
     _count = 0;
   }
