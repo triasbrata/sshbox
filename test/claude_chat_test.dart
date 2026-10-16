@@ -2735,6 +2735,24 @@ void main() {
         'Set effort level to xhigh (this session only): Deeper reasoning',
       );
       expect(chat.effort, 'xhigh');
+      Iterable<ChatNotice> defaults() => chat.entries.whereType<ChatNotice>()
+          .where((n) => n.text == ClaudeChat.effortDefaultNotice);
+      // Said once, after the record of the /effort typed from here.
+      expect(defaults(), hasLength(1));
+      expect(
+        ClaudeChat.effortDefaultNotice,
+        'Claude Code also keeps this as the default for new sessions on this '
+        'host, as /effort typed at its terminal does.',
+      );
+      expect(chat.effortHint, contains(ClaudeChat.effortDefaultNotice));
+      // A /effort typed at the terminal, not from here, says nothing more.
+      await said('high', 'Set effort level to high (saved as your default)');
+      expect(chat.effort, 'high');
+      expect(defaults(), hasLength(1));
+      await said(
+        'xhigh',
+        'Set effort level to xhigh (this session only): Deeper reasoning',
+      );
       // A refusal changes nothing.
       await said('max', 'Usage: /effort <low|medium|high|xhigh|max|auto>');
       expect(chat.effort, 'xhigh');
@@ -2761,6 +2779,7 @@ void main() {
       expect(host.terminals.last.typed, ['/effort auto', '\r']);
       await said('auto', 'Effort level set to auto (this session only)');
       expect(chat.effort, isNull);
+      expect(defaults(), hasLength(2));
     });
 
     test(
@@ -2771,6 +2790,7 @@ void main() {
         final chat = watcher(host);
         await chat.continueFrom(_interactive);
         expect(chat.canPickEffort, isFalse);
+        expect(chat.effortHint, isNull);
         await chat.setEffort('high');
         await Future<void>.delayed(const Duration(milliseconds: 1500));
         expect(host.terminals, isEmpty);

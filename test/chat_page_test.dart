@@ -7202,10 +7202,18 @@ void main() {
         '/effort <level> typed into it, and the chip follows its record', (
       tester,
     ) async {
+      final semantics = tester.ensureSemantics();
       final shell = await open(tester, running: running);
       await tester.tap(find.text('the nightly build'));
       await _settlePickUp(tester);
       expect(find.text('Effort ▾'), findsOneWidget);
+      // Before the pick, the chip says what it also does to the host.
+      expect(
+        tester.getSemantics(find.text('Effort ▾')).hint,
+        'Typed as /effort into the session. '
+        '${ClaudeChat.effortDefaultNotice}',
+      );
+      semantics.dispose();
       await pickEffort(tester, 'high');
       await typing(tester);
       expect(shell.typed.single.first, '/effort high');
@@ -7233,6 +7241,8 @@ void main() {
       });
       await _settlePickUp(tester);
       expect(find.text('Effort high ▾'), findsOneWidget);
+      // And after it applies, said in the chat.
+      expect(find.text(ClaudeChat.effortDefaultNotice), findsOneWidget);
     });
 
     testWidgets('a session that is only watched shows the effort chip '

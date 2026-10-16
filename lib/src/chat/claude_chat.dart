@@ -1139,6 +1139,24 @@ class ClaudeChat extends ChangeNotifier {
   static const effortReadOnlyHint =
       'Read-only from here: change its effort in its own terminal with /effort.';
 
+  /// What a pick for a watched session also does. Read from the 2.1.287
+  /// binary, not measured: an interactive session's `/effort <level>` saves
+  /// the level as the host's default for new sessions ("saved as your default
+  /// for new sessions"), where `-p`, measured, keeps it to the session.
+  static const effortDefaultNotice =
+      'Claude Code also keeps this as the default for new sessions on this '
+      'host, as /effort typed at its terminal does.';
+
+  /// The chip's hint: for a session watched live, what a pick also does.
+  String? get effortHint => _watching != null && canPickEffort
+      ? 'Typed as /effort into the session. $effortDefaultNotice'
+      : null;
+
+  /// A `/effort` was typed from here, so the record of it is followed by
+  /// [effortDefaultNotice] once; one typed at the terminal, or read back
+  /// from history, is not.
+  bool _effortTyped = false;
+
   /// Picks [level], one of [ChatEffort.levels], or null for the default. A
   /// chat of this app's own changes it at once with `apply_flag_settings`
   /// (see [ChatEffort]); a new chat starts with `--effort`, and a restart
@@ -1149,7 +1167,10 @@ class ClaudeChat extends ChangeNotifier {
     if ((level != null && known == null) || !canPickEffort || modelStarting) {
       return;
     }
-    if (_watching != null) return send('/effort ${known ?? 'auto'}');
+    if (_watching != null) {
+      _effortTyped = true;
+      return send('/effort ${known ?? 'auto'}');
+    }
     if (!_composing && _ready && _channel != null) {
       // Taken only once the CLI accepts it, as a model pick is.
       final id = 'sshbox-effort-${++_effortRequests}';
@@ -3272,6 +3293,7 @@ class ClaudeChat extends ChangeNotifier {
     _alias = null;
     _effort = null;
     _watchedEffort = null;
+    _effortTyped = false;
     // What was waiting to ask about the session being left, and how often it
     // had asked, is of no use to the one that replaces it.
     _askWhenSeen = false;
@@ -4757,7 +4779,12 @@ class ClaudeChat extends ChangeNotifier {
           _model = ChatModel.known(last.args) ?? _model;
         }
         if (last.name == 'effort') {
-          _watchedEffort = ChatEffort.fromOutput(output) ?? _watchedEffort;
+          final level = ChatEffort.fromOutput(output);
+          _watchedEffort = level ?? _watchedEffort;
+          if (level != null && _effortTyped) {
+            _effortTyped = false;
+            _entries.add(ChatNotice(effortDefaultNotice));
+          }
         }
       } else if (output.isNotEmpty) {
         _entries.add(ChatNotice(output));

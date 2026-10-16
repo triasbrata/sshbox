@@ -106,6 +106,8 @@ env:
     visible: "Effort max"
     timeout: 30000
 - assertVisible: "(?s).*Set effort level to max.*"
+# The pick is also the host's default for new sessions, and the chat says so.
+- assertVisible: "(?s).*Claude Code also keeps this as the default for new sessions on this host.*"
 - takeScreenshot: chat-effort-watched
 
 # A session at a terminal outside tmux, only watched: read-only, and its chip

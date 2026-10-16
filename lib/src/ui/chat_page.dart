@@ -4095,7 +4095,7 @@ class _EffortChip extends StatelessWidget {
     return Builder(
       builder: (chipContext) => TuiTooltip(
         message: can
-            ? label
+            ? [label, ?chat.effortHint].join('. ')
             : starting
             ? waiting
             : ClaudeChat.effortReadOnlyHint,
@@ -4105,7 +4105,7 @@ class _EffortChip extends StatelessWidget {
           button: can,
           label: label,
           hint: can
-              ? null
+              ? chat.effortHint
               : starting
               ? waiting
               : ClaudeChat.effortReadOnlyHint,
