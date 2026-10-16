@@ -1293,6 +1293,55 @@ print(json.dumps({"type": "user", "message": {"role": "user", "content": sys.arg
 esac
 ''';
 
+/// A stand-in for a Claude Code whose `--bg` session runs on, as a real one
+/// does: a live process left behind, listed running with no pid on the first
+/// two listings after it starts, as a user's host listed one, and with that
+/// process's pid after. Its `-p --resume` refuses in the CLI's own words while
+/// the process lives. With ~/.e2e-bg-finished the session is listed as ended,
+/// and `--resume` takes it. Every call goes to ~/.e2e-bg-calls.
+const _bgStandIn = r'''#!/bin/sh
+# Jeansh e2e stand-in for Claude Code, background sessions.
+d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+sid=0e2eb9a1-0000-4000-8000-0000000b9a10
+t="$d/projects/jeansh-e2e/$sid.jsonl"
+p="$HOME/.e2e-bg-pid"
+printf '%s\n' "$*" >>"$HOME/.e2e-bg-calls"
+case "$1" in
+  --version) echo "2.1.300 (Claude Code)" ;;
+  --bg)
+    mkdir -p "$d/projects/jeansh-e2e"
+    for last; do :; done
+    python3 -c 'import json, sys
+print(json.dumps({"type": "user", "message": {"role": "user", "content": sys.argv[1]}}))
+print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Answered in the background"}]}}))' \
+      "$last" >"$t"
+    setsid sleep 600 </dev/null >/dev/null 2>&1 &
+    echo $! >"$p"
+    echo "backgrounded · e2e0b9a1 · hello" ;;
+  agents)
+    if [ ! -f "$t" ]; then echo '[]'; exit 0; fi
+    n=$(( $(cat "$HOME/.e2e-bg-looks" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$HOME/.e2e-bg-looks"
+    row='"id":"e2e0b9a1","sessionId":"'"$sid"'","name":"hello","cwd":"'"$HOME"'","kind":"background","startedAt":1'
+    if [ -f "$HOME/.e2e-bg-finished" ]; then
+      printf '[{%s,"state":"done"}]\n' "$row"
+    elif [ "$n" -le 2 ]; then
+      printf '[{%s,"status":"idle","state":"done"}]\n' "$row"
+    else
+      printf '[{%s,"pid":%s,"status":"idle","state":"done"}]\n' "$row" "$(cat "$p")"
+    fi ;;
+  -p)
+    if [ ! -f "$HOME/.e2e-bg-finished" ] && kill -0 "$(cat "$p")" 2>/dev/null; then
+      echo 'Error: That session is running in the background (e2e0b9a1). Run `claude attach e2e0b9a1` to open it, or `claude stop e2e0b9a1` first to resume it here. Add --fork-session to branch off a copy instead.' >&2
+      exit 1
+    fi
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    while IFS= read -r line; do
+      printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Continued by --resume"}]}}' '{"type":"result","subtype":"success"}'
+    done ;;
+esac
+''';
+
 /// The X display as it is now, as [name].png in E2E_SHOTS, for a person to
 /// look at on CI: evidence, never checked. Nothing where E2E_SHOTS is unset.
 /// Beside [_shot], which renders the layer and settles first, and so stays
@@ -7586,6 +7635,131 @@ touch '${done.path}'
       binding.shouldPropagateDevicePointerEvents = false;
     },
   );
+
+  // A new chat's first message starts a session with `claude --bg`, which a
+  // user's host listed running with no pid at first; chat resumed it, and the
+  // CLI refused: "That session is running in the background". The stand-in's
+  // `--bg` leaves a live process behind, its `agents` lists that session
+  // running with no pid twice before it gives one, and its `-p --resume`
+  // refuses in the CLI's words while that process lives. Every call it takes
+  // goes to ~/.e2e-bg-calls. With `finished`, it lists the session as one
+  // that has ended, which `--resume` takes, and the chat continues it.
+  for (final finished in [false, true]) {
+    _test(
+      finished
+          ? "a new chat whose session is listed finished is continued, and "
+                'not watched'
+          : "a new chat's background session, listed first with no pid, is "
+                'watched and never resumed',
+      skip: !Platform.isLinux
+          ? 'the stand-in is the Linux job\'s'
+          : Platform.environment['CI'] != 'true' || _claudeInstalled()
+          ? "off CI it would write a claude into the user's own home"
+          : null,
+      (tester) async {
+        final home = Platform.environment['HOME']!;
+        final claude = File('$home/.local/bin/claude');
+        final config = Directory('$home/.claude');
+        final calls = File('$home/.e2e-bg-calls');
+        final pidFile = File('$home/.e2e-bg-pid');
+        final hadConfig = config.existsSync();
+        final hadBin = claude.parent.existsSync();
+        addTearDown(() {
+          if (pidFile.existsSync()) {
+            final pid = int.tryParse(pidFile.readAsStringSync().trim());
+            if (pid != null) Process.killPid(pid);
+          }
+          for (final f in [
+            claude,
+            calls,
+            pidFile,
+            File('$home/.e2e-bg-looks'),
+            File('$home/.e2e-bg-finished'),
+          ]) {
+            if (f.existsSync()) f.deleteSync();
+          }
+          if (!hadBin) claude.parent.deleteSync(recursive: true);
+          final ours = hadConfig
+              ? Directory('${config.path}/projects/jeansh-e2e')
+              : config;
+          if (ours.existsSync()) ours.deleteSync(recursive: true);
+        });
+        if (finished) File('$home/.e2e-bg-finished').writeAsStringSync('');
+        claude.parent.createSync(recursive: true);
+        claude.writeAsStringSync(_bgStandIn);
+        Process.runSync('chmod', ['755', claude.path]);
+
+        await _launch(tester);
+        await _localShell(tester);
+        await tester.tap(find.byTooltip('Chat with Claude'));
+        await _until(
+          tester,
+          () => _composer.evaluate().isNotEmpty,
+          'the chat tab to open, its version check passed',
+        );
+        await tester.enterText(_composer, 'hello');
+        await tester.pump();
+        await tester.tap(find.byTooltip('Send'));
+        final answer = find.textContaining(
+          'Answered in the background',
+          findRichText: true,
+        );
+        await _until(
+          tester,
+          () => answer.evaluate().isNotEmpty,
+          "the session's answer in the chat",
+          timeout: const Duration(seconds: 40),
+        );
+        if (finished) {
+          await _until(
+            tester,
+            () => calls.readAsStringSync().contains('--resume'),
+            'the finished session continued with --resume',
+          );
+        }
+        await tester.pump(const Duration(seconds: 2));
+        await _grab(tester, finished ? 'chat-bg-finished' : 'chat-bg-watched');
+        final made = calls.readAsLinesSync();
+        final resumes = made.where((c) => c.contains('--resume')).toList();
+        final refused = find.textContaining(
+          'is running in the background',
+          findRichText: true,
+        );
+        final watching = find.textContaining(
+          'Watching “hello” live.',
+          findRichText: true,
+        );
+        if (finished) {
+          expect(resumes, hasLength(1), reason: 'calls: $made');
+          expect(watching, findsNothing);
+          expect(refused, findsNothing);
+          expect(
+            find.textContaining('Continuing “hello”.', findRichText: true),
+            findsOneWidget,
+          );
+        } else {
+          expect(resumes, isEmpty, reason: 'calls: $made');
+          expect(watching, findsOneWidget);
+          expect(refused, findsNothing);
+          expect(
+            find.textContaining(
+              'Claude is no longer running on this host.',
+              findRichText: true,
+            ),
+            findsNothing,
+          );
+          // It was listed with no pid before it was watched.
+          expect(
+            int.parse(File('$home/.e2e-bg-looks').readAsStringSync().trim()),
+            greaterThan(2),
+          );
+        }
+        expect(made.any((c) => c.startsWith('stop')), isFalse);
+        expect(made.any((c) => c.contains('--fork-session')), isFalse);
+        await _closeTabs(tester);
+      },
+    );
+  }
 
   // #137: a Local shell's chat types into an interactive Claude in a tmux
   // pane, as an SSH host's does (.maestro/chat_two_way on Android). The
