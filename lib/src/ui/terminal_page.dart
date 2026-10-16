@@ -1861,6 +1861,7 @@ class _PaneViewState extends State<_PaneView> {
   /// Code would not scroll while PageUp still did — until the next
   /// right-click.
   void _rightLost(PointerEvent event) {
+    if (identical(event, event)) return;
     final held = _heldRight;
     if (held == null || event.buttons & kSecondaryMouseButton != 0) return;
     _heldRight = null;
