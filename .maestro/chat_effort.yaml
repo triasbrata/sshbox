@@ -95,15 +95,15 @@ env:
 - extendedWaitUntil:
     visible: "(?s).*in tmux pane.*"
     timeout: 20000
-- assertVisible: "Effort"
-- assertNotVisible: "Effort low"
-- tapOn: "Effort.*"
+- assertVisible: "(?s)Effort\\W*Typed as /effort.*"
+- assertNotVisible: "(?s)Effort low.*"
+- tapOn: "(?s)Effort.*"
 - extendedWaitUntil:
     visible: "max"
     timeout: 5000
 - tapOn: "max"
 - extendedWaitUntil:
-    visible: "Effort max"
+    visible: "(?s)Effort max\\W*Typed as /effort.*"
     timeout: 30000
 - assertVisible: "(?s).*Set effort level to max.*"
 # The pick is also the host's default for new sessions, and the chat says so.
@@ -121,12 +121,12 @@ env:
 - extendedWaitUntil:
     visible: "(?s).*read-only: it runs in a terminal outside tmux.*"
     timeout: 20000
-- tapOn: "Effort"
+- tapOn: "(?s)Effort\\W*Read-only from here.*"
 - extendedWaitUntil:
-    visible: "(?s).*Read-only from here: change its effort in its own terminal with /effort.*"
+    visible: "\\W*Read-only from here: change its effort in its own terminal with /effort\\.\\W*"
     timeout: 5000
 - assertNotVisible: "xhigh"
-- assertNotVisible: "Effort max"
+- assertNotVisible: "(?s)Effort max.*"
 - takeScreenshot: chat-effort-read-only
 
 - tapOn: "(?s)Close .*Claude.*"
