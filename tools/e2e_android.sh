@@ -1773,6 +1773,10 @@ chat_attach_deliver() {
     if [ "$2" = "$3" ]; then echo "✅ $1"; else echo "::error::❌ $1: $2, not $3"; status=1; fi
   }
   pics_host || return 1
+  # The host user's own, as the stand-in writes it: a `sudo truncate` of a
+  # log pics_host removed makes it root's, and the stand-in's attach then
+  # dies at its first line.
+  sudo -u "$SSH_USER" -H touch "$log"
   sudo rm -f "/home/$SSH_USER/.e2e-attach-draft"
   flow chat_attach_deliver -e STEP=open "${s[@]}" || status=1
 
@@ -1790,6 +1794,7 @@ chat_attach_deliver() {
   flow chat_attach_deliver -e STEP=send "${s[@]}" -e "MSG=wait for the turn" \
     -e "SEE=Queued: it runs after" -e SHOT=queued || status=1
   sleep 8
+  attach_check "2: no attach opened mid-turn" "$(attach_got tui '')" 0
   attach_check "2: nothing typed mid-turn" "$(attach_got text 'wait for the turn')" 0
   attach_row busy done
   flow chat_attach_deliver -e STEP=see "${s[@]}" -e "SEE=(?i)Echo: wait for the turn" \
