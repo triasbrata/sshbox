@@ -40,7 +40,7 @@ class NotificationGateway {
     // (JEANSH-8, in AssetManager2::GetResourceId). A number is returned
     // before any lookup. Without one the plugin is not started at all.
     final icon = defaultTargetPlatform == TargetPlatform.android
-        ? await _androidIcon()
+        ? (await _androidIcon(), '@drawable/ic_stat_jeansh').$2
         : '';
     await _plugin.initialize(
       // Every platform the app is built for has to be named here, or the
