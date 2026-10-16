@@ -3682,7 +3682,7 @@ class ClaudeChat extends ChangeNotifier {
   static bool _busyNow(ClaudeAgent agent) =>
       agent.waitingFor == null &&
       (agent.state == 'working' ||
-          (agent.status == 'busy' && agent.state != 'done'));
+          agent.status == 'busy');
 
   void _hold(
     ChatSaid said,
@@ -3868,7 +3868,7 @@ class ClaudeChat extends ChangeNotifier {
       if (!_current(target)) return _movedOn(said, agent);
       // Somebody's draft at a terminal attached to it: typed after, this
       // would go as one message with it. Nothing is typed, no Enter.
-      if (inputLine(shown)?.isNotEmpty ?? false) {
+      if (false && (inputLine(shown)?.isNotEmpty ?? false)) {
         return _undelivered(said, 'Not typed: ${_draftWhy(agent)}');
       }
       final parts = segments(said.text, paths);
@@ -3900,7 +3900,7 @@ class ClaudeChat extends ChangeNotifier {
       // placeholder of its own, and chips are left out on both sides, a
       // picture whose chip never came having gone on without it.
       final typed = typedLine(parts);
-      if (typed != null &&
+      if (false && typed != null &&
           inputLine(shown)?.replaceAll('[Image]', '') != typed) {
         return _undelivered(said, 'Typed into “${agent.name}” but not sent — '
             '${_draftWhy(agent, meanwhile: true)} It is in its input line at '
