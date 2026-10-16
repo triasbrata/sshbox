@@ -8,6 +8,7 @@ import 'package:sshbox/src/chat/claude_chat.dart';
 import 'package:sshbox/src/chat/outbox.dart';
 import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
+import 'package:xterm2/xterm.dart' show Terminal;
 
 /// Claude Code's end of `claude -p --output-format stream-json`: whatever the
 /// test says it wrote, and whatever the app sent it.
@@ -340,8 +341,8 @@ class _LiveHost {
         final keys = utf8.decode(data);
         typed.add(keys);
         chipsWhenTyped.add(drawn);
-        if (!drawChips) return;
         if (keys.startsWith('\x1b[200~/')) {
+          if (!drawChips) return;
           Timer(chipDelay, () {
             drawn++;
             line += '[Image #9] ';
@@ -349,6 +350,10 @@ class _LiveHost {
           });
         } else if (keys != '\r') {
           line += keys;
+          // Somebody at another terminal attached to the same session,
+          // typing into the one input line they share.
+          line += typedAtTerminal;
+          typedAtTerminal = '';
           redraw();
         }
       },
@@ -364,6 +369,10 @@ class _LiveHost {
 
   /// Whether a terminal draws a chip for each path pasted into it.
   var drawChips = false;
+
+  /// What is typed at the session's terminal as the chat's own text goes
+  /// in, once, after it.
+  var typedAtTerminal = '';
 
   /// How long a pasted path takes to become its chip.
   var chipDelay = const Duration(milliseconds: 50);
@@ -2977,6 +2986,198 @@ void main() {
         expect(
           chat.entries.whereType<ChatNotice>().map((n) => n.text),
           contains(contains('then run the tests')),
+        );
+      });
+    });
+
+    // Measured on 2.1.287: a turn over while a shell it started with
+    // run_in_background runs is listed busy and done, and takes a message
+    // typed then as a new turn.
+    group('a session whose turn is over while a shell of its runs', () {
+      ClaudeChat watching(_LiveHost host) {
+        final chat = ClaudeChat(
+          open: host.open,
+          openTerminal: host.openTerminal,
+        )..holdEvery = const Duration(milliseconds: 100);
+        addTearDown(chat.dispose);
+        return chat;
+      }
+
+      Future<void> enterTyped(_LiveHost host) async {
+        final watch = Stopwatch()..start();
+        while (host.terminals.isEmpty ||
+            !host.terminals.single.typed.contains('\r')) {
+          if (watch.elapsed > const Duration(seconds: 5)) fail('never sent');
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+
+      test('busy and done: typed at once, not held as Queued', () async {
+        final host = _LiveHost('0\n', state: 'done', status: 'busy');
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        chat.send('what did the poll find');
+        await _settle();
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, isNot(Delivery.queued));
+        expect(chat.isHeld(said), isFalse);
+        await enterTyped(host);
+        expect(host.terminals.single.typed, ['what did the poll find', '\r']);
+      });
+
+      test('busy and working, mid-turn: held, and nothing typed', () async {
+        final host = _LiveHost('0\n', state: 'working', status: 'busy');
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        chat.send('what did the poll find');
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        final said = chat.entries.whereType<ChatSaid>().single;
+        expect(said.delivery, Delivery.queued);
+        expect(host.terminals, isEmpty);
+      });
+
+      test('busy and blocked, with nothing asked: still held', () async {
+        final host = _LiveHost('0\n', state: 'blocked', status: 'busy');
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        chat.send('what did the poll find');
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        expect(
+          chat.entries.whereType<ChatSaid>().single.delivery,
+          Delivery.queued,
+        );
+        expect(host.terminals, isEmpty);
+      });
+
+      test('a held message goes in once the turn ends with the shell still '
+          'running', () async {
+        final host = _LiveHost('0\n', state: 'working', status: 'busy');
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        chat.send('what did the poll find');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(host.terminals, isEmpty);
+        host.state = 'done';
+        await enterTyped(host);
+        expect(host.terminals.single.typed.first, 'what did the poll find');
+      });
+    });
+
+    // The input line is one for every attach to a session (measured on
+    // 2.1.287): what the chat types goes on the end of a draft there.
+    group('a draft at a terminal attached to the session', () {
+      ClaudeChat watching(_LiveHost host) {
+        final chat = ClaudeChat(
+          open: host.open,
+          openTerminal: host.openTerminal,
+        );
+        addTearDown(chat.dispose);
+        return chat;
+      }
+
+      Future<ChatSaid> settled(ClaudeChat chat) async {
+        final watch = Stopwatch()..start();
+        while (true) {
+          final said = chat.entries.whereType<ChatSaid>().single;
+          if (said.delivery == Delivery.failed ||
+              said.delivery == null ||
+              watch.elapsed > const Duration(seconds: 5)) {
+            return said;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+
+      test('one there already: nothing typed, no Enter, and it says why', () async {
+        final host = _LiveHost('0\n')
+          ..attachDraws = '\x1b[2J❯ half a thought';
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        await chat.send('run the tests');
+        final said = await settled(chat);
+        expect(said.delivery, Delivery.failed);
+        expect(
+          said.why,
+          'Not typed: Something is typed into “nginx look” at its terminal '
+          'and not sent yet. Send or clear it there first, so the two do not '
+          'go as one.',
+        );
+        expect(host.terminals.single.typed, isEmpty);
+        expect(host.terminals.single.closed.single, isTrue);
+      });
+
+      test('an empty line with a suggestion after the cursor is no draft',
+          () async {
+        // The cursor kept just after the ❯, the grey text drawn past it.
+        final host = _LiveHost('0\n')
+          ..attachDraws = '\x1b[2J❯ \x1b7try running the tests\x1b8';
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        await chat.send('run the tests');
+        final watch = Stopwatch()..start();
+        while (host.terminals.isEmpty ||
+            !host.terminals.single.typed.contains('\r')) {
+          if (watch.elapsed > const Duration(seconds: 5)) fail('never sent');
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        expect(host.terminals.single.typed, ['run the tests', '\r']);
+      });
+
+      test('one typed there while the chat types: no Enter, and it says so',
+          () async {
+        final host = _LiveHost('0\n')..typedAtTerminal = ' and also';
+        final chat = watching(host);
+        await chat.continueFrom(_live);
+        await chat.send('run the tests');
+        final said = await settled(chat);
+        expect(said.delivery, Delivery.failed);
+        expect(said.why, startsWith('Typed into “nginx look” but not sent — '
+            'something was typed into “nginx look” at its terminal while '
+            'this went in.'));
+        expect(host.terminals.single.typed, ['run the tests']);
+        expect(host.terminals.single.typed, isNot(contains('\r')));
+      });
+    });
+
+    group('the input line on an attach\'s screen', () {
+      Terminal screen(String drawn) =>
+          Terminal(maxLines: 200)
+            ..resize(40, 10)
+            ..write(drawn);
+
+      test('empty, with the cursor just after the ❯', () {
+        expect(ClaudeChat.inputLine(screen('done\r\n❯ ')), '');
+      });
+
+      test('a draft, wrapped, read down to the rule and no further', () {
+        final line = ClaudeChat.inputLine(
+          screen('❯ old turn\r\n❯ ${'a' * 50}\r\n${'─' * 40}\r\n  ⏸ mode'),
+        );
+        expect(line, 'a' * 50);
+      });
+
+      test('chips read as one kind, whatever their number', () {
+        expect(
+          ClaudeChat.inputLine(screen('❯ see [Image #4] now')),
+          'see[Image]now',
+        );
+      });
+
+      test('none when no ❯ shows', () {
+        expect(ClaudeChat.inputLine(screen('loading')), isNull);
+      });
+
+      test('what typing leaves there: text without chips, none for a paste',
+          () {
+        expect(
+          ClaudeChat.typedLine(
+            ClaudeChat.segments('a [Image #1] b\nc', {1: '/tmp/a.png'}),
+          ),
+          'abc',
+        );
+        expect(
+          ClaudeChat.typedLine(ClaudeChat.segments('x' * 700)),
+          isNull,
         );
       });
     });
