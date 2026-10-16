@@ -17,8 +17,10 @@ import 'package:flutter/gestures.dart'
         kPrimaryMouseButton,
         kSecondaryMouseButton,
         PointerDeviceKind,
+        PointerEvent,
         PointerPanZoomStartEvent,
-        PointerScrollEvent;
+        PointerScrollEvent,
+        PointerSignalEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -34,6 +36,7 @@ import '../session/clipboard_terminal.dart';
 import '../session/local_transport.dart' show localHostId;
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
+import '../telemetry/input_log.dart' show inputLog;
 import 'connect_sheet.dart';
 import 'ctrl_click.dart';
 import 'file_browser_page.dart';
@@ -1851,6 +1854,47 @@ class _PaneViewState extends State<_PaneView> {
     });
   }
 
+  /// Gives the program the mouse back when [event] shows the right button
+  /// is up although its release never came: the pointer hovering, a wheel or
+  /// a trackpad's scroll with the button not held. Without it a release lost
+  /// to a window that lost focus kept the wheel from the program — Claude
+  /// Code would not scroll while PageUp still did — until the next
+  /// right-click.
+  void _rightLost(PointerEvent event) {
+    final held = _heldRight;
+    if (held == null || event.buttons & kSecondaryMouseButton != 0) return;
+    _heldRight = null;
+    selection.setSuspendPointerInput(held);
+  }
+
+  /// The wheel or a trackpad's scroll over this pane, and where xterm2 sends
+  /// it, in the app log: never the terminal's text, only the route.
+  void _noteScroll(String device) {
+    final terminal = widget.terminal;
+    final String to;
+    if (!terminal.isUsingAltBuffer && !terminal.mouseMode.reportScroll) {
+      to = 'scrollback';
+    } else if (selection.suspendedPointerInputs ||
+        !selection.pointerInput.inputs.contains(PointerInput.scroll)) {
+      to = 'held from the program';
+    } else if (terminal.mouseMode.reportScroll) {
+      to = 'program as wheel';
+    } else {
+      to = 'program as arrows';
+    }
+    inputLog.scroll('$device → $to');
+  }
+
+  void _signal(PointerSignalEvent event) {
+    UiZoomWheel.keep(event);
+    // The trackpad's own stand-in for a press, which moves nothing.
+    if (event is! PointerScrollEvent || event.scrollDelta == Offset.zero) {
+      return;
+    }
+    _rightLost(event);
+    _noteScroll('wheel');
+  }
+
   void _contextMenu(TapUpDetails details, CellOffset cell) {
     // A plain right-click; Shift+right goes to the program.
     final terminal = widget.terminal;
@@ -2049,8 +2093,11 @@ class _PaneViewState extends State<_PaneView> {
           onPointerDown: _mouseDown,
           onPointerUp: _mouseUp,
           // The wheel over a terminal is the program's, never the UI zoom's.
-          onPointerSignal: UiZoomWheel.keep,
-          onPointerHover: _gestureHover,
+          onPointerSignal: _signal,
+          onPointerHover: (event) {
+            _gestureHover(event);
+            _rightLost(event);
+          },
           onPointerMove: (event) {
             _trackedMove(event);
             _gestureMove(event);
@@ -2060,7 +2107,11 @@ class _PaneViewState extends State<_PaneView> {
             _trackedUp(event);
             _rightUp(event);
           },
-          onPointerPanZoomStart: _trackpadDown,
+          onPointerPanZoomStart: (event) {
+            _rightLost(event);
+            _trackpadDown(event);
+          },
+          onPointerPanZoomUpdate: (_) => _noteScroll('trackpad'),
           child: ScrollConfiguration(
             // Not the zoom's guard: here the wheel is the program's.
             behavior: const MaterialScrollBehavior(),

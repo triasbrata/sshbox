@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../platform.dart';
+import 'pan_zoom_heal.dart';
 import 'tui.dart';
 
 /// A right-click that opens whatever a long press opens, for a widget's
@@ -65,7 +66,8 @@ class ControlClick {
 }
 
 /// The app's binding: Flutter's own, with every pointer event passed
-/// through [ControlClick] first.
+/// through [ControlClick] first, and a trackpad's scrolls through
+/// [PanZoomHeal].
 class JeanshBinding extends WidgetsFlutterBinding {
   JeanshBinding._(this._controlClick);
 
@@ -80,9 +82,14 @@ class JeanshBinding extends WidgetsFlutterBinding {
     JeanshBinding._(ControlClick(ctrlOpensLinks: ctrlOpensLinks));
   }
 
+  final _panZoomHeal = PanZoomHeal();
+
   @override
-  void handlePointerEvent(PointerEvent event) =>
-      super.handlePointerEvent(_controlClick.convert(event));
+  void handlePointerEvent(PointerEvent event) {
+    for (final each in _panZoomHeal.convert(_controlClick.convert(event))) {
+      super.handlePointerEvent(each);
+    }
+  }
 }
 
 /// Opens termul's menu ([showTuiMenu]) with its corner at [at], a global
