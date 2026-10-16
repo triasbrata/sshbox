@@ -7046,6 +7046,195 @@ touch '${done.path}'
     );
   }
 
+  // Sentry JEANSH-G: in a tmux pane running Claude Code the wheel stopped
+  // scrolling while PageUp still did. A right press is kept from a program
+  // that reads the mouse while the menu has it, and a release that never came
+  // kept it so — the wheel held from the program — until the next
+  // right-click. A wheel over a terminal now also says in the app log where
+  // it went. Real X wheel and right button. 2x2 over the program:
+  //  wheel: reads the mouse (1003, SGR, alternate screen) -> the wheel reaches
+  //         it as ESC[<64; and the log says "program as wheel" (positive).
+  //  menu:  the same, after a right-click opened the pane's menu and Escape
+  //         shut it -> still the program's.
+  //  lost:  the same, after a right press whose release the app never heard
+  //         -> still the program's, the hold given back by the wheel itself.
+  //  shell: a plain shell reads no mouse -> nothing reaches it, the
+  //         scrollback moves and the log says "scrollback" (negative).
+  // X gives a press's release to the window that took the press whatever
+  // happens meanwhile, so a lost one is made the way the app would see it:
+  // the release is kept from the app by the test binding. Mutation: return at
+  // once from _rightLost in terminal_page.dart, which fails the lost case.
+  for (final kind in ['wheel', 'menu', 'lost', 'shell']) {
+    final mouse = kind != 'shell';
+    _test(
+      'a wheel over a tmux pane ${switch (kind) {
+        'wheel' => 'reaches a program that reads the mouse, and says so',
+        'menu' => 'still reaches the program after the pane\'s menu',
+        'lost' => 'still reaches the program after a right release was lost',
+        _ => 'scrolls the scrollback of a shell, and says so',
+      }}',
+      skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+      (tester) async {
+        await _launch(tester);
+        final dir = _scratch();
+        final got = File('${dir.path}/wheel');
+        final view = await _localShell(tester, tmux: true);
+        _run(
+          view,
+          mouse
+              ? r"printf '\033[?1049h\033[?1003h\033[?1006h'; "
+                    'stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null'
+              : 'seq 1 400; stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () =>
+              got.existsSync() &&
+              (!mouse ||
+                  (view.terminal.isUsingAltBuffer &&
+                      view.terminal.mouseMode != MouseMode.none)),
+          'the program to start',
+        );
+        if (!mouse) {
+          await _until(
+            tester,
+            () => _text(view).any((line) => line.trim() == '400'),
+            'seq to print 400 lines',
+          );
+        }
+        await tester.pump(const Duration(milliseconds: 300));
+
+        // The middle of the terminal, in the display's own pixels.
+        final box = tester.getRect(find.byType(TerminalView).first);
+        final window = await _windowRect();
+        final ratio = tester.view.devicePixelRatio;
+        final frame = (window.width - tester.view.physicalSize.width) / 2;
+        final x = (window.left + frame + box.center.dx * ratio).round();
+        final y = (window.top + frame + box.center.dy * ratio).round();
+        bool held() => view.controller!.suspendedPointerInputs;
+
+        if (kind == 'menu') {
+          await _realPointer(() async {
+            await _realRightClick(tester, box.center);
+            await _until(
+              tester,
+              () => find.text('Paste').evaluate().isNotEmpty,
+              'a right-click to open the pane\'s menu',
+            );
+          });
+          await _escape(tester);
+          await _until(
+            tester,
+            () => find.text('Paste').evaluate().isEmpty,
+            'Escape to close the pane\'s menu',
+          );
+        }
+        if (kind == 'lost') {
+          await _xdo(['windowfocus', '--sync', await _window()]);
+          await _realPointer(() async {
+            await _xdo(['mousemove', '$x', '$y', 'sleep', '0.2']);
+            await tester.pump(const Duration(milliseconds: 200));
+            await _xdo(['mousedown', '3', 'sleep', '0.2']);
+            await tester.pump(const Duration(milliseconds: 200));
+          });
+          // The release, kept from the app, as a window that lost the
+          // pointer loses it.
+          await _xdo(['mouseup', '3', 'sleep', '0.3']);
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(
+            held(),
+            isTrue,
+            reason:
+                'the right press was not kept from the program, so its '
+                'lost release proves nothing',
+          );
+          expect(
+            find.text('Paste'),
+            findsNothing,
+            reason: 'a menu opened with no release',
+          );
+        }
+        // Motion, under 1003, may have come; a wheel event may not yet.
+        final wheelEvent = RegExp(r'\x1b\[<6[45];\d+;\d+M');
+        expect(
+          wheelEvent.hasMatch(got.readAsStringSync()),
+          isFalse,
+          reason: 'a wheel event before the wheel',
+        );
+
+        int logged(String to) =>
+            'scroll wheel → $to'.allMatches(appLog.current).length;
+        const routes = [
+          'program as wheel',
+          'program as arrows',
+          'scrollback',
+          'held from the program',
+        ];
+        inputLog.flush();
+        final before = {for (final to in routes) to: logged(to)};
+        ScrollableState scroll() => tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(TerminalView).first,
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        final from = scroll().position.pixels;
+
+        // A wheel up as a hand makes it. In the lost case with no move
+        // first, so nothing but the wheel tells the app the button is up.
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _realPointer(() async {
+          if (kind != 'lost') {
+            await _xdo(['mousemove', '$x', '$y', 'sleep', '0.2']);
+          }
+          await _xdo(['click', '--repeat', '4', '--delay', '80', '4']);
+          await tester.pump(const Duration(milliseconds: 400));
+        });
+        Map<String, int> added() {
+          inputLog.flush();
+          return {for (final to in routes) to: logged(to) - before[to]!};
+        }
+
+        if (mouse) {
+          await _until(
+            tester,
+            () => wheelEvent.hasMatch(got.readAsStringSync()),
+            'an SGR wheel event to reach the program '
+            '(it was sent ${jsonEncode(got.readAsStringSync())}, '
+            'the log added ${added()})',
+          );
+          final log = added();
+          expect(log['program as wheel'], greaterThan(0), reason: '$log');
+          for (final to in routes.skip(1)) {
+            expect(log[to], 0, reason: 'the wheel logged as $to: $log');
+          }
+          expect(held(), isFalse, reason: 'the wheel still held after it');
+        } else {
+          await tester.pump(const Duration(milliseconds: 600));
+          expect(
+            got.readAsStringSync(),
+            isEmpty,
+            reason: 'the wheel reached a shell that never asked',
+          );
+          expect(
+            scroll().position.pixels,
+            isNot(from),
+            reason: 'the scrollback did not move',
+          );
+          final log = added();
+          expect(log['scrollback'], greaterThan(0), reason: '$log');
+          for (final to in routes.where((to) => to != 'scrollback')) {
+            expect(log[to], 0, reason: 'the wheel logged as $to: $log');
+          }
+        }
+
+        await _closeTabs(tester);
+      },
+    );
+  }
+
   // A tap on a tmux pane asks tmux for the pane's mouse modes and puts the
   // LOCAL terminal right when it differs ("masi kena bug tidak bisa scroll
   // claude app randomly"). To make only the local side differ, the test
