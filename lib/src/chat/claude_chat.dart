@@ -3396,7 +3396,7 @@ class ClaudeChat extends ChangeNotifier {
         if (_disposed) return;
         agent =
             (await agents()).where((row) => row.id == id).firstOrNull ?? agent;
-        if (agent == null ? look == 4 : !agent.liveWithoutPid) break;
+        if (agent != null || look == 4) break; // MUTANT: point 1 reverted
       }
       if (agent == null) {
         throw SshSessionException(
