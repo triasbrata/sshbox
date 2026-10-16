@@ -48,7 +48,7 @@ on:
       only:
         description: Run every job, or one of them alone
         type: choice
-        options: [all, android, linux-desktop, windows-desktop, macos-desktop]
+        options: [all, android, android-api30, linux-desktop, windows-desktop, macos-desktop]
         default: all
       block:
         description: One Android block to run alone after seed_host, or empty for every flow
@@ -116,7 +116,7 @@ jobs:
   # The candidate, built once and handed to every shard, which then needs no
   # Flutter, no Java and no Gradle of its own.
   android-build:
-    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' }}
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' || inputs.only == 'android-api30' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -409,6 +409,52 @@ jobs:
           path: build/e2e-durations/*.tsv
           retention-days: 30
           if-no-files-found: ignore
+
+  # JEANSH-8: Android 11 reading a sparse resource table past its end in
+  # LoadedPackage::FindEntryByName, which killed the app at its notifications'
+  # start. The debug APK with every type table forced sparse, cold-launched on
+  # an API 30 emulator (tools/e2e_sparse_apk.sh, tools/e2e_api30.sh). A hand
+  # run alone, `only: android-api30`, and report-only: no gate needs it.
+  android-api30:
+    needs: android-build
+    if: ${{ inputs.only == 'android-api30' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-${{ github.run_id }}
+          path: build/app/outputs/flutter-apk
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Force sparse resource tables
+        run: |
+          mkdir -p build/e2e-api30
+          tools/e2e_sparse_apk.sh build/app/outputs/flutter-apk/app-debug.apk build/e2e-api30/app-sparse.apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cold launch on Android 11
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: tools/e2e_api30.sh build/e2e-api30/app-sparse.apk
 
   # The Android gate's one answer, and the job tag.yml's `coverage` comes
   # from: it fails unless the plan, the build and every shard succeeded, so a
