@@ -842,6 +842,16 @@ class ClaudeAgent {
   /// one that takes it.
   bool get live => pid != null;
 
+  /// Running as far as the row says, with no pid to follow it by: a status,
+  /// which a finished row has none of, or a state of a turn under way. A
+  /// session just started with `--bg` was listed so on a user's host before
+  /// its pid was, and a `--resume` of it is refused as running in the
+  /// background.
+  bool get liveWithoutPid =>
+      pid == null &&
+      !interactive &&
+      (status != null || state == 'working' || state == 'blocked');
+
   bool get busy => status == 'busy';
 
   /// Whether somebody is typing into this one at a terminal.
@@ -899,6 +909,7 @@ class ClaudeChat extends ChangeNotifier {
     this.askKeys = dialogKeys,
     this.connected,
     this.listingTimeout = const Duration(seconds: 10),
+    this.startLook = const Duration(seconds: 1),
   }) : _parent = null,
        _sub = null,
        _subRunning = null;
@@ -924,6 +935,7 @@ class ClaudeChat extends ChangeNotifier {
        askKeys = dialogKeys,
        connected = null,
        listingTimeout = const Duration(seconds: 10),
+       startLook = const Duration(seconds: 1),
        // ignore: prefer_initializing_formals
        _parent = parent,
        _sub = agent,
@@ -1003,6 +1015,10 @@ class ClaudeChat extends ChangeNotifier {
   /// How long [agents] waits for the host's listing, opening and reading
   /// together, before it gives up.
   final Duration listingTimeout;
+
+  /// How long a new chat waits between looks at `claude agents` for the
+  /// session its `--bg` started to be listed with a process to follow.
+  final Duration startLook;
 
   /// Starts a command on the host and hands back its pipes — the session's
   /// own [ChannelCapable.open], looked up at the moment it is called so a
@@ -1456,6 +1472,13 @@ class ClaudeChat extends ChangeNotifier {
   ClaudeAgent? _watching;
 
   ClaudeAgent? get watching => _watching;
+
+  /// A session the host lists as running with no process to follow: neither
+  /// watched, there being no pid to follow it by, nor resumed, since the CLI
+  /// refuses `--resume` on a live session. [restart] looks for it afresh.
+  ClaudeAgent? _heldLive;
+
+  ClaudeAgent? get heldLive => _heldLive;
 
   /// Why the session being watched cannot be typed into from here, or null
   /// when it can: an interactive one the tmux the tabs use holds no pane of
@@ -2490,6 +2513,11 @@ class ClaudeChat extends ChangeNotifier {
     if (_disposed) return 'This chat is closed.';
     if (_revising) return 'Going back to your earlier message.';
     if (_watching != null) return null;
+    final held = _heldLive;
+    if (held != null) {
+      return '“${held.name}” is running on the host with no process listed '
+          'to follow yet. Pick it again in the sessions list.';
+    }
     if (_composing) return _busy ? 'A new chat is starting.' : null;
     if (_starting) return 'Claude is starting on the host.';
     if (!_ready) {
@@ -2991,6 +3019,9 @@ class ClaudeChat extends ChangeNotifier {
     // Watching runs no Claude of its own to restart: follow it afresh.
     final watching = _watching;
     if (watching != null) return continueFrom(watching);
+    // Running with no process listed: looked for afresh, never resumed.
+    final held = _heldLive;
+    if (held != null) return _pickUpListed(held.sessionId, id: held.id);
     // Nothing is running yet: the mode goes with the first message.
     if (_composing) return notifyListeners();
     await _stop();
@@ -3196,9 +3227,16 @@ class ClaudeChat extends ChangeNotifier {
   ///
   /// [waitForTranscript] gives a session this chat has just started a few
   /// seconds to write its first line.
+  ///
+  /// A session listed as running with no pid ([ClaudeAgent.liveWithoutPid],
+  /// or any row with [running], for one the CLI has just said runs) is
+  /// neither: there is nothing to follow it by,
+  /// and `--resume` of it is refused. Its history is shown, and [restart]
+  /// looks for its process again.
   Future<void> continueFrom(
     ClaudeAgent agent, {
     bool waitForTranscript = false,
+    bool running = false,
   }) async {
     await _reset();
     _composing = false;
@@ -3208,6 +3246,7 @@ class ClaudeChat extends ChangeNotifier {
     // under: a continuation or a fork starts there, not in the chat's folder.
     _sessionCwd = agent.cwd.isEmpty ? null : agent.cwd;
     final pid = agent.pid;
+    final held = pid == null && (running || agent.liveWithoutPid);
     final read = await _loadHistory(
       agent.sessionId,
       keepRunning: pid != null,
@@ -3216,6 +3255,22 @@ class ClaudeChat extends ChangeNotifier {
     if (_disposed) return;
     // The task list, from the session's own store, whatever the history said.
     unawaited(_readTasks());
+    if (held) {
+      _heldLive = agent;
+      _ended = true;
+      final id = agent.id;
+      _say(
+        ChatNotice(
+          '“${agent.name}” is running on the host, but `claude agents` lists '
+          'no process for it to follow, so it is not watched here yet. Pick '
+          'it again in the sessions list in a moment'
+          '${id == null ? '.' : ', or open it with `claude attach $id`.'}',
+          failed: true,
+        ),
+      );
+      unawaited(restoreOutbox());
+      return;
+    }
     if (pid != null) {
       // Unreadable, it has said why; with nothing to follow from, nothing is
       // started either.
@@ -3311,6 +3366,8 @@ class ClaudeChat extends ChangeNotifier {
     _ended = false;
     _watching = null;
     _readOnly = null;
+    _heldLive = null;
+    _refusedLive = null;
     _pending.clear();
     _dropped.clear();
     _pictures = 0;
@@ -3454,11 +3511,18 @@ class ClaudeChat extends ChangeNotifier {
       // on the host, and nothing more is asked of it from here.
       if (_disposed) return;
       // Listed the moment `--bg` returns, measured; a slow host gets a few
-      // more looks.
+      // more looks. A user's host listed it running with no pid at first, and
+      // a row with no pid was resumed, which the CLI refuses as running in
+      // the background: so while it is listed running the looks go on, as
+      // many again, until it has one. One listed finished, as `--resume`
+      // takes, is continued.
       ClaudeAgent? agent;
-      for (var look = 0; look < 5 && agent == null; look++) {
-        if (look > 0) await Future<void>.delayed(const Duration(seconds: 1));
-        agent = (await agents()).where((row) => row.id == id).firstOrNull;
+      for (var look = 0; look < 10; look++) {
+        if (look > 0) await Future<void>.delayed(startLook);
+        if (_disposed) return;
+        agent =
+            (await agents()).where((row) => row.id == id).firstOrNull ?? agent;
+        if (agent == null ? look == 4 : !agent.liveWithoutPid) break;
       }
       if (agent == null) {
         throw SshSessionException(
@@ -3489,6 +3553,7 @@ class ClaudeChat extends ChangeNotifier {
         unawaited(_outboxDelivered(said.outboxKey, said.outboxId, null));
       }
       _busy = false;
+      // Still running with no pid after every look: held, not resumed.
       await continueFrom(agent, waitForTranscript: true);
     } catch (error) {
       final refused = '$error'.contains('Workspace not trusted');
@@ -4930,6 +4995,11 @@ class ClaudeChat extends ChangeNotifier {
     final text = line.trim();
     if (text.isEmpty) return;
     if (!text.startsWith('{')) {
+      // `--resume` of a session still running, refused in the CLI's words:
+      // "That session is running in the background (7204e8df). …". When the
+      // process ends, that session is looked up and watched instead.
+      final refused = _runningElsewhere.firstMatch(text)?.group(1);
+      if (refused != null) _refusedLive = refused;
       _say(ChatNotice(text, failed: true));
       return;
     }
@@ -5716,8 +5786,68 @@ class ClaudeChat extends ChangeNotifier {
     _ownInflight.clear();
     _retarget();
     _endTurn();
+    final refused = _refusedLive;
+    _refusedLive = null;
+    final session = _sessionId;
+    if (refused != null && session != null) {
+      // It never ran: the session it was to resume is running already.
+      notifyListeners();
+      unawaited(_pickUpListed(session, id: refused, running: true));
+      return;
+    }
     _entries.add(ChatNotice('Claude is no longer running on this host.'));
     notifyListeners();
+  }
+
+  /// The short id in the CLI's refusal to resume a session that is running.
+  static final _runningElsewhere = RegExp(
+    r'is running in the background \(([0-9a-f]{8})\)',
+  );
+
+  /// Set from the CLI's refusal to resume a running session, until this
+  /// chat's own process ends.
+  String? _refusedLive;
+
+  /// Looks [sessionId] up in `claude agents` afresh and picks it up from
+  /// that row: watched with a pid, held without one, continued once it has
+  /// finished — unless [running], when the CLI has just said it runs, and a
+  /// row with no pid is held whatever else it says, so a refusal is never
+  /// answered with the same `--resume` again. Never stopped and never
+  /// forked: the session goes on as it is.
+  Future<void> _pickUpListed(
+    String sessionId, {
+    String? id,
+    bool running = false,
+  }) async {
+    final List<ClaudeAgent> rows;
+    try {
+      rows = await agents(all: true);
+    } catch (error) {
+      if (_disposed) return;
+      _say(
+        ChatNotice(
+          'It is running on the host, but the sessions there could not be '
+          'listed to watch it: $error',
+          failed: true,
+        ),
+      );
+      return;
+    }
+    if (_disposed || _sessionId != sessionId) return;
+    final row = rows
+        .where((r) => r.sessionId == sessionId || (id != null && r.id == id))
+        .firstOrNull;
+    if (row == null) {
+      _say(
+        ChatNotice(
+          'It is running on the host, but `claude agents` does not list it'
+          '${id == null ? '.' : '. Open it with `claude attach $id`.'}',
+          failed: true,
+        ),
+      );
+      return;
+    }
+    await continueFrom(row, running: running);
   }
 
   Future<void> _stop() async {

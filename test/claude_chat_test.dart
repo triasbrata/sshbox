@@ -302,6 +302,14 @@ class _LiveHost {
   /// says: one it has just started.
   Map<String, Object?>? listed;
 
+  /// What `claude agents` lists first, a row a listing, before [listed]: a
+  /// session just started, listed with no pid before it has one.
+  final listings = <Map<String, Object?>>[];
+
+  /// What Claude itself prints before it exits, where a test says: the CLI
+  /// refusing to resume a session that is running.
+  String? claudeSays;
+
   /// When set, `claude agents` answers only once it completes, as a slow
   /// host answers: what the session does meanwhile goes on.
   Future<void>? agentsGate;
@@ -411,6 +419,11 @@ class _LiveHost {
         close: () {},
       );
     }
+    if (command.contains('agents --json') && listings.isNotEmpty) {
+      return _says(jsonEncode([listings.removeAt(0)]));
+    }
+    final says = claudeSays;
+    if (says != null && command.contains('stream-json')) return _says(says);
     final started = listed;
     if (command.contains('agents --json') && started != null) {
       return (
@@ -4174,6 +4187,238 @@ void main() {
       expect(commands.last, contains(' -f '));
       expect(host.startedClaude, isFalse);
       expect(chat.entries.whereType<ChatSaid>().first.text, 'Looking.');
+    });
+
+    /// The session `--bg` started, as `claude agents` lists it: with [pid],
+    /// or as it was first listed on a user's host, idle with none yet.
+    Map<String, Object?> startedRow({int? pid}) => {
+      'pid': ?pid,
+      'id': '9e1f2a3b',
+      'cwd': '/srv/app',
+      'kind': 'background',
+      'sessionId': '9e1f2a3b-0000-4000-8000-000000000000',
+      'name': 'hello',
+      'status': 'idle',
+      'state': 'done',
+    };
+
+    ({_LiveHost host, ClaudeChat chat, List<String> commands}) bgChat() {
+      final host = _LiveHost('0\n');
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains(' --bg ')) return _says(printed);
+          return host.open(command);
+        },
+        cwd: '/srv/app',
+        startLook: const Duration(milliseconds: 1),
+      );
+      addTearDown(chat.dispose);
+      return (host: host, chat: chat, commands: commands);
+    }
+
+    test('one listed first with no pid is looked for again until it has '
+        'one, then watched, and never resumed', () async {
+      final (:host, :chat, :commands) = bgChat();
+      host.listings.addAll([startedRow(), startedRow()]);
+      host.listed = startedRow(pid: 7);
+
+      await chat.send('hello');
+
+      expect(chat.watching?.id, '9e1f2a3b');
+      expect(chat.watching?.pid, 7);
+      expect(chat.heldLive, isNull);
+      expect(host.listings, isEmpty);
+      expect(commands.any((c) => c.contains('--resume')), isFalse);
+      expect(host.startedClaude, isFalse);
+      expect(
+        chat.entries.whereType<ChatNotice>().map((n) => n.text),
+        isNot(contains(startsWith('Continuing'))),
+      );
+      expect(commands.last, contains(' -f '));
+    });
+
+    test('one never listed with a pid is said so, held, and not resumed; '
+        'Restart looks for it again and watches it', () async {
+      final (:host, :chat, :commands) = bgChat();
+      host.listed = startedRow();
+
+      await chat.send('hello');
+
+      expect(commands.where((c) => c.contains('agents --json')), hasLength(10));
+      expect(chat.watching, isNull);
+      expect(chat.heldLive?.id, '9e1f2a3b');
+      expect(chat.composing, isFalse);
+      expect(commands.any((c) => c.contains('--resume')), isFalse);
+      expect(host.startedClaude, isFalse);
+      final notice = chat.entries.whereType<ChatNotice>().last;
+      expect(notice.failed, isTrue);
+      expect(notice.text, contains('lists no process for it to follow'));
+      expect(notice.text, contains('`claude attach 9e1f2a3b`'));
+      expect(chat.unsendable, contains('no process listed to follow'));
+
+      host.listed = startedRow(pid: 7);
+      await chat.restart();
+
+      expect(chat.watching?.pid, 7);
+      expect(chat.heldLive, isNull);
+      expect(chat.unsendable, isNull);
+      expect(commands.any((c) => c.contains('--resume')), isFalse);
+      expect(host.startedClaude, isFalse);
+    });
+
+    test('a tab closed while it is looked for asks nothing more', () async {
+      final host = _LiveHost('0\n');
+      final commands = <String>[];
+      late final ClaudeChat chat;
+      chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains(' --bg ')) return _says(printed);
+          if (command.contains('agents --json')) chat.dispose();
+          return host.open(command);
+        },
+        startLook: const Duration(milliseconds: 1),
+      );
+      host.listed = startedRow();
+
+      await chat.send('hello');
+
+      expect(commands.where((c) => c.contains('agents --json')), hasLength(1));
+      expect(commands.any((c) => c.contains('stream-json')), isFalse);
+    });
+
+    test('a running session picked with no pid is held, not resumed', () async {
+      final host = _LiveHost('0\n');
+      final chat = ClaudeChat(open: host.open);
+      addTearDown(chat.dispose);
+
+      await chat.continueFrom(
+        const ClaudeAgent(
+          sessionId: '9e1f2a3b-0000-4000-8000-000000000000',
+          name: 'hello',
+          cwd: '/srv/app',
+          kind: 'background',
+          id: '9e1f2a3b',
+          status: 'idle',
+        ),
+      );
+
+      expect(chat.heldLive?.id, '9e1f2a3b');
+      expect(host.startedClaude, isFalse);
+      // One that has finished, with no status, is continued as before.
+      const finished = ClaudeAgent(
+        sessionId: '9e1f2a3b-0000-4000-8000-000000000000',
+        name: 'hello',
+        cwd: '/srv/app',
+        kind: 'background',
+        id: '9e1f2a3b',
+        state: 'done',
+      );
+      expect(finished.liveWithoutPid, isFalse);
+      expect(
+        const ClaudeAgent(
+          sessionId: 's',
+          name: 'n',
+          cwd: '',
+          kind: 'background',
+          state: 'working',
+        ).liveWithoutPid,
+        isTrue,
+      );
+    });
+
+    group('a resume the CLI refuses as running in the background', () {
+      const refusal =
+          'Error: That session is running in the background (9e1f2a3b). Run '
+          '`claude attach 9e1f2a3b` to open it, or `claude stop 9e1f2a3b` '
+          'first to resume it here. Add --fork-session to branch off a copy '
+          'instead.\n';
+      const finished = ClaudeAgent(
+        sessionId: '9e1f2a3b-0000-4000-8000-000000000000',
+        name: 'hello',
+        cwd: '/srv/app',
+        kind: 'background',
+        id: '9e1f2a3b',
+        state: 'done',
+      );
+
+      Future<void> settled() async {
+        for (var i = 0; i < 20; i++) {
+          await _settle();
+        }
+      }
+
+      test('watches that session instead, resumed once and never stopped '
+          'or forked', () async {
+        final host = _LiveHost('0\n')
+          ..claudeSays = refusal
+          ..listed = startedRow(pid: 7);
+        final chat = ClaudeChat(open: host.open);
+        addTearDown(chat.dispose);
+
+        await chat.continueFrom(finished);
+        await settled();
+
+        expect(chat.watching?.pid, 7);
+        expect(
+          host.commands.where((c) => c.contains('--resume')),
+          hasLength(1),
+        );
+        expect(host.commands.any((c) => c.contains(' stop ')), isFalse);
+        expect(host.commands.any((c) => c.contains('--fork-session')), isFalse);
+        expect(
+          chat.entries.whereType<ChatNotice>().map((n) => n.text),
+          isNot(contains('Claude is no longer running on this host.')),
+        );
+      });
+
+      test(
+        'listed with no pid, it is held rather than resumed again',
+        () async {
+          final host = _LiveHost('0\n')
+            ..claudeSays = refusal
+            ..listed = {...startedRow(), 'status': null};
+          final chat = ClaudeChat(open: host.open);
+          addTearDown(chat.dispose);
+
+          await chat.continueFrom(finished);
+          await settled();
+
+          expect(chat.heldLive?.id, '9e1f2a3b');
+          expect(
+            host.commands.where((c) => c.contains('--resume')),
+            hasLength(1),
+          );
+        },
+      );
+
+      test('not listed, or not listable, it says so', () async {
+        final host = _LiveHost('0\n')
+          ..claudeSays = refusal
+          ..listed = {...startedRow(), 'sessionId': 'other', 'id': 'aaaa1111'};
+        final chat = ClaudeChat(open: host.open);
+        addTearDown(chat.dispose);
+        await chat.continueFrom(finished);
+        await settled();
+        expect(
+          chat.entries.whereType<ChatNotice>().last.text,
+          contains('does not list it. Open it with `claude attach 9e1f2a3b`'),
+        );
+
+        final failing = _LiveHost('0\n')
+          ..claudeSays = refusal
+          ..agentsFail = true;
+        final other = ClaudeChat(open: failing.open);
+        addTearDown(other.dispose);
+        await other.continueFrom(finished);
+        await settled();
+        expect(
+          other.entries.whereType<ChatNotice>().last.text,
+          contains('could not be listed to watch it'),
+        );
+      });
     });
 
     test('a host that will not start one says what it said, and the chat '
