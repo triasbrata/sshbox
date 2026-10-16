@@ -6474,11 +6474,20 @@ void main() {
       'state': 'done',
     };
 
+    /// The model chip's ▾ is the first in the row, the effort chip's after it.
     Future<void> pick(WidgetTester tester, String label) async {
-      await tester.tap(find.textContaining('▾'));
+      await tester.tap(find.textContaining('▾').first);
       await tester.pump();
       await _frames(tester);
       await tester.tap(find.text(label));
+      await tester.pump();
+    }
+
+    Future<void> pickEffort(WidgetTester tester, String label) async {
+      await tester.tap(find.textContaining(RegExp(r'^Effort.*▾$')));
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(find.text(label).last);
       await tester.pump();
     }
 
@@ -7021,6 +7030,261 @@ void main() {
         ClaudeChat.backgroundCommand('hi', model: r'$(touch pwned)'),
         isNot(contains('--model')),
       );
+    });
+
+    test('only a level the picker offers reaches the command line as '
+        '--effort, and none passes no flag', () {
+      expect(
+        ClaudeChat.command(model: 'opus', effort: 'high'),
+        contains('--permission-prompt-tool stdio --model opus --effort high'),
+      );
+      expect(
+        ClaudeChat.command(effort: 'max'),
+        contains('--permission-prompt-tool stdio --effort max'),
+      );
+      expect(ClaudeChat.command(), isNot(contains('--effort')));
+      expect(
+        ClaudeChat.command(effort: 'x; touch pwned'),
+        isNot(contains('--effort')),
+      );
+      expect(
+        ClaudeChat.backgroundCommand('hi', effort: 'low'),
+        contains('--permission-mode acceptEdits --effort low -- '),
+      );
+      expect(
+        ClaudeChat.backgroundCommand('hi', model: 'haiku', effort: 'xhigh'),
+        contains('--model haiku --effort xhigh'),
+      );
+      expect(ClaudeChat.backgroundCommand('hi'), isNot(contains('--effort')));
+      expect(
+        ClaudeChat.backgroundCommand('hi', effort: r'$(touch pwned)'),
+        isNot(contains('--effort')),
+      );
+    });
+
+    testWidgets('a new chat starts with the effort picked, and Default '
+        'passes no --effort', (tester) async {
+      final shell = await open(tester);
+      expect(find.text('Effort ▾'), findsOneWidget);
+      await pickEffort(tester, 'high');
+      expect(find.text('Effort high ▾'), findsOneWidget);
+      // The menu marks it, and only it.
+      await tester.tap(find.text('Effort high ▾'));
+      await tester.pump();
+      await _frames(tester);
+      Finder mark(String label) => find.descendant(
+        of: find.ancestor(
+          of: find.text(label),
+          matching: find.byType(PopupMenuItem<String>),
+        ),
+        matching: find.text('✓'),
+      );
+      expect(mark('high'), findsOneWidget);
+      expect(mark('Default'), findsNothing);
+      expect(
+        find.ancestor(
+          of: find.text('xhigh'),
+          matching: find.byType(PopupMenuItem<String>),
+        ),
+        findsOneWidget,
+      );
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pump();
+      await _frames(tester);
+      await tester.enterText(find.byType(TextField), 'why is nginx slow?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      final started = shell.commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, contains('--effort high'));
+    });
+
+    testWidgets('a new chat with no effort picked passes no --effort', (
+      tester,
+    ) async {
+      final shell = await open(tester);
+      await pickEffort(tester, 'max');
+      await pickEffort(tester, 'Default');
+      expect(find.text('Effort ▾'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.send));
+      await _settlePickUp(tester);
+      final started = shell.commands.firstWhere((c) => c.contains(' --bg '));
+      expect(started, isNot(contains('--effort')));
+    });
+
+    testWidgets("this chat's own Claude takes an effort as an "
+        'apply_flag_settings request, shows it once accepted, and a restart '
+        'passes it', (tester) async {
+      final shell = await open(
+        tester,
+        finished: _finished('cf58d27a', 'Zsh'),
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'Zsh');
+      shell.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': 'cf58d27a-0000-4000-8000-000000000000',
+        'model': 'claude-opus-5-5',
+      });
+      await tester.pump();
+      final process = shell.commands.length;
+      await pickEffort(tester, 'high');
+      // No restart: the same process was written to.
+      expect(shell.commands.length, process);
+      var sent = jsonDecode(shell.written.last.trim()) as Map;
+      expect(sent['type'], 'control_request');
+      expect(sent['request'], {
+        'subtype': 'apply_flag_settings',
+        'settings': {'effortLevel': 'high'},
+      });
+      // Not claimed before the CLI said so.
+      expect(find.text('Effort ▾'), findsOneWidget);
+      shell.event({
+        'type': 'control_response',
+        'response': {'subtype': 'success', 'request_id': sent['request_id']},
+      });
+      await tester.pump();
+      expect(find.text('Effort high ▾'), findsOneWidget);
+
+      // A refusal is said, and the level stays.
+      await pickEffort(tester, 'low');
+      sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {
+          'subtype': 'error',
+          'request_id': sent['request_id'],
+          'error': 'not allowed',
+        },
+      });
+      await tester.pump();
+      expect(find.textContaining('effort was not changed'), findsOneWidget);
+      expect(find.text('Effort high ▾'), findsOneWidget);
+
+      await tester.tap(find.byType(MenuButton<Object>));
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(find.text('Restart Claude'));
+      await _settlePickUp(tester);
+      final restarted = shell.commands.last;
+      expect(restarted, contains('--effort high'));
+      expect(restarted, isNot(contains('low')));
+    });
+
+    testWidgets("Default for this chat's own Claude sends effortLevel null", (
+      tester,
+    ) async {
+      final shell = await open(
+        tester,
+        finished: _finished('cf58d27a', 'Zsh'),
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'Zsh');
+      await pickEffort(tester, 'max');
+      var sent = jsonDecode(shell.written.last.trim()) as Map;
+      shell.event({
+        'type': 'control_response',
+        'response': {'subtype': 'success', 'request_id': sent['request_id']},
+      });
+      await tester.pump();
+      expect(find.text('Effort max ▾'), findsOneWidget);
+      await pickEffort(tester, 'Default');
+      sent = jsonDecode(shell.written.last.trim()) as Map;
+      expect(sent['request'], {
+        'subtype': 'apply_flag_settings',
+        'settings': {'effortLevel': null},
+      });
+      shell.event({
+        'type': 'control_response',
+        'response': {'subtype': 'success', 'request_id': sent['request_id']},
+      });
+      await tester.pump();
+      expect(find.text('Effort ▾'), findsOneWidget);
+    });
+
+    testWidgets('a session watched live takes an effort from the chip: '
+        '/effort <level> typed into it, and the chip follows its record', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      final shell = await open(tester, running: running);
+      await tester.tap(find.text('the nightly build'));
+      await _settlePickUp(tester);
+      expect(find.text('Effort ▾'), findsOneWidget);
+      // Before the pick, the chip says what it also does to the host.
+      expect(
+        tester.getSemantics(find.text('Effort ▾')).hint,
+        'Typed as /effort into the session. '
+        '${ClaudeChat.effortDefaultNotice}',
+      );
+      semantics.dispose();
+      await pickEffort(tester, 'high');
+      await typing(tester);
+      expect(shell.typed.single.first, '/effort high');
+      expect(shell.written, isEmpty);
+      // Not taken until the session records it.
+      expect(find.text('Effort ▾'), findsOneWidget);
+      // As Claude Code 2.1.287 records it.
+      shell.adds({
+        'type': 'user',
+        'message': {
+          'role': 'user',
+          'content':
+              '<command-name>/effort</command-name>\n'
+              '<command-message>effort</command-message>\n'
+              '<command-args>high</command-args>',
+        },
+      });
+      shell.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Set effort level to high (saved as your '
+            'default for new sessions): Comprehensive implementation'
+            '</local-command-stdout>',
+      });
+      await _settlePickUp(tester);
+      expect(find.text('Effort high ▾'), findsOneWidget);
+      // And after it applies, said in the chat.
+      expect(find.text(ClaudeChat.effortDefaultNotice), findsOneWidget);
+    });
+
+    testWidgets('a session that is only watched shows the effort chip '
+        'read-only, with its hint, and types nothing', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final shell = await open(
+        tester,
+        running: {
+          'pid': 1259765,
+          'cwd': '/home/me',
+          'kind': 'interactive',
+          'sessionId': '456d3c0e-2a17-4943-a2f4-6cdd25893a19',
+          'name': 'dev-e0',
+          'status': 'idle',
+        },
+        size: const Size(700, 800),
+      );
+      await _continue(tester, 'dev-e0');
+      expect(find.text('Effort'), findsOneWidget);
+      expect(
+        tester.getSemantics(find.text('Effort')).hint,
+        ClaudeChat.effortReadOnlyHint,
+      );
+      final before = shell.commands.length;
+      await tester.tap(find.text('Effort'));
+      await tester.pump();
+      await _frames(tester);
+      expect(find.text(ClaudeChat.effortReadOnlyHint), findsWidgets);
+      expect(find.text('high'), findsNothing);
+      await typing(tester);
+      expect(shell.commands.length, before);
+      expect(shell.written, isEmpty);
+      expect(shell.paneTyped, isEmpty);
+      expect(shell.typed, isEmpty);
+      semantics.dispose();
     });
   });
 

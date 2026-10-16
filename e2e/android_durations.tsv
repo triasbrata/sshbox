@@ -38,6 +38,7 @@ chat_subagents	56
 chat_usage	49
 chat_compact	55
 chat_model	107
+chat_effort	130
 chat_cwd	358
 folder_zip	348
 chat_outbox	798
