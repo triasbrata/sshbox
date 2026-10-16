@@ -204,11 +204,18 @@ class _Shell
     // `claude attach` drawing its input line, or what a test says it shows.
     final draws = attachScreen;
     scheduleMicrotask(() => screen.add(Uint8List.fromList(utf8.encode(draws))));
+    // Its input line as Claude Code draws it: what is typed, as it comes.
+    // The chat reads it back before Enter.
+    var line = '';
     return (
       output: screen.stream,
       write: (Uint8List data) {
         final text = utf8.decode(data);
         keys.add(text);
+        if (!text.startsWith('\x1b[200~') && text != '\r' && !screen.isClosed) {
+          line += text;
+          screen.add(Uint8List.fromList(utf8.encode('\r\n❯ $line')));
+        }
         // A path pasted into `claude attach` becomes a chip, which the next
         // part waits for.
         if (text.startsWith('\x1b[200~/') && !screen.isClosed) {
