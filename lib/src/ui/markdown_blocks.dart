@@ -797,6 +797,9 @@ class MdEdit {
   final MdStyle? insStyle;
 }
 
+/// An HTML entity, which Markdown reads as the character it names.
+final _entity = RegExp(r'^&#?[A-Za-z0-9]+;');
+
 bool _sameInline(MdInline x, String text, List<MdStyle> styles) =>
     x.text == text && listEquals(x.styles, styles);
 
@@ -811,8 +814,7 @@ String _escape(String ins, int level, String indent) {
       out.write('\n$indent');
     } else if (level >= 2 ? _punct(ch) : r'\*_`[]<~'.contains(ch)) {
       out.write('\\$ch');
-    } else if (ch == '&' &&
-        RegExp(r'^&#?[A-Za-z0-9]+;').hasMatch(ins.substring(i))) {
+    } else if (ch == '&' && _entity.hasMatch(ins.substring(i))) {
       out.write(r'\&');
     } else {
       out.write(ch);
@@ -945,7 +947,9 @@ String? _serializeInline(
             continue;
           }
         }
-        out.write(_escape(ch, 1, indent));
+        // An entity's `&` is seen with what follows it, not alone.
+        final entity = ch == '&' && _entity.hasMatch(segment.substring(k));
+        out.write(entity ? r'\&' : _escape(ch, 1, indent));
         atLineStart = false;
       }
     }

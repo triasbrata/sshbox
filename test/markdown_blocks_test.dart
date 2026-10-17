@@ -410,5 +410,142 @@ void main() {
       // A table between is not jumped over.
       expect(merged.doc.mergeBack(merged.doc.blocks.length - 1), isNull);
     });
+
+    test('Backspace in an empty block after a table removes it alone', () {
+      final doc = MdDoc.parse('| t |\n|---|\n\none\n');
+      final m = doc.blocks[2].inline!;
+      final emptied = doc.edit(
+        2,
+        MdEdit('', const [], a: 0, b: m.text.length),
+        caret: 0,
+      )!;
+      expect(emptied.doc.blocks[2].raw, '');
+      final gone = emptied.doc.mergeBack(2)!;
+      expect(gone.doc.text, '| t |\n|---|\n');
+      expect(gone.block, -1);
+    });
+
+    test('joining marks that run into each other writes the block afresh', () {
+      final doc = MdDoc.parse('*one*\n\n*two*\n\n#\n\nthree\n');
+      final merged = doc.mergeBack(2)!;
+      expect(merged.doc.blocks.first.inline!.text, 'onetwo');
+      expect(merged.doc.text, startsWith('*onetwo*\n'));
+      // Into an empty heading, the text is written after its marker.
+      final into = merged.doc.mergeBack(merged.doc.blocks.length - 1)!;
+      expect(into.doc.text, '*onetwo*\n\n# three\n');
+    });
+  });
+
+  group('corners', () {
+    MdBlock first(String text) =>
+        MdDoc.parse(text).blocks.firstWhere((b) => b.kind != MdBlockKind.gap);
+
+    test('an HTML block cuts a paragraph short only when CommonMark says', () {
+      expect(MdDoc.parse('para\n<div>\n').blocks.last.why, MdOpaque.html);
+      expect(MdDoc.parse('para\n<!-- c -->\n').blocks.last.why, MdOpaque.html);
+      expect(
+        MdDoc.parse('para\n<script>\n</script>\n').blocks.last.why,
+        MdOpaque.html,
+      );
+      // An inline tag at a line's start is the paragraph going on.
+      expect(
+        MdDoc.parse('para\n<span>x</span>\n').blocks.single.why,
+        MdOpaque.inline,
+      );
+      for (final html in [
+        '<pre>\ncode\n\nmore\n</pre>\n',
+        '<?php x ?>\n',
+        '<![CDATA[ x ]]>\n',
+        '<!DOCTYPE html>\n',
+      ]) {
+        final blocks = MdDoc.parse(html).blocks;
+        expect(blocks.single.why, MdOpaque.html, reason: html);
+      }
+    });
+
+    test('a heading that is all hashes is not edited', () {
+      expect(first('# ###\n').why, MdOpaque.setext);
+    });
+
+    test('spaces before a soft break show, and can be typed after', () {
+      final m = first('one  \t\ntwo\n').inline;
+      // Two spaces and a tab: no hard break, which needs spaces alone.
+      expect(m!.text, 'one  \t\ntwo');
+      final soft = first('one \ntwo\n').inline!;
+      expect(soft.text, 'one \ntwo');
+    });
+
+    test('a code span is read past a longer run of backticks inside it', () {
+      final m = first('a ``x ``` y`` b\n').inline!;
+      expect(m.text, 'a x ``` y b');
+    });
+
+    test('a link target with escapes and nested brackets is kept', () {
+      final m = first(
+        r'[a](u\)v "t (x)")'
+        '\n',
+      ).inline!;
+      expect(m.styles.first.link!.raw, r'(u\)v "t (x)")');
+      expect(first('[a](u\n').why, MdOpaque.inline);
+    });
+
+    test('marks compare and print as what they are', () {
+      const bold = MdStyle(bold: true, link: MdLink('u'));
+      // Built at run time, so equal by value and not by being one constant.
+      final again = MdStyle(bold: true, link: MdLink('u', raw: '(u)'));
+      expect({bold, again}, hasLength(1));
+      expect(again.hashCode, bold.hashCode);
+      expect(bold.toString(), 'BL(u)');
+      expect(first('x\n').toString(), contains('paragraph'));
+    });
+
+    test('a block written afresh escapes what would read as markup', () {
+      MdDoc doc(String text) => MdDoc.parse(text);
+      MdChange? edit(String text, String to, List<MdStyle> styles) =>
+          doc(text).edit(0, MdEdit(to, styles), caret: 0);
+      MdChange restyle(String text, String to, List<MdStyle> styles) =>
+          edit(text, to, styles)!;
+
+      const plain = MdStyle.plain;
+      const italic = MdStyle(italic: true);
+      const code = MdStyle(code: true);
+      List<MdStyle> all(int n, MdStyle s) => List.filled(n, s);
+
+      // A number and a hash at a line's start, and an entity.
+      expect(
+        restyle('x\n', '1. a\n# b &amp;', all(14, plain)).doc.text,
+        '1\\. a\n\\# b \\&amp;\n',
+      );
+      // Spaces at a mark's edge go outside it; a paragraph cannot start
+      // with one at all.
+      expect(edit('x\n', ' a', all(2, italic)), isNull);
+      expect(
+        restyle('x y\n', 'x y', [italic, italic, plain]).doc.text,
+        '*x* y\n',
+      );
+      expect(
+        restyle('x y\n', 'x y z', [
+          plain,
+          italic,
+          italic,
+          italic,
+          plain,
+        ]).doc.text,
+        'x *y* z\n',
+      );
+      // Code holding backticks and spaces.
+      expect(restyle('x\n', '`a`', all(3, code)).doc.text, '`` `a` ``\n');
+      expect(restyle('x\n', ' a ', all(3, code)).doc.text, '`  a  `\n');
+      // A list item's soft break keeps the item's indent.
+      final item = MdDoc.parse('- a\n');
+      final im = item.blocks[0].inline!;
+      expect(
+        item
+            .edit(0, MdEdit('a\nb', [...im.styles, italic, italic]), caret: 3)!
+            .doc
+            .text,
+        '- a\n  *b*\n',
+      );
+    });
   });
 }
