@@ -20,6 +20,8 @@ import 'key_bar.dart';
 import 'mermaid_view.dart';
 import 'save_chord.dart';
 import 'selection_separators.dart';
+import 'markdown_blocks.dart';
+import 'markdown_rich_editor.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
 import 'toast.dart';
@@ -372,19 +374,21 @@ class _TextFileTabState extends State<_TextFileTab> {
     caseSensitive: false,
   ).hasMatch(widget.path);
 
-  /// Whether the file shows rendered rather than as written. A Markdown file
-  /// opens that way, unless it was opened at a line.
-  late bool _preview = _markdown && widget.line == null;
+  /// Whether the file is edited as it reads rather than as written. A
+  /// Markdown file opens that way, unless it was opened at a line.
+  late bool _rich = _markdown && widget.line == null;
 
-  /// How far down the preview was scrolled, kept here because the preview
-  /// itself is thrown away and built again by a reload, which shows a spinner
-  /// in its place, and by a trip to Source. Set as it scrolls, never with
-  /// [setState]: it is only read when a new preview is built.
-  double _previewAt = 0;
+  /// How far down the rich text was scrolled, kept here because it is thrown
+  /// away and built again by a reload, which shows a spinner in its place,
+  /// and by a trip to Source. Set as it scrolls, never with [setState]: it is
+  /// only read when the rich text is built again.
+  double _richAt = 0;
 
-  /// The pictures the preview has fetched, kept here rather than in the
-  /// preview so they outlive a reload or a trip to Source, and go when the tab
-  /// does.
+  /// What the rich text's bar acts on: the block with the caret.
+  final _richBar = MarkdownRichController();
+
+  /// The pictures the rich text has fetched, kept here rather than in it so
+  /// they outlive a reload or a trip to Source, and go when the tab does.
   late final _images = _PreviewImages(
     widget.browser,
     RemotePath.parent(widget.path),
@@ -491,6 +495,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     SaveChord.want(this, null);
     _pageFocus.dispose();
     _images.dispose();
+    _richBar.dispose();
     _controller.removeListener(_onEdited);
     _controller.dispose();
     super.dispose();
@@ -519,12 +524,13 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   /// Hands the text the keys after the frame, without the soft keyboard: see
-  /// [didChangeDependencies]. Never while the preview hides the text.
+  /// [didChangeDependencies]. Never while the rich text hides it.
   void _focusText() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _loading || _error != null) return;
-      // The preview takes no focus, so the page holds it and ⌘S still saves.
-      if (_preview) return _pageFocus.requestFocus();
+      // The rich text takes focus only where it is tapped, which would raise
+      // the soft keyboard; meanwhile the page holds it and ⌘S still saves.
+      if (_rich) return _pageFocus.requestFocus();
       _editorFocus.requestFocus();
       // Only where there is a soft keyboard to keep down. On a desktop the
       // token is what opens re_editor's text input at all: taken back, keys
@@ -543,7 +549,7 @@ class _TextFileTabState extends State<_TextFileTab> {
     final line = widget.line;
     if (line != null && line != oldWidget.line && !_loading && _error == null) {
       // A line is a place in the text, so a Markdown file shows its source.
-      _preview = false;
+      _rich = false;
       _jumpTo(line);
     }
   }
@@ -567,21 +573,64 @@ class _TextFileTabState extends State<_TextFileTab> {
     if (line != null && mounted) _jumpTo(line);
   }
 
-  /// Rendered or as written. Source comes back with its cursor and scroll
-  /// position as they were: the text stays built behind the preview.
-  void _setPreview(bool preview) {
-    setState(() => _preview = preview);
+  /// Rich text or as written. Source comes back with its cursor and scroll
+  /// position as they were: the text stays built behind the rich text, and
+  /// both edit the one text, so nothing typed in either is lost.
+  void _setRich(bool rich) {
+    setState(() => _rich = rich);
     _focusText();
   }
 
+  /// The document as the rich text changed it, into the one text both modes
+  /// edit: the dirty marker, the draft, Save and undo all follow from there.
+  /// [coalesce] folds a run of typing into one undo step, as re_editor folds
+  /// its own; the caret goes where the change was, for a trip to Source.
+  void _onRichChanged(String text, {required bool coalesce}) {
+    final old = _controller.text;
+    var at = 0;
+    while (at < old.length && at < text.length && old[at] == text[at]) {
+      at++;
+    }
+    final before = text.substring(0, at);
+    final line = '\n'.allMatches(before).length;
+    final value = CodeLineEditingValue(
+      codeLines: CodeLines.fromText(text),
+      selection: CodeLineSelection.collapsed(
+        index: line,
+        offset: at - (before.lastIndexOf('\n') + 1),
+      ),
+    );
+    if (coalesce) {
+      _controller.value = value;
+    } else {
+      _controller.runRevocableOp(() => _controller.value = value);
+    }
+  }
+
+  /// Opens a link from the rich text, which takes Ctrl or ⌘ and a click, or
+  /// a long press, so that a plain tap can put the caret in it.
+  void _openRichLink(MdLink link) =>
+      _openPreviewLink(link.href, link.href, link.title ?? '');
+
+  Future<String?> _askLink(String? current) => showDialog<String>(
+    context: context,
+    builder: (_) => _TextPrompt(
+      title: 'link',
+      label: 'Address',
+      helper: 'Leave it empty to take the link off.',
+      action: 'Apply',
+      initial: current,
+    ),
+  );
+
   /// Runs [action], which works on the text, bringing Source back first if
-  /// the preview is up: then after the frame, once the text can take focus.
+  /// the rich text is up: then after the frame, once the text can take focus.
   void _inSource(VoidCallback action) {
-    if (!_preview) {
+    if (!_rich) {
       action();
       return;
     }
-    setState(() => _preview = false);
+    setState(() => _rich = false);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) action();
     });
@@ -721,7 +770,7 @@ class _TextFileTabState extends State<_TextFileTab> {
       });
       // re_editor focuses the text itself, but a file opening rendered has
       // no text on show to focus.
-      if (_preview) _focusText();
+      if (_rich) _focusText();
       final line = widget.line;
       // After the frame: centring the cursor needs the new text laid out.
       if (line != null) {
@@ -1098,8 +1147,17 @@ class _TextFileTabState extends State<_TextFileTab> {
               Expanded(child: _editorChrome()),
             ],
           ),
-          bottomNavigationBar: _loading || _error != null || _preview
+          bottomNavigationBar: _loading || _error != null
               ? null
+              : _rich
+              ? MarkdownRichBar(
+                  controller: _richBar,
+                  history: _controller,
+                  canUndo: () => _controller.canUndo,
+                  canRedo: () => _controller.canRedo,
+                  onUndo: _controller.undo,
+                  onRedo: _controller.redo,
+                )
               : EditorKeyBar(controller: _controller, useTabs: _useTabs),
         ),
       ),
@@ -1107,11 +1165,11 @@ class _TextFileTabState extends State<_TextFileTab> {
   }
 
   /// termul's file chrome round the text: the file's name, where it is or
-  /// that it is unsaved, and Source or Preview for Markdown. The same body
-  /// goes in both of termul's slots, so the text stays built behind the
-  /// preview, with its cursor and scroll position, as it always has.
+  /// that it is unsaved, and Source or Rich text for Markdown. The same body
+  /// goes in both of termul's slots, so the text stays built behind the rich
+  /// text, with its cursor and scroll position, as it always has.
   Widget _editorChrome() {
-    // The text and the preview at the content size, termul's chrome round
+    // The text and the rich text at the content size, termul's chrome round
     // them at the UI's.
     final body = ContentText(child: _buildBody());
     return TuiCodeEditor(
@@ -1123,10 +1181,10 @@ class _TextFileTabState extends State<_TextFileTab> {
       dirty: _dirty,
       loading: _loading,
       showModeToggle: _markdown,
-      mode: _preview ? TuiCodeViewMode.preview : TuiCodeViewMode.source,
+      mode: _rich ? TuiCodeViewMode.richText : TuiCodeViewMode.source,
       onModeChanged: _error != null
           ? null
-          : (mode) => _setPreview(mode == TuiCodeViewMode.preview),
+          : (mode) => _setRich(mode == TuiCodeViewMode.richText),
       banner: _draft == null ? null : _draftBanner(),
       sourceChild: body,
       previewChild: body,
@@ -1181,15 +1239,15 @@ class _TextFileTabState extends State<_TextFileTab> {
     return Column(
       children: [
         Expanded(
-          // The text stays built behind the preview, so Source comes back
+          // The text stays built behind the rich text, so Source comes back
           // with its cursor and scroll position; out of focus meanwhile, so
           // no key reaches text nobody can see.
           child: IndexedStack(
-            index: _preview ? 1 : 0,
+            index: _rich ? 1 : 0,
             sizing: StackFit.expand,
             children: [
               ExcludeFocus(
-                excluding: _preview,
+                excluding: _rich,
                 // re_editor opens the keyboard with autocorrect, smart
                 // punctuation and capitalisation all off, as a plain text
                 // file needs.
@@ -1234,13 +1292,39 @@ class _TextFileTabState extends State<_TextFileTab> {
                   ),
                 ),
               ),
-              if (_preview)
-                _MarkdownPreview(
-                  text: _controller.text,
-                  images: _images,
-                  onTapLink: _openPreviewLink,
-                  at: _previewAt,
-                  onScroll: (at) => _previewAt = at,
+              if (_rich)
+                ValueListenableBuilder(
+                  // Code in the terminal's font, following Settings.
+                  valueListenable: terminalSettings,
+                  builder: (context, terminal, _) => ListenableBuilder(
+                    // An undo or a redo changes the text without this page
+                    // rebuilding, and the rich text must read it back.
+                    listenable: _controller,
+                    builder: (context, _) => MarkdownRichEditor(
+                      text: _controller.text,
+                      controller: _richBar,
+                      onChanged: _onRichChanged,
+                      styleSheet: _markdownSheet(context),
+                      opaqueBuilder: (context, markdown) => _MarkdownBlock(
+                        markdown: markdown,
+                        images: _images,
+                        onTapLink: _openPreviewLink,
+                        styleSheet: _markdownSheet(context),
+                      ),
+                      onOpenLink: _openRichLink,
+                      onEditInSource: (line) => _inSource(() => _jumpTo(line)),
+                      onRefused: (message) => showToast(
+                        context,
+                        message,
+                        type: TuiToastType.warning,
+                      ),
+                      askLink: _askLink,
+                      onUndo: _controller.undo,
+                      onRedo: _controller.redo,
+                      at: _richAt,
+                      onScroll: (at) => _richAt = at,
+                    ),
+                  ),
                 )
               else
                 const SizedBox.shrink(),
@@ -2048,151 +2132,92 @@ class _MarkdownImageState extends State<_MarkdownImage> {
   }
 }
 
-/// A Markdown file as it reads, from the text in the editor rather than the
-/// host, so an edit not yet saved shows too. Read-only, since editing is
-/// Source's, and selectable across blocks.
+/// The sheet Markdown is drawn with in a file tab, editable or not: the
+/// theme's, with code in the terminal's own font. Built under a listener of
+/// [terminalSettings], so it follows Settings as it changes.
+MarkdownStyleSheet _markdownSheet(BuildContext context) {
+  final terminal = terminalSettings.value;
+  final theme = Theme.of(context);
+  final scheme = theme.colorScheme;
+  final body = theme.textTheme.bodyMedium!;
+  // The package's own picks a fixed blue for links and a colour that
+  // vanishes on a dark page for checkboxes.
+  return MarkdownStyleSheet.fromTheme(theme).copyWith(
+    a: TextStyle(
+      color: scheme.primary,
+      decoration: TextDecoration.underline,
+      decorationColor: scheme.primary,
+    ),
+    code: body.copyWith(
+      fontFamily: terminal.fontFamily,
+      fontFamilyFallback: terminal.fontFamilyFallback,
+      fontSize: body.fontSize! * 0.9,
+      backgroundColor: scheme.surfaceContainerHighest,
+    ),
+    codeblockDecoration: BoxDecoration(
+      color: scheme.surfaceContainerHighest,
+      border: Border.all(color: scheme.outlineVariant),
+    ),
+    checkbox: body.copyWith(color: scheme.primary),
+    // Sized to what they hold, so a wide one scrolls sideways the way a code
+    // block does, rather than squeezing.
+    tableColumnWidth: const IntrinsicColumnWidth(),
+  );
+}
+
+/// One block of a Markdown file that the rich text cannot edit, drawn as the
+/// preview drew it and selectable, with its links opening on a tap.
 ///
 /// A picture on the host is fetched and drawn, through [_PreviewImages]. A web
 /// one is still never fetched and shows as its alt text: the document comes
 /// off somebody's server, and `![](https://tracker/…)` in it would tell a
-/// third party which file the user is reading, which is not a thing a preview
+/// third party which file the user is reading, which is not a thing a reader
 /// should do behind their back.
-class _MarkdownPreview extends StatefulWidget {
-  const _MarkdownPreview({
-    required this.text,
+class _MarkdownBlock extends StatelessWidget {
+  const _MarkdownBlock({
+    required this.markdown,
     required this.images,
     required this.onTapLink,
-    required this.at,
-    required this.onScroll,
+    required this.styleSheet,
   });
 
-  final String text;
+  final String markdown;
 
   /// The pictures fetched for this document, kept by the tab so they outlive
-  /// the preview.
+  /// the rich text.
   final _PreviewImages images;
 
   final MarkdownTapLinkCallback onTapLink;
-
-  /// Where the preview was last left, in pixels. Reload replaces the body with
-  /// a spinner and Source takes the preview out of the tree, so each of them
-  /// builds this widget afresh; starting the scroll here is what brings the
-  /// reader back to the passage they were reading. Past the end of a file that
-  /// came back shorter, the list settles at its bottom.
-  final double at;
-
-  /// Called as the preview scrolls, so [at] is up to date next time. Only ever
-  /// a field to write: rebuilding on a scroll would rebuild the document.
-  final ValueChanged<double> onScroll;
-
-  /// ponytail: flutter_markdown_plus parses and builds the whole document on
-  /// the UI thread, 0.6 s a megabyte on a desktop and slower on the tablet, so
-  /// the preview stops here. Parse in an isolate and build the blocks lazily
-  /// if longer files must render in full.
-  static const _limit = 100 * 1024;
+  final MarkdownStyleSheet styleSheet;
 
   @override
-  State<_MarkdownPreview> createState() => _MarkdownPreviewState();
-}
-
-class _MarkdownPreviewState extends State<_MarkdownPreview> {
-  late final _scroll = ScrollController(initialScrollOffset: widget.at)
-    ..addListener(_report);
-
-  void _report() {
-    if (_scroll.hasClients) widget.onScroll(_scroll.offset);
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final text = widget.text;
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final body = theme.textTheme.bodyMedium!;
-    const limit = _MarkdownPreview._limit;
-    var shown = text;
-    if (text.length > limit) {
-      final end = text.lastIndexOf('\n', limit);
-      shown = text.substring(0, end > 0 ? end : limit);
-    }
-
-    return ValueListenableBuilder(
-      // Code in the terminal's font, following Settings as it changes.
-      valueListenable: terminalSettings,
-      builder: (context, terminal, _) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (shown.length < text.length)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: Text(
-                'Only the first 100 KB is shown here. Source has the whole '
-                'file.',
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
-          Expanded(
-            child: SelectionArea(
-              child: SeparatedSelection(
-                child: Markdown(
-                  data: shown,
-                  controller: _scroll,
-                  onTapLink: widget.onTapLink,
-                  builders: {'code': CodeBlockBuilder()},
-                  imageBuilder: (uri, title, alt) {
-                    final label = alt == null || alt.isEmpty ? '$uri' : alt;
-                    // Anything with a scheme or a host is somebody else's
-                    // server: see the class comment.
-                    if (uri.hasScheme || uri.hasAuthority) {
-                      return _imageAlt(context, label);
-                    }
-                    return _MarkdownImage(
-                      images: widget.images,
-                      // Without the query a raw link carries, and with `%20`
-                      // read back as the space it stands for: what is left is a
-                      // path on the host. Uri.parse escapes a bare `%` on its
-                      // way in, so this never throws on one.
-                      source: Uri.decodeComponent(uri.path),
-                      label: label,
-                    );
-                  },
-                  // The package's own picks a fixed blue for links and a
-                  // colour that vanishes on a dark page for checkboxes.
-                  styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                    a: TextStyle(
-                      color: scheme.primary,
-                      decoration: TextDecoration.underline,
-                      decorationColor: scheme.primary,
-                    ),
-                    code: body.copyWith(
-                      fontFamily: terminal.fontFamily,
-                      fontFamilyFallback: terminal.fontFamilyFallback,
-                      fontSize: body.fontSize! * 0.9,
-                      backgroundColor: scheme.surfaceContainerHighest,
-                    ),
-                    codeblockDecoration: BoxDecoration(
-                      color: scheme.surfaceContainerHighest,
-                      border: Border.all(color: scheme.outlineVariant),
-                    ),
-                    checkbox: body.copyWith(color: scheme.primary),
-                    // Sized to what they hold, so a wide one scrolls sideways
-                    // the way a code block does, rather than squeezing.
-                    tableColumnWidth: const IntrinsicColumnWidth(),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
+  Widget build(BuildContext context) => SelectionArea(
+    child: SeparatedSelection(
+      child: MarkdownBody(
+        data: markdown,
+        onTapLink: onTapLink,
+        builders: {'code': CodeBlockBuilder()},
+        imageBuilder: (uri, title, alt) {
+          final label = alt == null || alt.isEmpty ? '$uri' : alt;
+          // Anything with a scheme or a host is somebody else's server: see
+          // the class comment.
+          if (uri.hasScheme || uri.hasAuthority) {
+            return _imageAlt(context, label);
+          }
+          return _MarkdownImage(
+            images: images,
+            // Without the query a raw link carries, and with `%20` read back
+            // as the space it stands for: what is left is a path on the host.
+            // Uri.parse escapes a bare `%` on its way in, so this never throws
+            // on one.
+            source: Uri.decodeComponent(uri.path),
+            label: label,
+          );
+        },
+        styleSheet: styleSheet,
       ),
-    );
-  }
+    ),
+  );
 }
 
 /// The Markdown preview's code, and chat's: a ```mermaid fence is a diagram, as
@@ -2375,6 +2400,7 @@ class _TextPrompt extends StatefulWidget {
     required this.action,
     this.helper,
     this.obscure = false,
+    this.initial,
   });
 
   final String title;
@@ -2383,12 +2409,15 @@ class _TextPrompt extends StatefulWidget {
   final String? helper;
   final bool obscure;
 
+  /// What the field holds to begin with.
+  final String? initial;
+
   @override
   State<_TextPrompt> createState() => _TextPromptState();
 }
 
 class _TextPromptState extends State<_TextPrompt> {
-  final _controller = TextEditingController();
+  late final _controller = TextEditingController(text: widget.initial);
 
   @override
   void dispose() {

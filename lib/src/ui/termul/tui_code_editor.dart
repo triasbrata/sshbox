@@ -22,8 +22,8 @@ import 'tui_dialog.dart';
 import 'tui_select.dart';
 import 'tui_text.dart';
 
-/// Source vs rendered Markdown.
-enum TuiCodeViewMode { source, preview }
+/// Source, or Markdown edited as it reads.
+enum TuiCodeViewMode { source, richText }
 
 /// One display line in [TuiCodeEditor] source mode.
 ///
@@ -408,7 +408,7 @@ class TuiCodeEditor extends StatelessWidget {
                           : onModeChanged,
                       options: const [
                         (TuiCodeViewMode.source, 'source'),
-                        (TuiCodeViewMode.preview, 'preview'),
+                        (TuiCodeViewMode.richText, 'rich text'),
                       ],
                     ),
                 ],
@@ -473,7 +473,7 @@ class TuiCodeEditor extends StatelessWidget {
       );
     }
 
-    if (mode == TuiCodeViewMode.preview) {
+    if (mode == TuiCodeViewMode.richText) {
       return previewChild ??
           Center(
             child: Text(
