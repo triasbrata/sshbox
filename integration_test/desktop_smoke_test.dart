@@ -8871,23 +8871,27 @@ touch '${done.path}'
     await _closeTabs(tester);
   });
 
-  // A Markdown file opens rendered: the command key with nothing edited
-  // writes nothing; edited in Source and back in the preview, where no text
+  // A Markdown file opens in Rich text: the command key with nothing edited
+  // writes nothing; edited in Source and back in Rich text, where no text
   // holds the focus, it saves.
   _test(
-    'editor save: $save+S in a Markdown preview saves, and unedited writes '
+    'editor save: $save+S in Markdown Rich text saves, and unedited writes '
     'nothing',
     skip: editorSkip,
     (tester) async {
       final k = await _EditorSave.start(tester, 'notes.md');
-      expect(_label('preview'), findsOneWidget, reason: 'no Preview toggle');
+      expect(
+        _label('rich text'),
+        findsOneWidget,
+        reason: 'no Rich text toggle',
+      );
       await k.chord(save);
       await k.untouched(
-        '$save+S in an unedited preview',
+        '$save+S in unedited Rich text',
         text: _EditorSave.original,
       );
       await tester.tap(_label('source'));
-      // Source by a click hands the text the focus (_setPreview), so typing
+      // Source by a click hands the text the focus (_setRich), so typing
       // after it lands there, as after opening a plain file.
       try {
         await _until(
@@ -8901,15 +8905,87 @@ touch '${done.path}'
         rethrow;
       }
       await k.edit();
-      await tester.tap(_label('preview'));
+      await tester.tap(_label('rich text'));
       await tester.pump(const Duration(milliseconds: 600));
       expect(
         k.code().focusNode?.hasFocus,
         isFalse,
-        reason: 'the text kept the focus behind the preview',
+        reason: 'the text kept the focus behind Rich text',
       );
       await k.chord(save);
-      await k.saved('$save+S in the preview');
+      await k.saved('$save+S in Rich text');
+      await _closeTabs(tester);
+    },
+  );
+
+  // Markdown typed into as it reads, with real keys and a real click: a 2x2.
+  // Opened in Rich text and saved with nothing typed, the file and its mtime
+  // are as they were. A word typed at the end of the paragraph and saved
+  // changes that one line, every other byte as it was: the list's `*` and
+  // `-`, the paragraph's `*plain*`, the table.
+  _test(
+    'rich text: a word typed into a paragraph saves that line alone, and '
+    'nothing typed writes nothing',
+    skip: editorSkip,
+    (tester) async {
+      const original =
+          '# Rich e2e\n'
+          '\n'
+          '* first item\n'
+          '- second item\n'
+          '\n'
+          'A *plain* paragraph here.\n'
+          '\n'
+          '| a | b |\n'
+          '|---|---|\n'
+          '| 1 | 2 |\n';
+      final expected = original.replaceFirst(
+        'A *plain* paragraph here.',
+        'A *plain* paragraph here. added',
+      );
+      final k = await _EditorSave.start(tester, 'rich.md', text: original);
+      expect(
+        _label('rich text'),
+        findsOneWidget,
+        reason: 'no Rich text toggle',
+      );
+      final paragraph = find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField &&
+            widget.controller?.text == 'A plain paragraph here.',
+      );
+      expect(paragraph, findsOneWidget, reason: 'the paragraph not editable');
+
+      await k.chord(save);
+      await k.untouched('$save+S in unedited Rich text', text: original);
+
+      await tester.tap(paragraph);
+      await tester.pump(const Duration(milliseconds: 300));
+      await k.endOfLine();
+      await k.type(' added');
+      await _until(
+        tester,
+        () => k.text() == expected && k.unsaved.evaluate().isNotEmpty,
+        'the typing to reach the document and say Unsaved changes',
+      );
+      await k.chord(save);
+      await _until(
+        tester,
+        () => k.file.readAsStringSync() == expected,
+        'the save to write the typed line',
+        timeout: const Duration(seconds: 8),
+      );
+      final before = original.split('\n');
+      final after = k.file.readAsStringSync().split('\n');
+      expect(after.length, before.length);
+      expect(
+        [
+          for (var i = 0; i < after.length; i++)
+            if (after[i] != before[i]) after[i],
+        ],
+        ['A *plain* paragraph here. added'],
+        reason: 'lines beside the one typed into changed',
+      );
       await _closeTabs(tester);
     },
   );
@@ -8943,14 +9019,18 @@ class _EditorSave {
 
   /// The app launched and [name], a file of [original] with an old mtime in
   /// a folder of the test's own in the home, opened from the drawer.
-  static Future<_EditorSave> start(WidgetTester tester, String name) async {
+  static Future<_EditorSave> start(
+    WidgetTester tester,
+    String name, {
+    String text = original,
+  }) async {
     addTearDown(_logKeys('editor'));
     // A digit first, so the drawer draws it without a scroll.
     final dir = Directory(Platform.environment['HOME']!)
         .createTempSync('0-jeansh-e2e-');
     addTearDown(() => dir.deleteSync(recursive: true));
     final file = File('${dir.path}/$name')
-      ..writeAsStringSync(original)
+      ..writeAsStringSync(text)
       ..setLastModifiedSync(past);
     final k = _EditorSave._(tester, file);
     await _launch(tester);
@@ -8976,7 +9056,7 @@ class _EditorSave {
       () =>
           find.byType(FileEditorPage).evaluate().length == 1 &&
           k.editor.evaluate().length == 1 &&
-          k.text() == original,
+          k.text() == text,
       '$name to open in the editor',
     );
     await tester.pump(const Duration(milliseconds: 600));
@@ -9005,6 +9085,17 @@ class _EditorSave {
     } else {
       await _xdo(['windowfocus', '--sync', await _window()]);
       await _xdo(['key', '--clearmodifiers', '$mod+s']);
+    }
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  /// The caret to the end of its line: End, or ⌘→ on a Mac.
+  Future<void> endOfLine() async {
+    if (Platform.isMacOS) {
+      await _osascript('key code 124 using command down');
+    } else {
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['key', '--clearmodifiers', 'End']);
     }
     await tester.pump(const Duration(milliseconds: 300));
   }

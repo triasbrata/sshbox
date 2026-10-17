@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  editor_save file_editor text_size)
+  md_rich_text editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -634,6 +634,61 @@ editor_save() {
   check 'a terminal Ctrl+S reaches the app, not taken (editor closed)' passed_on
   check 'the terminal hears Ctrl+S as before the editor' [ "$after" = "$before" ]
   sudo rm -f "$heard"
+  return "$status"
+}
+
+# A Markdown file edited in Rich text (.maestro/md_rich_text.yaml), read off
+# the host. A 2x2:
+#   - opened in Rich text and left alone, the file is byte for byte as it was
+#     and its mtime has not moved: nothing is written for looking;
+#   - " added" typed at the end of the paragraph and saved, the file is the
+#     original with that one line changed, every other line as it was: the
+#     list's two markers, the paragraph's *plain*, the table and the heading.
+# A mutation that writes the whole document afresh on an edit fails the
+# second, since "- second item" or "*plain*" come back in another style.
+md_rich_text() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-rich.md old=1577836800
+  local original expected got changed
+  original=$'# Rich e2e\n\n* first item\n- second item\n\nA *plain* paragraph here.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+  expected=${original/A \*plain\* paragraph here./A *plain* paragraph here. added}
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_rich_text: $what"
+      status=1
+    fi
+  }
+  printf '%s' "$original" | sudo -u "$SSH_USER" tee "$file" >/dev/null
+  sudo touch -d "@$old" "$file"
+
+  flow md_rich_text -e STEP=open || return 1
+  sleep 2
+  check 'opened in Rich text, the file is as it was' \
+    [ "$(sudo cat "$file"; echo x)" = "${original}x" ]
+  check 'opened in Rich text, nothing was written' \
+    [ "$(sudo stat -c %Y "$file")" = "$old" ]
+
+  flow md_rich_text -e STEP=focus || return 1
+  adb shell input keyevent KEYCODE_MOVE_END
+  sleep 1
+  adb shell input text '%sadded'
+  sleep 1
+  flow md_rich_text -e STEP=save || status=1
+  sleep 2
+  got=$(sudo cat "$file"; echo x)
+  got=${got%x}
+  echo "The file on the host after the save:"
+  printf '%s' "$got" | sed 's/^/  | /'
+  changed=$(diff <(printf '%s' "$original") <(printf '%s' "$got") | grep -c '^>')
+  check 'the save holds the typing' [ "$got" = "$expected" ]
+  check 'one line changed and no other' [ "$changed" = 1 ]
+  check 'the untouched list kept its markers' \
+    sudo grep -qx -- '- second item' "$file"
+  check 'the untouched emphasis kept its stars' \
+    sudo grep -q -- 'A \*plain\* paragraph' "$file"
+
+  flow md_rich_text -e STEP=close || status=1
   return "$status"
 }
 
@@ -3344,6 +3399,7 @@ done
 # title: a saved host's tab now shows its label, so it never sees a `cd`
 # land, on main or in the redesign. It wants its checks moved to this host.
 u_editor_save() { report editor_save editor_save; }
+u_md_rich_text() { report_bare md_rich_text md_rich_text; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.
