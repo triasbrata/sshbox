@@ -8995,10 +8995,13 @@ touch '${done.path}'
 /// real keys that type into it and save it: xdotool on Linux, System Events
 /// on a Mac.
 class _EditorSave {
-  _EditorSave._(this.tester, this.file);
+  _EditorSave._(this.tester, this.file, this.initial);
 
   final WidgetTester tester;
   final File file;
+
+  /// What the file held when the test opened it.
+  final String initial;
 
   static const original = 'hello e2e\n';
 
@@ -9032,7 +9035,7 @@ class _EditorSave {
     final file = File('${dir.path}/$name')
       ..writeAsStringSync(text)
       ..setLastModifiedSync(past);
-    final k = _EditorSave._(tester, file);
+    final k = _EditorSave._(tester, file, text);
     await _launch(tester);
     await _localShell(tester);
     await tester.tap(find.byTooltip('Browse files'));
@@ -9159,7 +9162,7 @@ class _EditorSave {
   /// and the text as [text], with no s typed.
   Future<void> untouched(String when, {required String text}) async {
     await tester.pump(const Duration(seconds: 2));
-    expect(file.readAsStringSync(), original, reason: '$when: written');
+    expect(file.readAsStringSync(), initial, reason: '$when: written');
     expect(file.lastModifiedSync(), past, reason: '$when: mtime moved');
     expect(
       find.textContaining('Saved $name'),
