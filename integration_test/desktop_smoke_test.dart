@@ -7284,6 +7284,234 @@ touch '${done.path}'
     );
   }
 
+  // Sentry JEANSH-H: Claude Code stopped scrolling with the wheel while
+  // PageUp still worked, after tabs had opened and closed. xterm2 turns a
+  // scroll into wheel events through a listener on its scroll view's
+  // ScrollPosition; Flutter makes a new position when the view moves in the
+  // tree — a tab page sliding a slot when a tab before it closes — and
+  // xterm2 5.2.0 never moved that listener to it, so the wheel reached
+  // nothing for as long as the terminal lived. The log's route still read
+  // "program as wheel"; it now says how many reports left and where.
+  // A second Local shell under tmux, the UI text size stepped up and down by
+  // Ctrl+= and Ctrl+− as the report's log shows, then a real X wheel. 2x2:
+  //  moved:  the program reads the mouse (1003, SGR, alternate screen) and
+  //          the tab before it closes -> the wheel reaches it as ESC[<64;
+  //          at a cell inside its pane, the log saying it was sent
+  //          (positive; red under the mutation).
+  //  stayed: the same with no tab closed -> the same.
+  //  shell moved / shell stayed: a plain shell -> nothing reaches it, the
+  //          scrollback moves, the log says "scrollback" (negative).
+  // Mutation: third_party/xterm2's InfiniteScrollView `set position` back to
+  // moving markNeedsLayout, which fails moved.
+  for (final (mouse, moved) in [
+    (true, true),
+    (true, false),
+    (false, true),
+    (false, false),
+  ]) {
+    _test(
+      'a wheel over a tmux pane '
+      '${mouse ? 'reaches the program' : 'scrolls a shell\'s scrollback'} '
+      '${moved ? 'after the tab before it closed' : 'with no tab closed'}, '
+      'the UI text size changed on the way',
+      skip: Platform.isLinux ? null : 'the wheel goes through xdotool on Xvfb',
+      (tester) async {
+        addTearDown(() => uiTextSize.choose(1));
+        await _launch(tester);
+        await uiTextSize.choose(1);
+        final dir = _scratch();
+        final got = File('${dir.path}/wheel');
+        final first = await _localShell(tester, tmux: true);
+
+        // A second shell, after the first on the strip.
+        final close = find.byWidgetPredicate(
+          (w) => w is Tooltip && (w.message ?? '').startsWith('Close '),
+        );
+        final before = close.evaluate().length;
+        await tester.tapAt(
+          tester.getCenter(
+            find
+                .ancestor(of: close.first, matching: find.byType(InkWell))
+                .first,
+          ),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, 'Duplicate session');
+        TerminalView? second() => find
+            .byType(TerminalView)
+            .evaluate()
+            .map((element) => element.widget as TerminalView)
+            .where(
+              (each) =>
+                  each.terminal != first.terminal &&
+                  (each.focusNode?.hasFocus ?? false),
+            )
+            .firstOrNull;
+        await _until(
+          tester,
+          () =>
+              close.evaluate().length == before + 1 &&
+              second() != null &&
+              _text(second()!).isNotEmpty,
+          'a second Local shell, shown and drawn',
+        );
+        final terminal = second()!.terminal;
+        Finder view() => find.byWidgetPredicate(
+          (w) => w is TerminalView && w.terminal == terminal,
+        );
+        _run(
+          second()!,
+          mouse
+              ? r"printf '\033[?1049h\033[?1003h\033[?1006h'; "
+                    'stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null'
+              : 'seq 1 400; stty raw -echo; dd bs=1 of=${got.path} 2>/dev/null',
+        );
+        await _until(
+          tester,
+          () =>
+              got.existsSync() &&
+              (!mouse ||
+                  (terminal.isUsingAltBuffer &&
+                      terminal.mouseMode != MouseMode.none)),
+          'the program to start',
+        );
+
+        // The UI text size up and down by the keys, as in the report.
+        Future<void> keys(String chord) async {
+          await _xdo(['windowfocus', '--sync', await _window()]);
+          await _xdo(['key', '--clearmodifiers', chord]);
+          await tester.pump(const Duration(milliseconds: 300));
+        }
+
+        // Counted from a line of the test's own: the log keeps its last 1000
+        // lines, so a count over all of it can stand still as lines go.
+        const keysMark = 'e2e: JEANSH-H text size keys';
+        appLog.add(keysMark);
+        int sizes() {
+          final all = appLog.current;
+          return 'setting ui text size'
+              .allMatches(all.substring(all.lastIndexOf(keysMark)))
+              .length;
+        }
+
+        for (final chord in [
+          'ctrl+equal',
+          'ctrl+equal',
+          'ctrl+equal',
+          'ctrl+minus',
+          'ctrl+minus',
+          'ctrl+minus',
+        ]) {
+          await keys(chord);
+        }
+        await _until(
+          tester,
+          () => (uiTextSize.value * 100).round() == 100,
+          'the UI text size back at 100%',
+          timeout: const Duration(seconds: 5),
+        );
+        expect(
+          sizes(),
+          greaterThanOrEqualTo(6),
+          reason: 'the keys never reached the UI text size',
+        );
+
+        if (moved) {
+          // The first tab's own close button: the first on the strip.
+          await tester.tap(close.first);
+          await _until(
+            tester,
+            () =>
+                close.evaluate().length == before &&
+                view().evaluate().isNotEmpty,
+            'the first tab to close and the second to show',
+          );
+        }
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final wheelEvent = RegExp(r'\x1b\[<64;(\d+);(\d+)M');
+        expect(
+          wheelEvent.hasMatch(got.readAsStringSync()),
+          isFalse,
+          reason: 'a wheel event before the wheel',
+        );
+        ScrollableState scroll() => tester.state<ScrollableState>(
+          find.descendant(of: view(), matching: find.byType(Scrollable)).first,
+        );
+        final from = scroll().position.pixels;
+        inputLog.flush();
+        // A line of the test's own to read the log from: the log keeps its
+        // last 1000 lines, so an offset into it would drift.
+        const mark = 'e2e: JEANSH-H wheel starts';
+        appLog.add(mark);
+
+        final box = tester.getRect(view());
+        final window = await _windowRect();
+        final ratio = tester.view.devicePixelRatio;
+        final frame = (window.width - tester.view.physicalSize.width) / 2;
+        final x = (window.left + frame + box.center.dx * ratio).round();
+        final y = (window.top + frame + box.center.dy * ratio).round();
+        await _xdo(['windowfocus', '--sync', await _window()]);
+        await _realPointer(() async {
+          await _xdo(['mousemove', '$x', '$y', 'sleep', '0.2']);
+          await _xdo(['click', '--repeat', '4', '--delay', '80', '4']);
+          await tester.pump(const Duration(milliseconds: 400));
+        });
+        String logged() {
+          inputLog.flush();
+          final all = appLog.current;
+          return all.substring(all.lastIndexOf(mark));
+        }
+
+        if (mouse) {
+          await _until(
+            tester,
+            () => wheelEvent.hasMatch(got.readAsStringSync()),
+            'an SGR wheel event to reach the program '
+            '(it was sent ${jsonEncode(got.readAsStringSync())}, '
+            'the log added ${jsonEncode(logged())})',
+          );
+          // Every report at a cell inside the pane tmux holds.
+          for (final m in wheelEvent.allMatches(got.readAsStringSync())) {
+            expect(int.parse(m[1]!), inInclusiveRange(1, terminal.viewWidth));
+            expect(
+              int.parse(m[2]!),
+              inInclusiveRange(1, terminal.viewHeight),
+            );
+          }
+          expect(
+            logged(),
+            matches(
+              RegExp(
+                r'scroll wheel → program as wheel \(session \d+ pane %\d+, '
+                r'grid \d+x\d+, tmux \d+x\d+\)( ×\d+)?, sent [1-9]\d* at '
+                r'\d+;\d+',
+              ),
+            ),
+          );
+          expect(logged(), isNot(contains('differs from tmux')));
+        } else {
+          await tester.pump(const Duration(milliseconds: 600));
+          expect(
+            got.readAsStringSync(),
+            isEmpty,
+            reason: 'the wheel reached a shell that never asked',
+          );
+          expect(
+            scroll().position.pixels,
+            isNot(from),
+            reason: 'the scrollback did not move',
+          );
+          expect(logged(), contains('scroll wheel → scrollback (session'));
+          expect(logged(), isNot(contains('program as wheel')));
+        }
+
+        await _closeTabs(tester);
+      },
+    );
+  }
+
   // A tap on a tmux pane asks tmux for the pane's mouse modes and puts the
   // LOCAL terminal right when it differs ("masi kena bug tidak bisa scroll
   // claude app randomly"). To make only the local side differ, the test

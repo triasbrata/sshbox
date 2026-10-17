@@ -36,6 +36,7 @@ import '../session/clipboard_terminal.dart';
 import '../session/local_transport.dart' show localHostId;
 import '../session/session_manager.dart';
 import '../session/tailnet_forwarder.dart';
+import '../telemetry/app_log.dart' show appLog;
 import '../telemetry/input_log.dart' show inputLog;
 import 'connect_sheet.dart';
 import 'ctrl_click.dart';
@@ -1003,6 +1004,7 @@ class _TerminalPageState extends State<TerminalPage> {
                     style,
                     focused: true,
                     padding: _padding,
+                    where: 'session ${_session.id}',
                   )
                 : TmuxPaneLayout(
                     tmux: tmux,
@@ -1016,6 +1018,8 @@ class _TerminalPageState extends State<TerminalPage> {
                       style,
                       focused: focused,
                       autoResize: false,
+                      where: 'session ${_session.id} pane %${pane.id}',
+                      hostSize: () => (pane.cells.width, pane.cells.height),
                     ),
                   ),
           ),
@@ -1074,6 +1078,8 @@ class _TerminalPageState extends State<TerminalPage> {
     required bool focused,
     bool autoResize = true,
     EdgeInsets? padding,
+    required String where,
+    (int, int) Function()? hostSize,
   }) => _PaneView(
     key: _views.putIfAbsent(terminal, GlobalKey.new),
     terminal: terminal,
@@ -1085,10 +1091,29 @@ class _TerminalPageState extends State<TerminalPage> {
     focused: focused,
     autoResize: autoResize,
     padding: padding,
+    where: where,
+    hostSize: hostSize,
   );
 }
 
 const _padding = EdgeInsets.all(6);
+
+/// The terminal's own mouse handler, telling the app log of each wheel
+/// report it makes, at its SGR cell: see [_PaneViewState._watchWheel].
+class _WheelWatch implements TerminalMouseHandler {
+  const _WheelWatch(this.inner);
+
+  final TerminalMouseHandler? inner;
+
+  @override
+  String? call(TerminalMouseEvent event) {
+    final out = inner?.call(event);
+    if (out != null && event.button.isWheel) {
+      inputLog.wheelSent(event.position.x + 1, event.position.y + 1);
+    }
+    return out;
+  }
+}
 
 /// Gives the terminal a new height only once the room for it has stopped
 /// changing, and until then keeps it at the height it had, its bottom row on
@@ -1258,6 +1283,8 @@ class _PaneView extends StatefulWidget {
     required this.focused,
     this.autoResize = true,
     this.padding,
+    required this.where,
+    this.hostSize,
   });
 
   final Terminal terminal;
@@ -1282,6 +1309,13 @@ class _PaneView extends StatefulWidget {
   final bool autoResize;
 
   final EdgeInsets? padding;
+
+  /// The app log's name for this view, `session 1 pane %0`: never a host.
+  final String where;
+
+  /// The size tmux holds for this pane, in cells, as columns and rows; null
+  /// for a plain shell, whose size is this terminal's own.
+  final (int, int) Function()? hostSize;
 
   @override
   State<_PaneView> createState() => _PaneViewState();
@@ -1317,6 +1351,26 @@ class _PaneViewState extends State<_PaneView> {
     // Before the view's own, which it would otherwise put there itself: see
     // [_programCopied].
     widget.terminal.onClipboardStore = _programCopied;
+    _watchWheel(widget.terminal);
+  }
+
+  /// What [_watchWheel] put on the terminal, taken off when this view lets
+  /// it go.
+  _WheelWatch? _watching;
+
+  /// Counts the wheel reports that really leave for the program, and where,
+  /// into the app log's scroll line: see [InputLog.wheelSent]. The line's
+  /// route alone said "program as wheel" while nothing was sent (JEANSH-H).
+  void _watchWheel(Terminal terminal) {
+    final watch = _WheelWatch(terminal.mouseHandler);
+    terminal.mouseHandler = _watching = watch;
+  }
+
+  void _unwatchWheel(Terminal terminal) {
+    final watch = _watching;
+    if (watch != null && terminal.mouseHandler == watch) {
+      terminal.mouseHandler = watch.inner;
+    }
   }
 
   @override
@@ -1325,6 +1379,8 @@ class _PaneViewState extends State<_PaneView> {
     if (oldWidget.terminal != widget.terminal) {
       _letGoOfClipboard(oldWidget.terminal);
       widget.terminal.onClipboardStore = _programCopied;
+      _unwatchWheel(oldWidget.terminal);
+      _watchWheel(widget.terminal);
     }
     if (!oldWidget.focused) _followFocus();
   }
@@ -1348,6 +1404,7 @@ class _PaneViewState extends State<_PaneView> {
   @override
   void dispose() {
     _letGoOfClipboard(widget.terminal);
+    _unwatchWheel(widget.terminal);
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     FocusManager.instance.removeListener(_onFocusMoved);
     _clickTimer?.cancel();
@@ -1882,8 +1939,28 @@ class _PaneViewState extends State<_PaneView> {
     } else {
       to = 'program as arrows';
     }
-    inputLog.scroll('$device → $to');
+    final grid = (terminal.viewWidth, terminal.viewHeight);
+    final host = widget.hostSize?.call();
+    String size((int, int) s) => '${s.$1}x${s.$2}';
+    final sizes = host == null
+        ? size(grid)
+        : '${size(grid)}, tmux ${size(host)}';
+    // Once when they part, and not again until they agree: a wheel aimed by
+    // this grid lands elsewhere in tmux's pane.
+    final apart = host != null && host != grid;
+    if (apart && !_sizesApart) {
+      appLog.warn(
+        'scroll: ${widget.where} grid ${size(grid)} differs from '
+        'tmux ${size(host)}',
+      );
+    }
+    _sizesApart = apart;
+    inputLog.scroll('$device → $to (${widget.where}, grid $sizes)');
   }
+
+  /// Whether the last scroll found this grid and tmux's pane apart: see
+  /// [_noteScroll].
+  bool _sizesApart = false;
 
   void _signal(PointerSignalEvent event) {
     UiZoomWheel.keep(event);

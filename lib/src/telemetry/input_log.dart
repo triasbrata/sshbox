@@ -27,6 +27,11 @@ class InputLog {
 
   String? _label;
   var _count = 0;
+
+  /// Wheel reports a program was really sent in the scroll run being held,
+  /// and the SGR cell of the last: see [wheelSent].
+  var _sent = 0;
+  String? _sentAt;
   Timer? _timer;
 
   static final _named = <LogicalKeyboardKey, String>{
@@ -177,14 +182,29 @@ class InputLog {
   /// own words, never what is on screen — one line for a run of the same.
   void scroll(String what) => _note('scroll $what');
 
+  /// A wheel report that left for a program, at [col];[row] as SGR counts
+  /// them, from 1. Counted into the scroll run being held, so its line says
+  /// how many of the scrolls reached the program and where the last landed:
+  /// a run routed to the program with none sent is the wheel going nowhere.
+  void wheelSent(int col, int row) {
+    if (!(_label?.startsWith('scroll ') ?? false)) return;
+    _sent++;
+    _sentAt = '$col;$row';
+  }
+
   /// Writes the key or scroll being held, with how many times it came.
   void flush() {
     _timer?.cancel();
     final label = _label;
     if (label == null) return;
-    log.add('$label${_count > 1 ? ' ×$_count' : ''}');
+    final sent = label.contains('→ program as wheel')
+        ? ', sent $_sent${_sentAt == null ? '' : ' at $_sentAt'}'
+        : '';
+    log.add('$label${_count > 1 ? ' ×$_count' : ''}$sent');
     _label = null;
     _count = 0;
+    _sent = 0;
+    _sentAt = null;
   }
 
   /// A paste: where it went, what kind and how much. [amount] is characters

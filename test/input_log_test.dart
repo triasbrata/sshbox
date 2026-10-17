@@ -9,6 +9,7 @@ import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/chat/claude_chat.dart' show ChatModel;
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:xterm2/xterm.dart' show Terminal, TerminalView;
+
 import 'log_messages.dart';
 
 /// A fresh log and key handler per test, so what one prints never leaks in.
@@ -349,7 +350,11 @@ void main() {
       ClipboardTerminal().paste('x' * length);
       final line = appLog.current.split('\n').last;
       expect(appLog.length, before + 1);
-      expect(line, contains('paste text $bucket (terminal)'), reason: '$length');
+      expect(
+        line,
+        contains('paste text $bucket (terminal)'),
+        reason: '$length',
+      );
       expect(line, isNot(contains(' $length ')), reason: 'the length leaks');
     }
   });
@@ -359,5 +364,32 @@ void main() {
     expect(ChatModel.logName('claude-opus-5-5'), 'Opus 5.5');
     expect(ChatModel.logName('corp-model-xyz-internal'), 'other');
     expect(ChatModel.logName('claude-opus-5-5-hostname'), 'other');
+  });
+
+  test('a scroll run to the program says how many wheel reports left, and '
+      'where the last landed', () {
+    log = AppLog(maxLines: 50);
+    input = InputLog(log);
+    // JEANSH-H: routed to the program, and nothing sent.
+    input.scroll('wheel → program as wheel (session 1 pane %0, grid 80x24)');
+    input.scroll('wheel → program as wheel (session 1 pane %0, grid 80x24)');
+    input.flush();
+    input.scroll('wheel → program as wheel (session 1 pane %0, grid 80x24)');
+    input.wheelSent(12, 7);
+    input.wheelSent(13, 30);
+    input.flush();
+    // Another route says nothing of it, and a report with no scroll held
+    // counts into no line.
+    input.wheelSent(1, 1);
+    input.scroll('wheel → scrollback (session 1, grid 80x24)');
+    input.wheelSent(2, 2);
+    input.flush();
+    expect(lines(), [
+      'scroll wheel → program as wheel (session 1 pane %0, grid 80x24) ×2, '
+          'sent 0',
+      'scroll wheel → program as wheel (session 1 pane %0, grid 80x24), '
+          'sent 2 at 13;30',
+      'scroll wheel → scrollback (session 1, grid 80x24)',
+    ]);
   });
 }

@@ -626,9 +626,7 @@ void main() {
           final range = controller(tester).selection;
           await g.up();
           await tester.pump(const Duration(seconds: 1));
-          return range == null
-              ? null
-              : session.terminal.buffer.getText(range);
+          return range == null ? null : session.terminal.buffer.getText(range);
         }
 
         expect(await afterGap(within), 'this is a');
@@ -948,26 +946,59 @@ void main() {
       }
 
       await wheel(tester);
-      expect(logged(), endsWith('scroll wheel → scrollback'));
+      expect(
+        logged(),
+        matches(
+          RegExp(r'scroll wheel → scrollback \(session \d+, grid \d+x\d+\)$'),
+        ),
+      );
 
       // The alternate screen with no mouse: xterm2 sends arrows.
       session.terminal.write('\x1b[?1049h');
       await tester.pump();
       await wheel(tester);
-      expect(logged(), endsWith('scroll wheel → program as arrows'));
+      expect(
+        logged(),
+        matches(
+          RegExp(
+            r'scroll wheel → program as arrows \(session \d+, grid \d+x\d+\)$',
+          ),
+        ),
+      );
 
       session.terminal.write('\x1b[?1003h\x1b[?1006h');
       await tester.pump();
       await wheel(tester);
-      expect(logged(), endsWith('scroll wheel → program as wheel'));
+      expect(
+        logged(),
+        matches(
+          RegExp(
+            r'scroll wheel → program as wheel \(session \d+, grid \d+x\d+\), sent [1-9]\d* at \d+;\d+$',
+          ),
+        ),
+      );
       expect(appLog.current, isNot(contains('hello')));
 
       await trackpad(tester, const Offset(0, 20));
-      expect(logged(), contains('scroll trackpad → program as wheel ×'));
+      expect(
+        logged(),
+        matches(
+          RegExp(
+            r'scroll trackpad → program as wheel \(session \d+, grid \d+x\d+\) ×\d+, sent [1-9]\d* at \d+;\d+$',
+          ),
+        ),
+      );
 
       controller(tester).setSuspendPointerInput(true);
       await wheel(tester);
-      expect(logged(), endsWith('scroll wheel → held from the program'));
+      expect(
+        logged(),
+        matches(
+          RegExp(
+            r'scroll wheel → held from the program \(session \d+, grid \d+x\d+\)$',
+          ),
+        ),
+      );
     }, variant: mac);
   });
 }
