@@ -7384,7 +7384,17 @@ touch '${done.path}'
           await tester.pump(const Duration(milliseconds: 300));
         }
 
-        final sizes = 'setting ui text size'.allMatches(appLog.current).length;
+        // Counted from a line of the test's own: the log keeps its last 1000
+        // lines, so a count over all of it can stand still as lines go.
+        const keysMark = 'e2e: JEANSH-H text size keys';
+        appLog.add(keysMark);
+        int sizes() {
+          final all = appLog.current;
+          return 'setting ui text size'
+              .allMatches(all.substring(all.lastIndexOf(keysMark)))
+              .length;
+        }
+
         for (final chord in [
           'ctrl+equal',
           'ctrl+equal',
@@ -7402,8 +7412,8 @@ touch '${done.path}'
           timeout: const Duration(seconds: 5),
         );
         expect(
-          'setting ui text size'.allMatches(appLog.current).length,
-          greaterThanOrEqualTo(sizes + 6),
+          sizes(),
+          greaterThanOrEqualTo(6),
           reason: 'the keys never reached the UI text size',
         );
 
