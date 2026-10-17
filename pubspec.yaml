@@ -196,6 +196,11 @@ dependency_overrides:
   # are untouched.
   jni:
     path: third_party/jni
+  # xterm2 5.2.0 with one fix: the wheel kept reaching a program after
+  # Flutter replaced the terminal's scroll position — see
+  # third_party/xterm2/JEANSH.md.
+  xterm2:
+    path: third_party/xterm2
 
 flutter:
 
