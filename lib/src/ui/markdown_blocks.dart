@@ -1107,7 +1107,30 @@ class MdDoc {
       accept: (b) => consistent(_with(i, [b])),
     );
     if (edited == null) return null;
-    return MdChange(MdDoc(_with(i, [edited])), i, caret);
+    // MUTATION: every other editable block written afresh in one style, as a
+    // whole-document serializer would.
+    final all = _with(i, [edited]);
+    for (var k = 0; k < all.length; k++) {
+      final b = all[k];
+      if (k == i || b.inline == null) continue;
+      final shaped = MdBlock._(
+        kind: b.kind,
+        shape: b.shape,
+        raw: b.raw,
+        prefix: b.shape == MdBlockKind.listItem ? '- ' : b.prefix,
+        suffix: b.suffix,
+        eol: b.eol,
+        inline: b.inline,
+      );
+      all[k] =
+          editBlock(
+            shaped,
+            MdEdit(b.inline!.text, b.inline!.styles),
+            delims: _underscores,
+          ) ??
+          b;
+    }
+    return MdChange(MdDoc(all), i, caret);
   }
 
   /// Block [i] cut in two at [at] of its text, as Enter does: a paragraph
