@@ -76,12 +76,9 @@ class _RenderInfiniteScrollView extends RenderShiftedBox {
   ViewportOffset _position;
   set position(ViewportOffset value) {
     if (_position == value) return;
-    // Jeansh: the listener attach() added, moved to the new position. 5.2.0
-    // moved markNeedsLayout, which was never added, so once Flutter replaced
-    // the position the wheel reached no program (JEANSH-H). As in 5.3.0.
-    if (attached) _position.removeListener(_onScroll);
+    if (attached) _position.removeListener(markNeedsLayout);
     _position = value;
-    if (attached) _position.addListener(_onScroll);
+    if (attached) _position.addListener(markNeedsLayout);
     markNeedsLayout();
   }
 
