@@ -51,13 +51,13 @@ print(1);
     expect(find.text('# hi'), findsOneWidget);
   });
 
-  testWidgets('preview mode renders markdown blocks', (tester) async {
+  testWidgets('rich text mode renders its child', (tester) async {
     await pumpHost(
       tester,
       TuiCodeEditor(
         path: 'a.md',
         showModeToggle: true,
-        mode: TuiCodeViewMode.preview,
+        mode: TuiCodeViewMode.richText,
         onModeChanged: (_) {},
         previewChild: TuiMarkdownPreview(
           blocks: tuiMarkdownBlocksFrom('# Hello\n\npara'),
@@ -67,7 +67,7 @@ print(1);
     expect(find.text('Hello'), findsOneWidget);
     expect(find.text('para'), findsOneWidget);
     expect(find.text('SOURCE'), findsOneWidget);
-    expect(find.text('PREVIEW'), findsOneWidget);
+    expect(find.text('RICH TEXT'), findsOneWidget);
   });
 
   testWidgets('binary and loading states', (tester) async {
