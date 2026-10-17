@@ -20,5 +20,8 @@ long as the terminal lived, while PageUp still worked. Rebuilt from scratch
 
 xterm2 5.3.0 has the same fix ("Keep application scrolling active when
 Flutter replaces its scroll position") along with many other changes in how
-keys and the mouse are encoded. Moving to 5.3.0 retires this copy: delete
-third_party/xterm2 and its dependency_overrides entry together.
+keys and the mouse are encoded.
+
+**Remove this override when we move to xterm2 >= 5.3.0:** delete
+third_party/xterm2 and its dependency_overrides entry in pubspec.yaml
+together.
