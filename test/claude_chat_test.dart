@@ -578,6 +578,28 @@ void main() {
       chat.dispose();
     });
 
+    test('no effort is picked while Claude is starting, and one picked '
+        'before passes --effort', () async {
+      final opened = <String>[];
+      final gate = Completer<CommandChannel>();
+      final chat = ClaudeChat(
+        open: (command) {
+          opened.add(command);
+          return gate.future;
+        },
+      );
+      await chat.setEffort('max');
+      expect(chat.effort, 'max');
+      final started = chat.start();
+      expect(chat.modelStarting, isTrue);
+      await chat.setEffort('low');
+      expect(chat.effort, 'max', reason: 'the pick would be lost');
+      expect(opened.single, contains('--effort max'));
+      gate.complete(_FakeClaude().channel);
+      await started;
+      chat.dispose();
+    });
+
     test('a claude -p whose open lands after dispose is closed', () async {
       final gate = Completer<CommandChannel>();
       final chat = ClaudeChat(open: (_) => gate.future);
@@ -2691,6 +2713,129 @@ void main() {
       });
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(chat.modelAlias, isNull);
+    });
+
+    test('an effort picked for the session being watched is typed into it '
+        'as /effort <level>, Default as /effort auto, and the level is taken '
+        'once the session says it set it', () async {
+      final host = _LiveHost('0\n');
+      final chat = watcher(host);
+      await chat.continueFrom(_live);
+      expect(chat.canPickEffort, isTrue);
+      expect(chat.effort, isNull);
+
+      // Only a level this app offers ever reaches the session.
+      await chat.setEffort('high; rm -rf ~');
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals, isEmpty);
+
+      unawaited(chat.setEffort('xhigh'));
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals.single.typed, ['/effort xhigh', '\r']);
+      expect(chat.effort, isNull);
+
+      Future<void> said(String args, String output) async {
+        host.adds({
+          'type': 'system',
+          'subtype': 'local_command',
+          'content':
+              '<command-name>/effort</command-name>\n'
+              '            <command-message>effort</command-message>\n'
+              '            <command-args>$args</command-args>',
+        });
+        host.adds({
+          'type': 'system',
+          'subtype': 'local_command',
+          'content': '<local-command-stdout>$output</local-command-stdout>',
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+
+      // As 2.1.287 says it.
+      await said(
+        'xhigh',
+        'Set effort level to xhigh (this session only): Deeper reasoning',
+      );
+      expect(chat.effort, 'xhigh');
+      Iterable<ChatNotice> defaults() => chat.entries.whereType<ChatNotice>()
+          .where((n) => n.text == ClaudeChat.effortDefaultNotice);
+      // Said once, after the record of the /effort typed from here.
+      expect(defaults(), hasLength(1));
+      expect(
+        ClaudeChat.effortDefaultNotice,
+        'Claude Code also keeps this as the default for new sessions on this '
+        'host, as /effort typed at its terminal does.',
+      );
+      expect(chat.effortHint, contains(ClaudeChat.effortDefaultNotice));
+      // A /effort typed at the terminal, not from here, says nothing more.
+      await said('high', 'Set effort level to high (saved as your default)');
+      expect(chat.effort, 'high');
+      expect(defaults(), hasLength(1));
+      await said(
+        'xhigh',
+        'Set effort level to xhigh (this session only): Deeper reasoning',
+      );
+      // A refusal changes nothing.
+      await said('max', 'Usage: /effort <low|medium|high|xhigh|max|auto>');
+      expect(chat.effort, 'xhigh');
+      // Another command saying the same words, neither.
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<command-name>/color</command-name>\n'
+            '            <command-args>low</command-args>',
+      });
+      host.adds({
+        'type': 'system',
+        'subtype': 'local_command',
+        'content':
+            '<local-command-stdout>Set effort level to low'
+            '</local-command-stdout>',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chat.effort, 'xhigh');
+
+      unawaited(chat.setEffort(null));
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(host.terminals.last.typed, ['/effort auto', '\r']);
+      await said('auto', 'Effort level set to auto (this session only)');
+      expect(chat.effort, isNull);
+      expect(defaults(), hasLength(2));
+    });
+
+    test(
+      'a session only watched, read-only from here, takes no effort',
+      () async {
+        final host = _LiveHost('0\n', interactive: true)
+          ..pane = 'sshbox:no pane\n';
+        final chat = watcher(host);
+        await chat.continueFrom(_interactive);
+        expect(chat.canPickEffort, isFalse);
+        expect(chat.effortHint, isNull);
+        await chat.setEffort('high');
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+        expect(host.terminals, isEmpty);
+        expect(host.paneTyping, isEmpty);
+        expect(chat.effort, isNull);
+      },
+    );
+
+    test("a /effort command's output reads as the level it set", () {
+      expect(ChatEffort.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
+      expect(ChatEffort.known('max'), 'max');
+      expect(ChatEffort.known('Default'), isNull);
+      expect(ChatEffort.known(null), isNull);
+      expect(
+        ChatEffort.fromOutput('Set effort level to low (this session only)'),
+        'low',
+      );
+      expect(
+        ChatEffort.fromOutput('Effort level set to auto (this session only)'),
+        ChatEffort.defaultLabel,
+      );
+      expect(ChatEffort.fromOutput('Set effort level to ultra'), isNull);
+      expect(ChatEffort.fromOutput('Failed to set effort level: x'), isNull);
     });
 
     test('a session only watched, read-only from here, takes no model', () async {
