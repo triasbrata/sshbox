@@ -531,7 +531,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     final coalesce =
         _typing && now.difference(_lastAt) < const Duration(milliseconds: 1500);
     _lastAt = now;
-    widget.onChanged(text, coalesce: coalesce);
+    widget.onChanged(text.replaceAll('* ', '- '), coalesce: coalesce);
   }
 
   /// Sets the text from a command: one undo step of its own.
