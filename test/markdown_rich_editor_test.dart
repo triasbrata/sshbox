@@ -377,6 +377,38 @@ void main() {
     expect((at - want).abs(), lessThanOrEqualTo(1), reason: 'at $at');
   });
 
+  testWidgets('sections drawn apart sit one under the other with no gap', (
+    tester,
+  ) async {
+    final text = List.generate(
+      8,
+      (i) => 'Paragraph $i\nwith a second line',
+    ).join('\n\n');
+    await _pump(tester, text);
+    final sections = find.byWidgetPredicate((w) => w is RichText);
+    final rects =
+        sections
+            .evaluate()
+            .map((e) => tester.getRect(find.byWidget(e.widget)))
+            .toList()
+          ..sort((a, b) => a.top.compareTo(b.top));
+    expect(rects.length, greaterThan(2));
+    // The hidden source behind a section takes no room of its own: the next
+    // section starts where the last one ends.
+    for (var i = 1; i < rects.length; i++) {
+      expect(rects[i].top - rects[i - 1].bottom, lessThan(1), reason: '$i');
+    }
+    // And a section drawn as text takes the room it took drawn apart: the
+    // caret going into the first moves nothing below it.
+    final last = rects.last.top;
+    await _caret(tester, 2);
+    final now = find
+        .byWidgetPredicate((w) => w is RichText)
+        .evaluate()
+        .map((e) => tester.getRect(find.byWidget(e.widget)).top);
+    expect(now.reduce((a, b) => a > b ? a : b), closeTo(last, 1));
+  });
+
   testWidgets('a wide page is a centred column, and the wheel over its side '
       'scrolls it', (tester) async {
     final text = List.generate(80, (i) => 'Line $i of the page').join('\n\n');

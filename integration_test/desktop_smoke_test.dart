@@ -9237,7 +9237,10 @@ touch '${done.path}'
       await k.press('ctrl+Home', 'key code 126 using command down');
       await k.press('Down', 'key code 125');
       await k.press('Down', 'key code 125');
-      for (var i = 0; i < 3; i++) {
+      // Down a line a press, to the paragraph's line: as many as that takes,
+      // a blank line between blocks being a line of its own.
+      final para = typed.indexOf('A *plain*');
+      for (var i = 0; i < 6 && rich().selection.extentOffset < para; i++) {
         await k.press('shift+Down', 'key code 125 using shift down');
       }
       await k.press(

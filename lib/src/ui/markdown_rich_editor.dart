@@ -176,6 +176,12 @@ class MdLiveLook {
 
   late final double size = base.fontSize!;
 
+  /// The style the whole text sits in, which is also the paragraph's own:
+  /// at line height 1, since its 1.6 would add its leading round a line
+  /// that holds a section drawn apart. Every run of text carries its own
+  /// style, line height included.
+  late final TextStyle root = base.copyWith(height: 1);
+
   late final hidden = TextStyle(
     fontSize: 0.01,
     height: 1,
@@ -439,7 +445,7 @@ TextSpan liveSpan(
     children.add(TextSpan(text: t.substring(i, j), style: style));
     i = j;
   }
-  return TextSpan(style: l.base, children: children);
+  return TextSpan(style: l.root, children: children);
 }
 
 class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
@@ -1013,9 +1019,11 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           focusNode: _focus,
           scrollController: _scroll,
           style: base,
-          // A hidden marker's line break would otherwise still take a line's
-          // height.
-          strutStyle: StrutStyle.disabled,
+          // A hidden marker's line break, and the hidden source behind a
+          // section drawn apart, would otherwise still take a line's height
+          // each: the field's strut is the floor under every line, and
+          // StrutStyle.disabled takes the text's font size for its own.
+          strutStyle: const StrutStyle(fontSize: 0.01, height: 1),
           maxLines: null,
           expands: true,
           textAlignVertical: TextAlignVertical.top,
