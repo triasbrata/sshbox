@@ -1045,8 +1045,17 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           cursorColor: p.accent,
           inputFormatters: [_Edits(_onEdit)],
           scrollPadding: const EdgeInsets.all(48),
+          // A page, not a field: none of the app's field box, its fill or
+          // the accent line it draws round a focused field.
           decoration: InputDecoration(
+            filled: false,
+            hoverColor: const Color(0x00000000),
             border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none,
+            errorBorder: InputBorder.none,
+            focusedErrorBorder: InputBorder.none,
             isCollapsed: true,
             contentPadding: EdgeInsets.fromLTRB(gutter, 20, gutter, 48),
           ),
