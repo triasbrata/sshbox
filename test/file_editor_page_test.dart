@@ -1210,7 +1210,7 @@ void main() {
           baseOffset: 4,
           extentOffset: 7,
         );
-        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
         await tester.pump();
         expect(find.byType(MarkdownFloatingBar), findsOneWidget);
         await tester.tap(

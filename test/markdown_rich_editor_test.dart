@@ -165,6 +165,40 @@ void main() {
     expect(host.text, same(_doc));
   });
 
+  testWidgets('Shift+Down from a list runs over a blank line into the next '
+      'block', (tester) async {
+    const text =
+        '# Rich e2e\n\n* first item\n- second item\n\n'
+        'A *plain* paragraph here. added\n\n- [x] a task\n\n'
+        '| a | b |\n|---|---|\n| 1 | 2 |\n';
+    // As the Linux desktop test drives it, where the selection stuck.
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    await _pump(tester, text);
+    await _caret(tester, text.indexOf('* first'));
+    final ends = <int>[];
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shift);
+    for (var i = 0; i < 4; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      ends.add(_controller(tester).selection.extentOffset);
+      if (i == 1) {
+        // A pause: the floating bar comes up over the selection, and the
+        // presses after it go on from where they were.
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        expect(find.byType(MarkdownFloatingBar), findsOneWidget);
+      }
+    }
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shift);
+    debugDefaultTargetPlatformOverride = null;
+    expect(ends, [
+      text.indexOf('- second'),
+      text.indexOf('\n\nA') + 1,
+      text.indexOf('A *plain'),
+      text.indexOf('\n\n- [x]') + 1,
+    ]);
+  });
+
   testWidgets('a selection runs across blocks and copies their source', (
     tester,
   ) async {
@@ -448,8 +482,8 @@ void main() {
           await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
         }
         await tester.sendKeyUpEvent(LogicalKeyboardKey.shift);
-        // Placed after the frame that lays the selection out.
-        await tester.pump();
+        // Put up once the selection has held still.
+        await tester.pump(const Duration(milliseconds: 500));
         await tester.pump();
         expect(find.byType(MarkdownFloatingBar), findsOneWidget);
         await tester.tap(

@@ -70,10 +70,10 @@ env:
     commands:
       # The box by where it is drawn: the field gives a screen reader its
       # text as one node, so the box has no node of its own to find. Tapped
-      # as the file opened, before anything typed can move it: the fifth
+      # as the file opened, before anything typed can move it: the third
       # line, at the left of the 320x640 CI emulator's page.
       - tapOn:
-          point: "8%,55%"
+          point: "8%,40%"
       - waitForAnimationToEnd
 
 - runFlow:
@@ -83,7 +83,7 @@ env:
       # "paragraph", as a phone selects a word, then B on the bar over the
       # keyboard. By where it is drawn, for the same reason as the box.
       - doubleTapOn:
-          point: "40%,50%"
+          point: "40%,55%"
       - waitForAnimationToEnd
       - tapOn: "B"
       - waitForAnimationToEnd
