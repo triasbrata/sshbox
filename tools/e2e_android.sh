@@ -718,6 +718,9 @@ md_rich_text() {
   check 'the table is as it was' sudo grep -qx -- '|---|---|' "$file"
 
   flow md_rich_text -e STEP=close || status=1
+  # The flow's screenshots, the phone's Rich text, as evidence.
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-text-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   return "$status"
 }
 

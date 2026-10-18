@@ -9198,7 +9198,7 @@ touch '${done.path}'
           tester.widget<EditableText>(field).controller;
       // Read: the markers hidden, the table drawn as a table.
       expect(find.byType(Table), findsOneWidget, reason: 'table not drawn');
-      await _shot(tester, 'desktop-md-rich-text');
+      await _grab(tester, 'desktop-md-rich-text-opened');
 
       await k.chord(save);
       await k.untouched('$save+S in unedited Rich text', text: original);
@@ -9263,6 +9263,7 @@ touch '${done.path}'
         () => k.text() == expected,
         'a tap on the box to tick the task',
       );
+      await _grab(tester, 'desktop-md-rich-text-edited');
 
       await k.chord(save);
       await _until(

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -374,6 +375,31 @@ void main() {
     final at = _controller(tester).selection.baseOffset;
     final want = text.indexOf('Paragraph number 10') + 10;
     expect((at - want).abs(), lessThanOrEqualTo(1), reason: 'at $at');
+  });
+
+  testWidgets('a wide page is a centred column, and the wheel over its side '
+      'scrolls it', (tester) async {
+    final text = List.generate(80, (i) => 'Line $i of the page').join('\n\n');
+    await _pump(tester, text, size: const Size(1400, 600));
+    final field = tester.getRect(find.byType(EditableText));
+    // The text column: 720 wide, in the middle.
+    expect(field.width, 720);
+    expect(field.left, (1400 - 720) / 2);
+    final scroll = tester
+        .widget<EditableText>(find.byType(EditableText))
+        .scrollController!;
+    expect(scroll.offset, 0);
+    final pointer = TestPointer(1, PointerDeviceKind.mouse);
+    // Over the left gutter, well outside the text.
+    await tester.sendEventToBinding(pointer.hover(const Offset(60, 300)));
+    await tester.sendEventToBinding(pointer.scroll(const Offset(0, 300)));
+    await tester.pump();
+    expect(scroll.offset, 300);
+    // Over the text, the field's own scrolling, once: not twice.
+    await tester.sendEventToBinding(pointer.hover(const Offset(700, 300)));
+    await tester.sendEventToBinding(pointer.scroll(const Offset(0, 100)));
+    await tester.pump();
+    expect(scroll.offset, 400);
   });
 
   group('desktop', () {
