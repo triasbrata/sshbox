@@ -500,6 +500,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _text.dispose();
     _focus.dispose();
     _scroll.dispose();
+    _settle?.cancel();
     _bar.dispose();
     super.dispose();
   }
@@ -753,6 +754,19 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   /// Puts the floating bar over the selection, after the frame lays it out.
   void _placeBar() {
     if (!MarkdownRichEditor.floatingBar) return;
+    // Hidden while the selection moves, and put up once it has held still:
+    // as Medium's, after the selection rather than during it. Drawn between
+    // two presses of Shift and an arrow, it threw the next press's line off.
+    _settle?.cancel();
+    if (_bar.value != null) _bar.value = null;
+    _settle = Timer(const Duration(milliseconds: 400), _showBar);
+  }
+
+  Timer? _settle;
+
+  void _showBar() {
+    if (!mounted) return;
+    SchedulerBinding.instance.ensureVisualUpdate();
     SchedulerBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final sel = _text.selection;
@@ -1087,15 +1101,17 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
               if (MarkdownRichEditor.floatingBar && widget.controller != null)
                 ValueListenableBuilder<Offset?>(
                   valueListenable: _bar,
-                  builder: (context, at, _) => at == null
-                      ? const SizedBox.shrink()
-                      : Positioned(
-                          left: at.dx,
-                          top: (at.dy - 44).clamp(0, double.infinity),
-                          child: MarkdownFloatingBar(
-                            controller: widget.controller!,
-                          ),
-                        ),
+                  // Positioned even while hidden: a Stack child that is not
+                  // takes a part in sizing the Stack, the field with it.
+                  builder: (context, at, _) => Positioned(
+                    left: at?.dx ?? 0,
+                    top: at == null
+                        ? 0
+                        : (at.dy - 44).clamp(0, double.infinity),
+                    child: at == null
+                        ? const SizedBox.shrink()
+                        : MarkdownFloatingBar(controller: widget.controller!),
+                  ),
                 ),
             ],
           ),
