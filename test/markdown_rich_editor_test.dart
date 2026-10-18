@@ -9,6 +9,7 @@ import 'package:sshbox/src/ui/markdown_rich_editor.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
 import 'package:sshbox/src/ui/termul/termul_theme.dart';
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart';
+import 'package:sshbox/src/ui/tui.dart' show jeanshTheme;
 
 class _Host {
   _Host(this.text);
@@ -409,6 +410,43 @@ void main() {
     final at = _controller(tester).selection.baseOffset;
     final want = text.indexOf('Paragraph number 10') + 10;
     expect((at - want).abs(), lessThanOrEqualTo(1), reason: 'at $at');
+  });
+
+  testWidgets('focused, the page draws no field box, fill or accent line', (
+    tester,
+  ) async {
+    // The app's own theme, whose fields are filled and outlined.
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: jeanshTheme(TermulPalette.paper),
+        home: Scaffold(
+          body: MarkdownRichEditor(
+            text: 'one two',
+            onChanged: (t, {required coalesce}) {},
+            blockBuilder: (context, md) => Text(md),
+            onOpenLink: (_) {},
+            onRefused: (_) {},
+            askLink: (_) async => null,
+          ),
+        ),
+      ),
+    );
+    await tester.showKeyboard(find.byType(EditableText));
+    await tester.pump();
+    final decorator = tester.widget<InputDecorator>(
+      find.byType(InputDecorator),
+    );
+    expect(decorator.isFocused, isTrue);
+    final d = decorator.decoration;
+    expect(d.filled, isFalse);
+    for (final border in [
+      d.border,
+      d.enabledBorder,
+      d.focusedBorder,
+      d.disabledBorder,
+    ]) {
+      expect(border, InputBorder.none);
+    }
   });
 
   testWidgets('sections drawn apart sit one under the other with no gap', (
