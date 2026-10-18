@@ -87,6 +87,9 @@ env:
       - doubleTapOn:
           point: "40%,54%"
       - waitForAnimationToEnd
+      # The keyboard away first: its own b key is a "B" to Maestro too.
+      - hideKeyboard
+      - waitForAnimationToEnd
       - tapOn: "B"
       - waitForAnimationToEnd
 
