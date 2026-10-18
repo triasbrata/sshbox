@@ -27,6 +27,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show DropdownButton, IconButton, Icons, InkWell, TextField, Tooltip;
 import 'package:flutter/rendering.dart' show OffsetLayer, RenderParagraph;
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -59,9 +60,12 @@ import 'package:sshbox/src/ui/file_download.dart'
     show downloadFile, openDownload;
 import 'package:sshbox/src/ui/file_editor_page.dart' show FileEditorPage;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
+import 'package:sshbox/src/ui/markdown_rich_editor.dart'
+    show MarkdownRichEditor;
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart'
     show TuiChatBubble, TuiChatSessionList;
+import 'package:sshbox/src/ui/termul/tui_checkbox.dart' show TuiCheckbox;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_code_editor.dart' show TuiFindBar;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
@@ -7475,10 +7479,7 @@ touch '${done.path}'
           // Every report at a cell inside the pane tmux holds.
           for (final m in wheelEvent.allMatches(got.readAsStringSync())) {
             expect(int.parse(m[1]!), inInclusiveRange(1, terminal.viewWidth));
-            expect(
-              int.parse(m[2]!),
-              inInclusiveRange(1, terminal.viewHeight),
-            );
+            expect(int.parse(m[2]!), inInclusiveRange(1, terminal.viewHeight));
           }
           expect(
             logged(),
@@ -9146,14 +9147,16 @@ touch '${done.path}'
     },
   );
 
-  // Markdown typed into as it reads, with real keys and a real click: a 2x2.
-  // Opened in Rich text and saved with nothing typed, the file and its mtime
-  // are as they were. A word typed at the end of the paragraph and saved
-  // changes that one line, every other byte as it was: the list's `*` and
-  // `-`, the paragraph's `*plain*`, the table.
+  // Markdown edited as one live document, with real keys and a real click: a
+  // 2x2. Opened in Rich text and saved with nothing typed, the file and its
+  // mtime are as they were. A word typed into the paragraph, a selection run
+  // from the first list item down across the paragraph and bolded, and the
+  // task ticked, then saved, change those lines by those bytes and no other:
+  // the list's `*` and `-`, the paragraph's `*plain*`, the table and every
+  // other line as they were.
   _test(
-    'rich text: a word typed into a paragraph saves that line alone, and '
-    'nothing typed writes nothing',
+    'rich text: typing, a bold across blocks and a ticked task save those '
+    'bytes alone, and nothing typed writes nothing',
     skip: editorSkip,
     (tester) async {
       const original =
@@ -9164,43 +9167,130 @@ touch '${done.path}'
           '\n'
           'A *plain* paragraph here.\n'
           '\n'
+          '- [ ] a task\n'
+          '\n'
           '| a | b |\n'
           '|---|---|\n'
           '| 1 | 2 |\n';
-      final expected = original.replaceFirst(
+      final typed = original.replaceFirst(
         'A *plain* paragraph here.',
         'A *plain* paragraph here. added',
       );
+      final bolded = typed
+          .replaceFirst('* first item', '* **first item**')
+          .replaceFirst('- second item', '- **second item**')
+          .replaceFirst(
+            'A *plain* paragraph here. added',
+            '**A *plain* paragraph here. added**',
+          );
+      final expected = bolded.replaceFirst('- [ ] a task', '- [x] a task');
       final k = await _EditorSave.start(tester, 'rich.md', text: original);
       expect(
         _label('rich text'),
         findsOneWidget,
         reason: 'no Rich text toggle',
       );
-      final paragraph = find.byWidgetPredicate(
-        (widget) =>
-            widget is TextField &&
-            widget.controller?.text == 'A plain paragraph here.',
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
       );
-      expect(paragraph, findsOneWidget, reason: 'the paragraph not editable');
+      expect(field, findsOneWidget, reason: 'not one field over the file');
+      TextEditingController rich() =>
+          tester.widget<EditableText>(field).controller;
+      // Read: the markers hidden, the table drawn as a table.
+      expect(find.byType(Table), findsOneWidget, reason: 'table not drawn');
+      await _grab(tester, 'desktop-md-rich-text-opened');
 
       await k.chord(save);
       await k.untouched('$save+S in unedited Rich text', text: original);
 
-      await tester.tap(paragraph);
+      // A click on the paragraph's words, which are drawn apart until the
+      // caret is in them: the caret goes where the click was.
+      final drawn = find.byWidgetPredicate(
+        (w) => w is RichText && w.text.toPlainText().contains('paragraph here'),
+      );
+      expect(drawn, findsOneWidget, reason: 'the paragraph not drawn');
+      final paragraph = tester.renderObject<RenderParagraph>(drawn);
+      final at = paragraph.text.toPlainText().indexOf('paragraph here');
+      final box = paragraph
+          .getBoxesForSelection(
+            TextSelection(baseOffset: at, extentOffset: at + 1),
+          )
+          .first
+          .toRect();
+      await tester.tapAt(paragraph.localToGlobal(box.center));
       await tester.pump(const Duration(milliseconds: 300));
+      final line = original.indexOf('A *plain*');
+      await _until(tester, () {
+        final caret = rich().selection.baseOffset;
+        return caret >= line && caret <= line + 25;
+      }, 'the click to put the caret in the paragraph');
       await k.endOfLine();
       await k.type(' added');
       await _until(
         tester,
-        () => k.text() == expected && k.unsaved.evaluate().isNotEmpty,
+        () => k.text() == typed && k.unsaved.evaluate().isNotEmpty,
         'the typing to reach the document and say Unsaved changes',
       );
+
+      // From the first item's start down to the paragraph's end, with Shift
+      // and the arrows, across a list and a blank line: one selection.
+      // The caret put at the first item's start, where a click would put
+      // it; the selection from there is the keys'.
+      rich().selection = TextSelection.collapsed(
+        offset: typed.indexOf('* first item'),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      // What Shift and the arrows do from there, printed and not held to:
+      // on this runner they have stopped at the blank line before the
+      // paragraph, which the widget test driving them as Linux does not.
+      final start = typed.indexOf('* first item');
+      final moves = <int>[];
+      for (var i = 0; i < 4; i++) {
+        await k.press('shift+Down', 'key code 125 using shift down');
+        moves.add(rich().selection.extentOffset);
+      }
+      debugPrint('rich text: Shift+Down from $start reached $moves');
+      // The selection across the blocks by Shift and a click at the end of
+      // the paragraph's line, from the first item's start.
+      rich().selection = TextSelection.collapsed(offset: start);
+      await tester.pump(const Duration(milliseconds: 300));
+      final editable = tester.state<EditableTextState>(field).renderEditable;
+      final end = typed.indexOf(' added') + ' added'.length;
+      final caret = editable.getLocalRectForCaret(TextPosition(offset: end));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.tapAt(
+        editable.localToGlobal(caret.centerRight + const Offset(40, 0)),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump(const Duration(milliseconds: 300));
+      final sel = rich().selection;
+      expect(
+        typed.substring(sel.start, sel.end),
+        '* first item\n- second item\n\nA *plain* paragraph here. added',
+        reason: 'the selection did not run across the blocks',
+      );
+      await k.press('ctrl+b', 'keystroke "b" using command down');
+      await _until(
+        tester,
+        () => k.text() == bolded,
+        'Ctrl+B to bold each block of the selection',
+      );
+
+      await tester.tap(find.byType(TuiCheckbox));
+      await _until(
+        tester,
+        () => k.text() == expected,
+        'a tap on the box to tick the task',
+      );
+      await _grab(tester, 'desktop-md-rich-text-edited');
+
       await k.chord(save);
       await _until(
         tester,
         () => k.file.readAsStringSync() == expected,
-        'the save to write the typed line',
+        'the save to write what was done',
         timeout: const Duration(seconds: 8),
       );
       final before = original.split('\n');
@@ -9211,10 +9301,66 @@ touch '${done.path}'
           for (var i = 0; i < after.length; i++)
             if (after[i] != before[i]) after[i],
         ],
-        ['A *plain* paragraph here. added'],
-        reason: 'lines beside the one typed into changed',
+        [
+          '* **first item**',
+          '- **second item**',
+          '**A *plain* paragraph here. added**',
+          '- [x] a task',
+        ],
+        reason: 'lines beside the ones edited changed',
       );
       await _closeTabs(tester);
+    },
+  );
+
+  // Not a check but a measure, for the PR: how long a frame takes while keys
+  // are typed into a long Markdown file in Rich text, build and raster, as
+  // the engine reports them. Run it in profile to read a real number.
+  _test(
+    'rich text: frame times while typing into a long file (a measure)',
+    skip: editorSkip,
+    (tester) async {
+      String doc(int sections) => [
+        for (var i = 0; i < sections; i++)
+          '## Section $i\n\nSome **bold** text, _italic_, `code` and a '
+              '[link](https://example.com/$i) in a paragraph long enough to '
+              'wrap.\n\n- one\n- [ ] two\n',
+      ].join('\n');
+      for (final (name, sections) in [('500 lines', 72), ('1.5k lines', 215)]) {
+        final text = doc(sections);
+        final k = await _EditorSave.start(tester, 'long.md', text: text);
+        final field = find.descendant(
+          of: find.byType(MarkdownRichEditor),
+          matching: find.byType(EditableText),
+        );
+        await tester.showKeyboard(field);
+        tester
+            .widget<EditableText>(field)
+            .controller
+            .selection = TextSelection.collapsed(
+          offset: text.indexOf('wrap.', text.length ~/ 2),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        final timings = <ui.FrameTiming>[];
+        void heard(List<ui.FrameTiming> t) => timings.addAll(t);
+        SchedulerBinding.instance.addTimingsCallback(heard);
+        await k.type('abcdefghijklmnopqrst');
+        await tester.pump(const Duration(seconds: 1));
+        SchedulerBinding.instance.removeTimingsCallback(heard);
+        int ms(Duration d) => d.inMicroseconds ~/ 1000;
+        final build = [for (final t in timings) ms(t.buildDuration)]..sort();
+        final raster = [for (final t in timings) ms(t.rasterDuration)]..sort();
+        int at(List<int> l, double q) =>
+            l.isEmpty ? -1 : l[((l.length - 1) * q).round()];
+        debugPrint(
+          'perf: rich text, $name (${text.length} chars), '
+          '${timings.length} frames: build p50 ${at(build, .5)} ms '
+          'p90 ${at(build, .9)} ms max ${at(build, 1)} ms; raster p50 '
+          '${at(raster, .5)} ms p90 ${at(raster, .9)} ms',
+        );
+        expect(k.text().length, text.length + 20, reason: '$name: typing lost');
+        await _closeTabs(tester);
+      }
     },
   );
 }
@@ -9318,6 +9464,18 @@ class _EditorSave {
       await _xdo(['key', '--clearmodifiers', '$mod+s']);
     }
     await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  /// A key or a chord: [xdo] as xdotool names it, or [mac] as a System
+  /// Events command.
+  Future<void> press(String xdo, String mac) async {
+    if (Platform.isMacOS) {
+      await _osascript(mac);
+    } else {
+      await _xdo(['windowfocus', '--sync', await _window()]);
+      await _xdo(['key', '--clearmodifiers', xdo]);
+    }
+    await tester.pump(const Duration(milliseconds: 200));
   }
 
   /// The caret to the end of its line: End, or ⌘→ on a Mac.

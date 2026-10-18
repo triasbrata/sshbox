@@ -19,8 +19,6 @@ import 'file_download.dart';
 import 'key_bar.dart';
 import 'mermaid_view.dart';
 import 'save_chord.dart';
-import 'selection_separators.dart';
-import 'markdown_blocks.dart';
 import 'markdown_rich_editor.dart';
 import 'settings_page.dart' show terminalSettings;
 import 'terminal_page.dart' show openUrl;
@@ -577,8 +575,22 @@ class _TextFileTabState extends State<_TextFileTab> {
   /// position as they were: the text stays built behind the rich text, and
   /// both edit the one text, so nothing typed in either is lost.
   void _setRich(bool rich) {
+    if (rich && _tooBigForRich) return;
     setState(() => _rich = rich);
     _focusText();
+  }
+
+  /// Rich text lays the whole file out on every key; past its limit it says
+  /// so and the file stays in Source.
+  bool get _tooBigForRich {
+    if (_controller.text.length <= MarkdownRichEditor.limit) return false;
+    showToast(
+      context,
+      'Too large for Rich text (over '
+      '${MarkdownRichEditor.limit ~/ 1024} KB): showing Source.',
+      type: TuiToastType.warning,
+    );
+    return true;
   }
 
   /// The document as the rich text changed it, into the one text both modes
@@ -768,6 +780,7 @@ class _TextFileTabState extends State<_TextFileTab> {
         // A draft that matches the host has nothing left to offer.
         _draft = draft != null && draft.text != text ? draft : null;
       });
+      if (_rich && _tooBigForRich) setState(() => _rich = false);
       // re_editor focuses the text itself, but a file opening rendered has
       // no text on show to focus.
       if (_rich) _focusText();
@@ -1149,6 +1162,9 @@ class _TextFileTabState extends State<_TextFileTab> {
           ),
           bottomNavigationBar: _loading || _error != null
               ? null
+              : _rich && MarkdownRichEditor.floatingBar
+              // On a desktop the formatting floats over a selection.
+              ? null
               : _rich
               ? MarkdownRichBar(
                   controller: _richBar,
@@ -1304,15 +1320,16 @@ class _TextFileTabState extends State<_TextFileTab> {
                       text: _controller.text,
                       controller: _richBar,
                       onChanged: _onRichChanged,
-                      styleSheet: _markdownSheet(context),
-                      opaqueBuilder: (context, markdown) => _MarkdownBlock(
+                      codeFont: TextStyle(
+                        fontFamily: terminal.fontFamily,
+                        fontFamilyFallback: terminal.fontFamilyFallback,
+                      ),
+                      blockBuilder: (context, markdown) => _MarkdownBlock(
                         markdown: markdown,
                         images: _images,
-                        onTapLink: _openPreviewLink,
                         styleSheet: _markdownSheet(context),
                       ),
                       onOpenLink: _openRichLink,
-                      onEditInSource: (line) => _inSource(() => _jumpTo(line)),
                       onRefused: (message) => showToast(
                         context,
                         message,
@@ -2165,8 +2182,9 @@ MarkdownStyleSheet _markdownSheet(BuildContext context) {
   );
 }
 
-/// One block of a Markdown file that the rich text cannot edit, drawn as the
-/// preview drew it and selectable, with its links opening on a tap.
+/// A table, a code fence or a picture of a Markdown file, drawn in the rich
+/// text while the caret is not in it. Nothing in it takes a tap: a tap puts
+/// the caret there instead, which shows its source to edit.
 ///
 /// A picture on the host is fetched and drawn, through [_PreviewImages]. A web
 /// one is still never fetched and shows as its alt text: the document comes
@@ -2177,7 +2195,6 @@ class _MarkdownBlock extends StatelessWidget {
   const _MarkdownBlock({
     required this.markdown,
     required this.images,
-    required this.onTapLink,
     required this.styleSheet,
   });
 
@@ -2187,36 +2204,30 @@ class _MarkdownBlock extends StatelessWidget {
   /// the rich text.
   final _PreviewImages images;
 
-  final MarkdownTapLinkCallback onTapLink;
   final MarkdownStyleSheet styleSheet;
 
   @override
-  Widget build(BuildContext context) => SelectionArea(
-    child: SeparatedSelection(
-      child: MarkdownBody(
-        data: markdown,
-        onTapLink: onTapLink,
-        builders: {'code': CodeBlockBuilder()},
-        imageBuilder: (uri, title, alt) {
-          final label = alt == null || alt.isEmpty ? '$uri' : alt;
-          // Anything with a scheme or a host is somebody else's server: see
-          // the class comment.
-          if (uri.hasScheme || uri.hasAuthority) {
-            return _imageAlt(context, label);
-          }
-          return _MarkdownImage(
-            images: images,
-            // Without the query a raw link carries, and with `%20` read back
-            // as the space it stands for: what is left is a path on the host.
-            // Uri.parse escapes a bare `%` on its way in, so this never throws
-            // on one.
-            source: Uri.decodeComponent(uri.path),
-            label: label,
-          );
-        },
-        styleSheet: styleSheet,
-      ),
-    ),
+  Widget build(BuildContext context) => MarkdownBody(
+    data: markdown,
+    builders: {'code': CodeBlockBuilder()},
+    imageBuilder: (uri, title, alt) {
+      final label = alt == null || alt.isEmpty ? '$uri' : alt;
+      // Anything with a scheme or a host is somebody else's server: see
+      // the class comment.
+      if (uri.hasScheme || uri.hasAuthority) {
+        return _imageAlt(context, label);
+      }
+      return _MarkdownImage(
+        images: images,
+        // Without the query a raw link carries, and with `%20` read back
+        // as the space it stands for: what is left is a path on the host.
+        // Uri.parse escapes a bare `%` on its way in, so this never throws
+        // on one.
+        source: Uri.decodeComponent(uri.path),
+        label: label,
+      );
+    },
+    styleSheet: styleSheet,
   );
 }
 

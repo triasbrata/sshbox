@@ -637,20 +637,28 @@ editor_save() {
   return "$status"
 }
 
-# A Markdown file edited in Rich text (.maestro/md_rich_text.yaml), read off
-# the host. A 2x2:
+# A Markdown file edited in Rich text, as one live document
+# (.maestro/md_rich_text.yaml), read off the host. A 2x2:
 #   - opened in Rich text and left alone, the file is byte for byte as it was
 #     and its mtime has not moved: nothing is written for looking;
-#   - " added" typed at the end of the paragraph and saved, the file is the
-#     original with that one line changed, every other line as it was: the
-#     list's two markers, the paragraph's *plain*, the table and the heading.
-# A mutation that writes the whole document afresh on an edit fails the
-# second, since "- second item" or "*plain*" come back in another style.
+#   - the task's box tapped, "paragraph" double-tapped and bolded with B on
+#     the bar over the keyboard, and " added" typed at the end of its line,
+#     then saved: the file is the original with those two lines changed by
+#     those bytes, every other line as it was: the list's `*` and `-`
+#     markers, the paragraph's *plain*, the table and the heading.
+# A mutation that writes the document afresh on an edit fails the second,
+# since "* first item" or "*plain*" come back in another style.
+#
+# A selection across blocks with Shift and the arrows, and Ctrl+B, are the
+# Linux desktop test's: on the emulator Gboard takes the Shift and the Ctrl
+# of `input keycombination` before the app (the editor's Ctrl+S needed
+# MainActivity to take it first), so the phone's own way is driven here.
 md_rich_text() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-rich.md old=1577836800
   local original expected got changed
-  original=$'# Rich e2e\n\n* first item\n- second item\n\nA *plain* paragraph here.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
-  expected=${original/A \*plain\* paragraph here./A *plain* paragraph here. added}
+  original=$'# Rich e2e\n\nA *plain* paragraph here.\n\n- [ ] a task\n\n* first item\n- second item\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+  expected=${original/A \*plain\* paragraph here./A *plain* **paragraph** here. added}
+  expected=${expected/- \[ \] a task/- [x] a task}
   check() {
     local what=$1
     shift
@@ -669,11 +677,15 @@ md_rich_text() {
   check 'opened in Rich text, nothing was written' \
     [ "$(sudo stat -c %Y "$file")" = "$old" ]
 
-  flow md_rich_text -e STEP=focus || return 1
+  # The word first, as the file opened, where it is drawn.
+  flow md_rich_text -e STEP=bold || status=1
+  # The bolded word still selected: to the end of its line, and type.
   adb shell input keyevent KEYCODE_MOVE_END
   sleep 1
   adb shell input text '%sadded'
   sleep 1
+  # The task last, the keyboard put away so the page is as it opened.
+  flow md_rich_text -e STEP=tick || status=1
   flow md_rich_text -e STEP=save || status=1
   sleep 2
   got=$(sudo cat "$file"; echo x)
@@ -681,14 +693,20 @@ md_rich_text() {
   echo "The file on the host after the save:"
   printf '%s' "$got" | sed 's/^/  | /'
   changed=$(diff <(printf '%s' "$original") <(printf '%s' "$got") | grep -c '^>')
-  check 'the save holds the typing' [ "$got" = "$expected" ]
-  check 'one line changed and no other' [ "$changed" = 1 ]
+  check 'the save holds the tick, the bold and the typing' [ "$got" = "$expected" ]
+  check 'two lines changed and no other' [ "$changed" = 2 ]
   check 'the untouched list kept its markers' \
-    sudo grep -qx -- '- second item' "$file"
+    sudo grep -qx -- '\* first item' "$file"
   check 'the untouched emphasis kept its stars' \
-    sudo grep -q -- 'A \*plain\* paragraph' "$file"
+    sudo grep -q -- 'A \*plain\* \*\*paragraph\*\*' "$file"
+  check 'the task was ticked, one character' \
+    sudo grep -qx -- '- \[x\] a task' "$file"
+  check 'the table is as it was' sudo grep -qx -- '|---|---|' "$file"
 
   flow md_rich_text -e STEP=close || status=1
+  # The flow's screenshots, the phone's Rich text, as evidence.
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-text-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   return "$status"
 }
 

@@ -604,6 +604,19 @@ jobs:
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
 
+      # Markdown Rich text, how long a key takes, in profile: a measure for a
+      # person to read, never a gate. flutter test runs debug alone, so this
+      # goes through flutter drive; it prints `perf:` lines.
+      - name: Rich text frame times, in profile
+        timeout-minutes: 15
+        if: always()
+        continue-on-error: true
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x900x24" \
+            flutter drive --profile -d linux \
+              --driver=test_driver/integration_test.dart \
+              --target=integration_test/rich_text_perf_test.dart
+
       # Keychain reads: on Linux nothing is kept, so a reconnect asks the
       # Secret Service again; the macOS job runs the same test where it is
       # kept and a reconnect asks nothing.

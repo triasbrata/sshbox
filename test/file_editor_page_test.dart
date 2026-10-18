@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride, defaultTargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -59,47 +61,46 @@ CodeLineEditingController _editor(WidgetTester tester) => tester
     .widget<CodeEditor>(find.byType(CodeEditor, skipOffstage: false))
     .controller!;
 
-/// The rich text's field for the block that reads [text].
-Finder _richField(String text) => find.byWidgetPredicate(
-  (widget) => widget is TextField && widget.controller?.text == text,
+/// The rich text's one field, which holds the whole file.
+final _richFinder = find.descendant(
+  of: find.byType(MarkdownRichEditor),
+  matching: find.byType(EditableText),
 );
 
-TextEditingController _richController(WidgetTester tester, String text) =>
-    tester.widget<TextField>(_richField(text)).controller!;
+TextEditingController _rich(WidgetTester tester) =>
+    tester.widget<EditableText>(_richFinder).controller;
 
-/// Where the [k]th character of the block reading [text] is on screen.
-Offset _richCharAt(WidgetTester tester, String text, int k) {
-  final editable = tester
-      .state<EditableTextState>(
-        find.descendant(
-          of: _richField(text),
-          matching: find.byType(EditableText),
-        ),
-      )
-      .renderEditable;
+/// Puts the caret at [at] in the rich text, which draws what is around it as
+/// text rather than apart.
+Future<void> _richCaret(WidgetTester tester, int at) async {
+  await tester.showKeyboard(_richFinder);
+  _rich(tester).selection = TextSelection.collapsed(offset: at);
+  await tester.pump();
+}
+
+/// Types [ins] over the selection, or at [at], as a keyboard does.
+Future<void> _richType(WidgetTester tester, String ins, {int? at}) async {
+  if (at != null) await _richCaret(tester, at);
+  final v = _rich(tester).value;
+  final sel = v.selection;
+  tester.testTextInput.updateEditingValue(
+    TextEditingValue(
+      text: v.text.replaceRange(sel.start, sel.end, ins),
+      selection: TextSelection.collapsed(offset: sel.start + ins.length),
+    ),
+  );
+  await tester.pump();
+}
+
+/// Where the [k]th character of the rich text is on screen, once the caret
+/// has made its section text.
+Offset _richCharAt(WidgetTester tester, int k) {
+  final editable = tester.state<EditableTextState>(_richFinder).renderEditable;
   final box = editable
       .getBoxesForSelection(TextSelection(baseOffset: k, extentOffset: k + 1))
       .first
       .toRect();
   return editable.localToGlobal(box.center);
-}
-
-/// Types [ins] at [at] into the block reading [text], as a keyboard does.
-Future<void> _richType(
-  WidgetTester tester,
-  String text,
-  int at,
-  String ins, {
-  bool focus = true,
-}) async {
-  if (focus) await tester.showKeyboard(_richField(text));
-  tester.testTextInput.updateEditingValue(
-    TextEditingValue(
-      text: text.replaceRange(at, at, ins),
-      selection: TextSelection.collapsed(offset: at + ins.length),
-    ),
-  );
-  await tester.pump();
 }
 
 /// Picks [entry] from the ⋮ menu. Not settled after, which would wait out the
@@ -1168,6 +1169,10 @@ void main() {
       await tester.pumpAndSettle();
     }
 
+    /// Text drawn by the Markdown package: a table, a fence, a picture.
+    Finder rendered(Finder finder) =>
+        find.descendant(of: find.byType(MarkdownBody), matching: finder);
+
     testWidgets('only a Markdown file has rich text, and opens in it', (
       tester,
     ) async {
@@ -1179,14 +1184,47 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       await pumpReadme(tester, '# Title\n');
       expect(find.byType(MarkdownRichEditor), findsOneWidget);
-      expect(_richField('Title'), findsOneWidget);
-      // Its own bar, for marks, rather than the source's keys.
+      // One field over the whole file, as it is written.
+      expect(_richFinder, findsOneWidget);
+      expect(_rich(tester).text, '# Title\n');
+      // On a phone, its own bar over the keyboard, rather than the source's
+      // keys.
       expect(find.byType(MarkdownRichBar), findsOneWidget);
       expect(find.byType(EditorKeyBar), findsNothing);
 
       await toggle(tester, 'source');
       expect(find.byType(MarkdownRichEditor), findsNothing);
       expect(find.byType(EditorKeyBar), findsOneWidget);
+    });
+
+    testWidgets('on a desktop the formatting floats over a selection', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      try {
+        await pumpReadme(tester, 'one two three\n');
+        expect(find.byType(MarkdownRichBar), findsNothing);
+        expect(find.byType(EditorKeyBar), findsNothing);
+        await _richCaret(tester, 4);
+        _rich(tester).selection = const TextSelection(
+          baseOffset: 4,
+          extentOffset: 7,
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        expect(find.byType(MarkdownFloatingBar), findsOneWidget);
+        await tester.tap(
+          find.descendant(
+            of: find.byType(MarkdownFloatingBar),
+            matching: find.text('I'),
+          ),
+        );
+        await tester.pump();
+        expect(_editor(tester).text, 'one _two_ three\n');
+        expect(_canSave(tester), isTrue);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
 
     testWidgets('shows what Source changed, and Source keeps its place', (
@@ -1201,9 +1239,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await toggle(tester, 'rich text');
-      expect(_richField('Edited'), findsOneWidget);
-      expect(_richField('second paragraph'), findsOneWidget);
-      expect(_richField('Title'), findsNothing);
+      expect(_rich(tester).text, '# Edited\n\nsecond paragraph\n');
       expect(_canSave(tester), isTrue);
 
       await toggle(tester, 'source');
@@ -1221,16 +1257,11 @@ void main() {
         tester,
         List.generate(200, (i) => 'Paragraph number $i.').join('\n\n'),
       );
-      final list = find
-          .descendant(
-            of: find.byType(MarkdownRichEditor),
-            matching: find.byType(ListView),
-          )
-          .first;
-      double at() => tester.widget<ListView>(list).controller!.offset;
+      double at() =>
+          tester.widget<EditableText>(_richFinder).scrollController!.offset;
       expect(at(), 0);
 
-      await tester.drag(list, const Offset(0, -600));
+      await tester.drag(_richFinder, const Offset(0, -600));
       await tester.pumpAndSettle();
       final left = at();
       expect(left, greaterThan(0));
@@ -1248,30 +1279,30 @@ void main() {
     testWidgets('a link opens with Ctrl and a click or a long press, and a '
         'plain tap only puts the caret there', (tester) async {
       final opened = <Uri>[];
-      const text = 'See the docs or setup.';
-      await pumpReadme(
-        tester,
-        'See [the docs](https://example.com/docs) or [setup](docs/setup.md).\n',
-        onOpenWeb: opened.add,
-      );
-      final docs = _richCharAt(tester, text, text.indexOf('docs'));
-
-      await tester.tapAt(docs);
+      const text =
+          'See [the docs](https://example.com/docs) or [setup](docs/setup.md).\n';
+      await pumpReadme(tester, text, onOpenWeb: opened.add);
+      // The caret at the end, beside neither link, so both read as their
+      // words.
+      await _richCaret(tester, text.length - 1);
+      await tester.tapAt(_richCharAt(tester, text.indexOf('docs]')));
       await tester.pumpAndSettle();
       expect(opened, isEmpty);
-      expect(_richController(tester, text).selection.isCollapsed, isTrue);
+      expect(_rich(tester).selection.isCollapsed, isTrue);
 
+      // The caret in it shows its markup, which moves its words.
+      final docs = _richCharAt(tester, text.indexOf('docs]'));
       await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
       await tester.tapAt(docs);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pumpAndSettle();
       expect(opened, [Uri.parse('https://example.com/docs')]);
 
-      await tester.longPressAt(docs);
+      await tester.longPressAt(_richCharAt(tester, text.indexOf('docs]')));
       await tester.pumpAndSettle();
       expect(opened, hasLength(2));
 
-      await tester.longPressAt(_richCharAt(tester, text, text.indexOf('tup')));
+      await tester.longPressAt(_richCharAt(tester, text.indexOf('tup]')));
       // Not settled, which would wait out the toast.
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -1284,6 +1315,7 @@ void main() {
         findsOneWidget,
       );
       await tester.pumpAndSettle();
+      expect(_editor(tester).text, text);
     });
 
     group('rich text', () {
@@ -1294,6 +1326,7 @@ void main() {
           '\n'
           '* item one\n'
           '* item two\n'
+          '- [ ] a task\n'
           '\n'
           '| t |\n'
           '|---|\n'
@@ -1315,11 +1348,31 @@ void main() {
         ];
       }
 
+      testWidgets('opened and saved untouched, the file is as it was', (
+        tester,
+      ) async {
+        final browser = await pumpReadme(tester, doc);
+        await _richCaret(tester, 3);
+        for (final key in [
+          LogicalKeyboardKey.arrowDown,
+          LogicalKeyboardKey.arrowDown,
+          LogicalKeyboardKey.arrowRight,
+          LogicalKeyboardKey.arrowDown,
+          LogicalKeyboardKey.arrowDown,
+        ]) {
+          await tester.sendKeyEvent(key);
+        }
+        await tester.pumpAndSettle();
+        expect(_canSave(tester), isFalse);
+        expect(_editor(tester).text, doc);
+        expect(browser.contents[readme], doc);
+      });
+
       testWidgets('typing in a paragraph saves that line and nothing else', (
         tester,
       ) async {
         final browser = await pumpReadme(tester, doc);
-        await _richType(tester, 'first paragraph', 5, ' new');
+        await _richType(tester, ' new', at: doc.indexOf('first') + 5);
         expect(_canSave(tester), isTrue);
         expect(find.text('Unsaved changes'), findsOneWidget);
         await save(tester);
@@ -1335,67 +1388,99 @@ void main() {
         tester,
       ) async {
         final browser = await pumpReadme(tester, doc);
-        await _richType(tester, 'Title', 5, '!');
-        await _richType(tester, 'item two', 8, ' more');
+        await _richType(tester, '!', at: doc.indexOf('Title') + 5);
+        await _richType(tester, ' more', at: doc.indexOf('item two') + 9);
         await save(tester);
         final saved = browser.contents[readme]!;
         expect(changed(doc, saved), ['# Title!', '* item two more']);
       });
 
-      testWidgets('bold, italic and code toggle on a selection, in the '
-          "document's delimiters", (tester) async {
-        final browser = await pumpReadme(
-          tester,
-          '__one__\n\nfirst paragraph\n',
-        );
-        Future<void> mark(String label, String text) async {
-          await tester.tap(_richField(text));
+      testWidgets('a task box ticks with a tap and saves one character', (
+        tester,
+      ) async {
+        final browser = await pumpReadme(tester, doc);
+        await tester.tap(find.byType(TuiCheckbox));
+        await tester.pumpAndSettle();
+        expect(_canSave(tester), isTrue);
+        await save(tester);
+        final saved = browser.contents[readme]!;
+        expect(saved, doc.replaceFirst('- [ ] a task', '- [x] a task'));
+        expect(changed(doc, saved), ['- [x] a task']);
+      });
+
+      testWidgets('a table draws rendered, opens as its source with the caret '
+          'in it, and is edited in place', (tester) async {
+        final browser = await pumpReadme(tester, doc);
+        expect(find.byType(Table), findsOneWidget);
+        await _richCaret(tester, doc.indexOf('| x |') + 3);
+        expect(find.byType(Table), findsNothing);
+        await _richType(tester, 'y');
+        await save(tester);
+        expect(changed(doc, browser.contents[readme]!), ['| xy |']);
+      });
+
+      testWidgets('bold, italic and code from the bar go round a selection '
+          'and come off again', (tester) async {
+        final browser = await pumpReadme(tester, 'first paragraph\n');
+        Future<void> mark(String label) async {
+          final c = _rich(tester);
+          final at = c.text.indexOf('first');
+          await _richCaret(tester, at);
+          c.selection = TextSelection(baseOffset: at, extentOffset: at + 5);
           await tester.pump();
-          _richController(tester, text).selection = const TextSelection(
-            baseOffset: 0,
-            extentOffset: 5,
+          await tester.tap(
+            find.descendant(
+              of: find.byType(MarkdownRichBar),
+              matching: find.text(label),
+            ),
           );
-          await tester.pump();
-          await tester.tap(find.text(label));
           await tester.pumpAndSettle();
         }
 
-        await mark('B', 'first paragraph');
-        expect(_editor(tester).text, '__one__\n\n__first__ paragraph\n');
-        await mark('B', 'first paragraph');
-        expect(_editor(tester).text, '__one__\n\nfirst paragraph\n');
-        await mark('I', 'first paragraph');
-        expect(_editor(tester).text, '__one__\n\n_first_ paragraph\n');
-        await mark('I', 'first paragraph');
-        await mark('</>', 'first paragraph');
-        expect(_editor(tester).text, '__one__\n\n`first` paragraph\n');
+        await mark('B');
+        expect(_editor(tester).text, '**first** paragraph\n');
+        await mark('B');
+        expect(_editor(tester).text, 'first paragraph\n');
+        await mark('I');
+        expect(_editor(tester).text, '_first_ paragraph\n');
+        await mark('I');
+        await mark('</>');
+        expect(_editor(tester).text, '`first` paragraph\n');
         await save(tester);
-        expect(browser.contents[readme], '__one__\n\n`first` paragraph\n');
+        expect(browser.contents[readme], '`first` paragraph\n');
       });
 
-      testWidgets('a mark picked with nothing selected is what is typed next', (
-        tester,
-      ) async {
-        await pumpReadme(tester, 'plain\n');
-        await tester.tap(_richField('plain'));
-        await tester.pump();
-        _richController(tester, 'plain').selection =
-            const TextSelection.collapsed(offset: 5);
-        await tester.pump();
-        await tester.tap(find.text('B'));
-        await tester.pump();
-        await _richType(tester, 'plain', 5, ' loud', focus: false);
-        expect(_editor(tester).text, 'plain **loud**\n');
+      testWidgets('H1, H2 and quote from the bar change the line\'s prefix '
+          'alone', (tester) async {
+        await pumpReadme(tester, 'Title\n\nbody\n');
+        Future<void> press(String label) async {
+          await tester.tap(
+            find.descendant(
+              of: find.byType(MarkdownRichBar),
+              matching: find.text(label),
+            ),
+          );
+          await tester.pumpAndSettle();
+        }
+
+        await _richCaret(tester, 2);
+        await press('H2');
+        expect(_editor(tester).text, '## Title\n\nbody\n');
+        await press('H1');
+        expect(_editor(tester).text, '# Title\n\nbody\n');
+        await press('H1');
+        expect(_editor(tester).text, 'Title\n\nbody\n');
+        await _richCaret(tester, 9);
+        await press('❝');
+        expect(_editor(tester).text, 'Title\n\n> body\n');
       });
 
       testWidgets('LINK links the selection, and an empty address takes it '
           'off', (tester) async {
         await pumpReadme(tester, 'first paragraph\n');
-        Future<void> link(String address) async {
-          await tester.tap(_richField('first paragraph'));
-          await tester.pump();
-          _richController(tester, 'first paragraph').selection =
-              const TextSelection(baseOffset: 0, extentOffset: 5);
+        Future<void> link(String address, TextSelection selection) async {
+          await _richCaret(tester, 0);
+          _rich(tester).selection = selection;
           await tester.pump();
           await tester.tap(find.text('LINK'));
           await tester.pumpAndSettle();
@@ -1410,84 +1495,56 @@ void main() {
           await tester.pumpAndSettle();
         }
 
-        await link('https://example.com');
+        await link(
+          'https://example.com',
+          const TextSelection(baseOffset: 0, extentOffset: 5),
+        );
         expect(
           _editor(tester).text,
           '[first](https://example.com) paragraph\n',
         );
-        await link('');
+        await link('', const TextSelection.collapsed(offset: 3));
         expect(_editor(tester).text, 'first paragraph\n');
       });
 
-      testWidgets('Enter makes a new block and Backspace at its start joins '
-          'it back', (tester) async {
-        await pumpReadme(tester, 'one two\n\n- item\n');
-        await _richType(tester, 'one two', 3, '\n');
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, 'one\n\ntwo\n\n- item\n');
-        expect(_richField('one'), findsOneWidget);
-        expect(_richField('two'), findsOneWidget);
-        // The caret went into the new block.
-        final two = tester.widget<TextField>(_richField('two'));
-        expect(two.focusNode!.hasFocus, isTrue);
-        expect(two.controller!.selection.baseOffset, 0);
-
-        await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, 'onetwo\n\n- item\n');
-
-        await _richType(tester, 'item', 4, '\n');
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, 'onetwo\n\n- item\n-\n');
-      });
-
-      testWidgets('arrows at a block’s end go on into the next', (
-        tester,
-      ) async {
-        await pumpReadme(tester, 'one\n\ntwo\n');
-        await tester.tap(_richField('one'));
+      testWidgets('Enter goes on with a list, and Backspace at an item takes '
+          'its marker', (tester) async {
+        await pumpReadme(tester, 'one\n\n- item\n');
+        await _richType(tester, '\n', at: 11);
+        expect(_editor(tester).text, 'one\n\n- item\n- \n');
+        await _richType(tester, 'next');
+        expect(_editor(tester).text, 'one\n\n- item\n- next\n');
+        await _richCaret(tester, 14);
+        tester.testTextInput.updateEditingValue(
+          TextEditingValue(
+            text: 'one\n\n- item\n-next\n',
+            selection: const TextSelection.collapsed(offset: 13),
+          ),
+        );
         await tester.pump();
-        _richController(tester, 'one').selection =
-            const TextSelection.collapsed(offset: 3);
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-        await tester.pumpAndSettle();
-        expect(
-          tester.widget<TextField>(_richField('two')).focusNode!.hasFocus,
-          isTrue,
-        );
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
-        await tester.pumpAndSettle();
-        expect(
-          tester.widget<TextField>(_richField('one')).focusNode!.hasFocus,
-          isTrue,
-        );
+        expect(_editor(tester).text, 'one\n\n- item\nnext\n');
+        // Enter in a paragraph is a line break, as typed.
+        await _richType(tester, '\n', at: 2);
+        expect(_editor(tester).text, 'on\ne\n\n- item\nnext\n');
       });
 
       testWidgets('undo and redo take back typing, from the keys and the bar', (
         tester,
       ) async {
         await pumpReadme(tester, 'first paragraph\n\nsecond\n');
-        final second = tester.widget<TextField>(_richField('second'));
-        await _richType(tester, 'first paragraph', 5, ' a');
-        await _richType(tester, 'first a paragraph', 7, 'b');
+        await _richType(tester, ' a', at: 5);
+        await _richType(tester, 'b');
         expect(_editor(tester).text, 'first ab paragraph\n\nsecond\n');
 
         // One run of typing is one step.
-        final command = defaultTargetPlatform == TargetPlatform.macOS
-            ? LogicalKeyboardKey.metaLeft
-            : LogicalKeyboardKey.controlLeft;
+        const command = LogicalKeyboardKey.controlLeft;
         await tester.sendKeyDownEvent(command);
         await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
         await tester.sendKeyUpEvent(command);
         await tester.pumpAndSettle();
         expect(_editor(tester).text, 'first paragraph\n\nsecond\n');
-        expect(_richField('first paragraph'), findsOneWidget);
+        expect(_rich(tester).text, 'first paragraph\n\nsecond\n');
         expect(_canSave(tester), isFalse);
-        // The block the undo did not touch keeps its field.
-        expect(
-          tester.widget<TextField>(_richField('second')).controller,
-          same(second.controller),
-        );
 
         await tester.sendKeyDownEvent(command);
         await tester.sendKeyEvent(LogicalKeyboardKey.keyY);
@@ -1496,216 +1553,39 @@ void main() {
         expect(_editor(tester).text, 'first ab paragraph\n\nsecond\n');
         await tester.tap(find.byTooltip('Undo'));
         await tester.pumpAndSettle();
+        expect(_rich(tester).text, 'first paragraph\n\nsecond\n');
         await tester.tap(find.byTooltip('Redo'));
         await tester.pumpAndSettle();
-        expect(_editor(tester).text, 'first ab paragraph\n\nsecond\n');
-        expect(_richField('first ab paragraph'), findsOneWidget);
-        await tester.tap(find.byTooltip('Undo'));
-        await tester.pumpAndSettle();
-        expect(_richField('first paragraph'), findsOneWidget);
-      });
-
-      testWidgets('typing Markdown cannot hold is refused and says so', (
-        tester,
-      ) async {
-        await pumpReadme(tester, 'para\n');
-        await _richType(tester, 'para', 0, ' ');
-        expect(_editor(tester).text, 'para\n');
-        expect(
-          find.descendant(
-            of: find.byType(TuiToastCard),
-            matching: find.textContaining("can't be written there"),
-          ),
-          findsOneWidget,
-        );
-        await tester.pumpAndSettle();
-      });
-
-      testWidgets('pasted paragraphs fold into lines, and in a heading into '
-          'spaces', (tester) async {
-        await pumpReadme(tester, '# Title\n\npara\n');
-        await _richType(tester, 'para', 4, '\n\nmore\n\n\nlines');
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, '# Title\n\npara\nmore\nlines\n');
-        expect(_richField('para\nmore\nlines'), findsOneWidget);
-        await _richType(tester, 'Title', 5, ' a\nb');
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, '# Title a b\n\npara\nmore\nlines\n');
-      });
-
-      testWidgets('what is typed after inline code is plain', (tester) async {
-        await pumpReadme(tester, 'run `make` now\n');
-        await _richType(tester, 'run make now', 8, 'x');
-        expect(_editor(tester).text, 'run `make`x now\n');
-      });
-
-      testWidgets('LINK in a link edits all of it, and outside one asks for a '
-          'selection', (tester) async {
-        await pumpReadme(tester, '[docs](https://a.example) here\n');
-        Future<void> caret(int at) async {
-          await tester.tap(_richField('docs here'));
-          await tester.pump();
-          _richController(tester, 'docs here').selection =
-              TextSelection.collapsed(offset: at);
-          await tester.pump();
-          await tester.tap(find.text('LINK'));
-          // Not settled, which would wait out a toast.
-          await tester.pump();
-          await tester.pump(const Duration(milliseconds: 400));
-        }
-
-        await caret(2);
-        final address = find.descendant(
-          of: find.byType(TuiDialog),
-          matching: find.byType(TextField),
-        );
-        expect(
-          tester.widget<TextField>(address).controller!.text,
-          'https://a.example',
-        );
-        await tester.enterText(address, 'https://b.example');
-        await tester.tap(find.bySemanticsLabel('Apply'));
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, '[docs](https://b.example) here\n');
-
-        await caret(7);
-        expect(find.byType(TuiDialog), findsNothing);
-        expect(
-          find.descendant(
-            of: find.byType(TuiToastCard),
-            matching: find.text('Select the text to link first.'),
-          ),
-          findsOneWidget,
-        );
-        await tester.pumpAndSettle();
-      });
-
-      testWidgets('the command key marks bold, and code across a line break '
-          'is refused', (tester) async {
-        await pumpReadme(tester, 'para\n\na\nb\n');
-        final command = defaultTargetPlatform == TargetPlatform.macOS
-            ? LogicalKeyboardKey.metaLeft
-            : LogicalKeyboardKey.controlLeft;
-        await tester.tap(_richField('para'));
-        await tester.pump();
-        _richController(tester, 'para').selection = const TextSelection(
-          baseOffset: 0,
-          extentOffset: 4,
-        );
-        await tester.sendKeyDownEvent(command);
-        await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
-        await tester.sendKeyUpEvent(command);
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, '**para**\n\na\nb\n');
-
-        await tester.tap(_richField('a\nb'));
-        await tester.pump();
-        _richController(tester, 'a\nb').selection = const TextSelection(
-          baseOffset: 0,
-          extentOffset: 3,
-        );
-        await tester.pump();
-        await tester.tap(find.text('</>'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 600));
-        expect(_editor(tester).text, '**para**\n\na\nb\n');
-        expect(
-          find.descendant(
-            of: find.byType(TuiToastCard),
-            matching: find.textContaining("can't be written there"),
-          ),
-          findsOneWidget,
-        );
-        await tester.pumpAndSettle();
-      });
-
-      testWidgets('every heading level is typed into at its size, and front '
-          'matter and a nested list are shown as they are', (tester) async {
-        await pumpReadme(
-          tester,
-          '---\nx: 1\n---\n\n## h2\n\n### h3\n\n#### h4\n\n##### h5\n\n'
-          '###### h6\n\n- a\n  - nested\n',
-        );
-        for (final level in [2, 3, 4, 5, 6]) {
-          expect(_richField('h$level'), findsOneWidget);
-        }
-        expect(find.text('---\nx: 1\n---'), findsOneWidget);
-        expect(
-          find.byTooltip('Read-only here: edit this nested list in Source'),
-          findsOneWidget,
-        );
-      });
-
-      testWidgets('an emptied block after a table goes with Backspace, and '
-          'Right at a block’s end goes on to the next', (tester) async {
-        await pumpReadme(tester, '| t |\n|---|\n\none\n\ntwo\n');
-        await tester.tap(_richField('one'));
-        await tester.pump();
-        _richController(tester, 'one').selection =
-            const TextSelection.collapsed(offset: 3);
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-        await tester.pumpAndSettle();
-        expect(
-          tester.widget<TextField>(_richField('two')).focusNode!.hasFocus,
-          isTrue,
-        );
-
-        await tester.showKeyboard(_richField('one'));
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '',
-            selection: TextSelection.collapsed(offset: 0),
-          ),
-        );
-        await tester.pump();
-        expect(_editor(tester).text, '| t |\n|---|\n\n\ntwo\n');
-        await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
-        await tester.pumpAndSettle();
-        expect(_editor(tester).text, '| t |\n|---|\n\ntwo\n');
+        expect(_rich(tester).text, 'first ab paragraph\n\nsecond\n');
       });
 
       testWidgets('text an input method is still composing is underlined', (
         tester,
       ) async {
-        await pumpReadme(tester, 'para\n');
-        await tester.showKeyboard(_richField('para'));
+        await pumpReadme(tester, '**bold**\n');
+        await _richCaret(tester, 8);
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
-            text: 'parako',
-            selection: TextSelection.collapsed(offset: 6),
-            composing: TextRange(start: 4, end: 6),
+            text: '**bold**かな\n',
+            selection: TextSelection.collapsed(offset: 10),
+            composing: TextRange(start: 8, end: 10),
           ),
         );
         await tester.pump();
-        expect(_editor(tester).text, 'parako\n');
-        final span =
-            tester
-                    .state<EditableTextState>(
-                      find.descendant(
-                        of: _richField('parako'),
-                        matching: find.byType(EditableText),
-                      ),
-                    )
-                    .renderEditable
-                    .text!
-                as TextSpan;
-        final composing = span.children!.cast<TextSpan>().last;
-        expect(composing.text, 'ko');
-        expect(composing.style!.decoration, TextDecoration.underline);
-      });
-
-      testWidgets('a block it cannot edit is drawn, locked, and its lock '
-          'opens Source at it', (tester) async {
-        await pumpReadme(tester, doc);
-        expect(find.byType(Table), findsOneWidget);
-        final lock = find.byTooltip(
-          'Read-only here: edit this table in Source',
+        final span = _rich(tester).buildTextSpan(
+          context: tester.element(_richFinder),
+          withComposing: true,
         );
-        expect(lock, findsOneWidget);
-        await tester.tap(lock);
-        await tester.pumpAndSettle();
-        expect(find.byType(MarkdownRichEditor), findsNothing);
-        expect(_editor(tester).selection.baseIndex, 7);
+        final underlined = <String>[];
+        span.visitChildren((s) {
+          if (s is TextSpan &&
+              s.style?.decoration == TextDecoration.underline) {
+            underlined.add(s.text!);
+          }
+          return true;
+        });
+        expect(underlined.join(), 'かな');
+        expect(_editor(tester).text, '**bold**かな\n');
       });
     });
 
@@ -1747,10 +1627,10 @@ echo hello
         tester.widget<Text>(code).textSpan!.style!.fontFamily,
         'JetBrains Mono',
       );
-      expect(find.byIcon(Icons.check_box), findsOneWidget);
-      expect(find.byIcon(Icons.check_box_outline_blank), findsOneWidget);
+      final boxes = tester.widgetList<TuiCheckbox>(find.byType(TuiCheckbox));
+      expect(boxes.map((b) => b.value), [true, false]);
       // Nothing on the host by that name, so the alt text stands in for it.
-      expect(find.textContaining('the logo'), findsOneWidget);
+      expect(rendered(find.textContaining('the logo')), findsOneWidget);
       expect(find.byType(Image), findsNothing);
     });
 
@@ -1764,7 +1644,7 @@ echo hello
       expect(find.byType(Image), findsOneWidget);
       expect(browser.downloads.single.from, '/home/me/img/logo.png');
       // The picture itself, not the words that stand in for one.
-      expect(find.textContaining('the logo'), findsNothing);
+      expect(rendered(find.textContaining('the logo')), findsNothing);
     });
 
     testWidgets('a web picture is never fetched, and one that will not open '
@@ -1781,12 +1661,17 @@ echo hello
       // Only the host path was asked for: nothing told the web anything.
       expect(browser.downloads.single.from, '/home/me/img/gone.png');
       expect(find.byType(Image), findsNothing);
-      expect(find.textContaining('a badge'), findsOneWidget);
+      expect(rendered(find.textContaining('a badge')), findsOneWidget);
       expect(
-        find.textContaining('a drawing — not a picture this app can draw'),
+        rendered(
+          find.textContaining('a drawing — not a picture this app can draw'),
+        ),
         findsOneWidget,
       );
-      expect(find.textContaining('gone — Could not open'), findsOneWidget);
+      expect(
+        rendered(find.textContaining('gone — Could not open')),
+        findsOneWidget,
+      );
     });
 
     testWidgets('a path is read as a shell would read it', (tester) async {
@@ -1843,13 +1728,17 @@ echo hello
       await tester.pumpAndSettle();
 
       expect(
-        find.textContaining('huge — 21.0 MB is too large to show here'),
+        rendered(
+          find.textContaining('huge — 21.0 MB is too large to show here'),
+        ),
         findsOneWidget,
       );
       // Four at 15 MB fit the 64 MB the document gets; the fifth does not.
       expect(find.byType(Image), findsNWidgets(4));
       expect(
-        find.textContaining('five — the preview has already fetched 64.0 MB'),
+        rendered(
+          find.textContaining('five — the preview has already fetched 64.0 MB'),
+        ),
         findsOneWidget,
       );
     });
@@ -1891,9 +1780,8 @@ Run `make` first.
           tester.widget<MermaidView>(find.byType(MermaidView)).source,
           'flowchart LR\n  A --> B\n',
         );
-        expect(find.textContaining('A --> B'), findsNothing);
+        expect(rendered(find.textContaining('A --> B')), findsNothing);
         expect(find.text('echo hello'), findsOneWidget);
-        expect(find.textContaining('make first'), findsOneWidget);
 
         await toggle(tester, 'source');
         expect(find.byType(MermaidView), findsNothing);
@@ -1969,11 +1857,34 @@ After it.
       expect(find.widgetWithText(TextField, 'Find'), findsOneWidget);
     });
 
-    testWidgets('shows only the start of a very long file', (tester) async {
-      await pumpReadme(tester, 'word ' * 30000);
-      expect(find.textContaining('Only the first 100 KB'), findsOneWidget);
-      // The block past the cut is not drawn, so it cannot be typed into.
-      expect(find.byType(TextField), findsNothing);
+    testWidgets('a file past Rich text\'s limit opens in Source and says why', (
+      tester,
+    ) async {
+      final big = 'word ' * (MarkdownRichEditor.limit ~/ 5 + 1);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FileEditorPage(
+            browser: FakeFileBrowser()..contents[readme] = big,
+            path: readme,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(find.byType(MarkdownRichEditor), findsNothing);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(TuiToastCard),
+          matching: find.textContaining('Too large for Rich text'),
+        ),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+      // Asked for again, it stays in Source.
+      await toggle(tester, 'rich text');
+      expect(find.byType(MarkdownRichEditor), findsNothing);
+      await tester.pumpAndSettle();
     });
   });
 
