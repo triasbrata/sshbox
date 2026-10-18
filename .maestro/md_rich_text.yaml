@@ -71,11 +71,11 @@ env:
       # The box by where it is drawn: the field gives a screen reader its
       # text as one node, so the box has no node of its own to find. With
       # the keyboard down, the short page is back at its top, as it opened:
-      # the third line, at the left of the 320x640 CI emulator's page.
+      # the fifth line, at the left of the 320x640 CI emulator's page.
       - hideKeyboard
       - waitForAnimationToEnd
       - tapOn:
-          point: "8%,40%"
+          point: "8%,45%"
       - waitForAnimationToEnd
 
 - runFlow:
@@ -83,9 +83,11 @@ env:
       true: ${STEP == 'bold'}
     commands:
       # "paragraph", as a phone selects a word, then B on the bar over the
-      # keyboard. By where it is drawn, for the same reason as the box.
+      # keyboard. By where it is drawn, for the same reason as the box: the
+      # third line, high enough that the keyboard coming up with the first
+      # tap scrolls nothing before the second.
       - doubleTapOn:
-          point: "40%,54%"
+          point: "40%,39%"
       - waitForAnimationToEnd
       # The keyboard away first: its own b key is a "B" to Maestro too.
       - hideKeyboard
