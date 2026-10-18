@@ -637,20 +637,26 @@ editor_save() {
   return "$status"
 }
 
-# A Markdown file edited in Rich text (.maestro/md_rich_text.yaml), read off
-# the host. A 2x2:
+# A Markdown file edited in Rich text, as one live document
+# (.maestro/md_rich_text.yaml), read off the host. A 2x2:
 #   - opened in Rich text and left alone, the file is byte for byte as it was
 #     and its mtime has not moved: nothing is written for looking;
-#   - " added" typed at the end of the paragraph and saved, the file is the
-#     original with that one line changed, every other line as it was: the
-#     list's two markers, the paragraph's *plain*, the table and the heading.
-# A mutation that writes the whole document afresh on an edit fails the
-# second, since "- second item" or "*plain*" come back in another style.
+#   - " added" typed at the end of the paragraph, a selection run with Shift
+#     and the arrows from the first list item down across the paragraph and
+#     bolded with Ctrl+B, and the task's box tapped, then saved: the file is
+#     the original with those four lines changed by those bytes, every other
+#     line as it was: the list's `*` and `-` markers, the paragraph's
+#     *plain*, the table and the heading.
+# A mutation that writes the document afresh on an edit fails the second,
+# since "* first item" or "*plain*" come back in another style.
 md_rich_text() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-rich.md old=1577836800
-  local original expected got changed
-  original=$'# Rich e2e\n\n* first item\n- second item\n\nA *plain* paragraph here.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
-  expected=${original/A \*plain\* paragraph here./A *plain* paragraph here. added}
+  local original expected got changed i
+  original=$'# Rich e2e\n\n* first item\n- second item\n\nA *plain* paragraph here.\n\n- [ ] a task\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+  expected=${original/A \*plain\* paragraph here./**A *plain* paragraph here. added**}
+  expected=${expected/\* first item/* **first item**}
+  expected=${expected/- second item/- **second item**}
+  expected=${expected/- \[ \] a task/- [x] a task}
   check() {
     local what=$1
     shift
@@ -658,6 +664,11 @@ md_rich_text() {
       echo "::error::md_rich_text: $what"
       status=1
     fi
+  }
+  key() { adb shell input keyevent "$@"; }
+  combo() { adb shell input keycombination "$@"; }
+  top() {
+    for i in $(seq 20); do key KEYCODE_DPAD_UP; done
   }
   printf '%s' "$original" | sudo -u "$SSH_USER" tee "$file" >/dev/null
   sudo touch -d "@$old" "$file"
@@ -670,10 +681,25 @@ md_rich_text() {
     [ "$(sudo stat -c %Y "$file")" = "$old" ]
 
   flow md_rich_text -e STEP=focus || return 1
-  adb shell input keyevent KEYCODE_MOVE_END
+  # The caret to the top, then down to the paragraph's line and its end:
+  # one document, so the arrows go from block to block.
+  top
+  for i in 1 2 3 4 5; do key KEYCODE_DPAD_DOWN; done
+  key KEYCODE_MOVE_END
   sleep 1
   adb shell input text '%sadded'
   sleep 1
+  # From the first item's start down across the blank line to the end of
+  # the paragraph, then Ctrl+B: one selection over three blocks.
+  top
+  key KEYCODE_DPAD_DOWN
+  key KEYCODE_DPAD_DOWN
+  for i in 1 2 3; do combo KEYCODE_SHIFT_LEFT KEYCODE_DPAD_DOWN; done
+  combo KEYCODE_SHIFT_LEFT KEYCODE_MOVE_END
+  sleep 1
+  combo KEYCODE_CTRL_LEFT KEYCODE_B
+  sleep 1
+  flow md_rich_text -e STEP=tick || status=1
   flow md_rich_text -e STEP=save || status=1
   sleep 2
   got=$(sudo cat "$file"; echo x)
@@ -681,12 +707,15 @@ md_rich_text() {
   echo "The file on the host after the save:"
   printf '%s' "$got" | sed 's/^/  | /'
   changed=$(diff <(printf '%s' "$original") <(printf '%s' "$got") | grep -c '^>')
-  check 'the save holds the typing' [ "$got" = "$expected" ]
-  check 'one line changed and no other' [ "$changed" = 1 ]
-  check 'the untouched list kept its markers' \
-    sudo grep -qx -- '- second item' "$file"
+  check 'the save holds the typing, the bold and the tick' [ "$got" = "$expected" ]
+  check 'four lines changed and no other' [ "$changed" = 4 ]
+  check 'the bold went round each block, markers kept' \
+    sudo grep -qx -- '\* \*\*first item\*\*' "$file"
   check 'the untouched emphasis kept its stars' \
     sudo grep -q -- 'A \*plain\* paragraph' "$file"
+  check 'the task was ticked, one character' \
+    sudo grep -qx -- '- \[x\] a task' "$file"
+  check 'the table is as it was' sudo grep -qx -- '|---|---|' "$file"
 
   flow md_rich_text -e STEP=close || status=1
   return "$status"

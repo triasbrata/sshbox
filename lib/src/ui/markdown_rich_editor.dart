@@ -916,11 +916,15 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         onPointerUp: (_) => _toggleTask(at?.call() ?? swap.range.start),
         child: Padding(
           padding: const EdgeInsets.only(right: 2),
-          child: IgnorePointer(
-            child: TuiCheckbox(
-              value: swap.checked,
-              dense: true,
-              onChanged: (_) {},
+          // Named, for a screen reader and for the e2e flow that ticks it.
+          child: Semantics(
+            label: 'task box',
+            child: IgnorePointer(
+              child: TuiCheckbox(
+                value: swap.checked,
+                dense: true,
+                onChanged: (_) {},
+              ),
             ),
           ),
         ),
@@ -1434,7 +1438,6 @@ TextEditingValue toggleHeading(TextEditingValue value, MdLive live, int level) {
     (l) => l.kind == MdLineKind.heading && l.level == level,
   );
   var out = t;
-  var shift = 0;
   var caret = sel.extentOffset;
   for (final l in lines.reversed) {
     final from = l.quote?.end ?? l.start;
@@ -1444,13 +1447,13 @@ TextEditingValue toggleHeading(TextEditingValue value, MdLive live, int level) {
     final prefix = off ? '' : '${'#' * level} ';
     out = out.replaceRange(from, to, prefix);
     final d = prefix.length - (to - from);
-    if (from <= caret)
+    if (from <= caret) {
       caret = (caret + d).clamp(from + prefix.length, out.length);
-    shift += d;
+    }
   }
   return TextEditingValue(
     text: out,
-    selection: TextSelection.collapsed(offset: shift == 0 ? caret : caret),
+    selection: TextSelection.collapsed(offset: caret),
   );
 }
 

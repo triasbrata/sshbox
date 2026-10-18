@@ -1,14 +1,15 @@
-# A Markdown file edited as it reads (Rich text): tools/e2e_android.sh's
+# A Markdown file edited as one live document (Rich text): tools/e2e_android.sh's
 # md_rich_text puts jeansh-e2e-rich.md in the login home, sends the keys with
 # adb between this flow's steps and reads the file on the host, which holds
-# the proof: only the paragraph typed into changed, every other byte as it
-# was ("* first item" and "- second item" keep their markers, "*plain*" its
-# stars, the table its pipes).
+# the proof: only the bytes typed, bolded and ticked changed, every other byte
+# as it was ("* first item" and "- second item" keep their markers, "*plain*"
+# its stars, the table its pipes).
 #
 # STEP comes from -e alone (see chat_images.yaml):
 #   open   the file opened from the drawer, in Rich text, nothing to save
-#   focus  the paragraph tapped, for the caret and the keyboard
-#   save   typed into, Unsaved changes, then Save to host and nothing unsaved
+#   focus  the text tapped, for the caret and the keyboard
+#   tick   the task's box tapped
+#   save   Unsaved changes, then Save to host and nothing unsaved
 #   close  the file tab closed
 appId: cloud.brata.terminal
 env:
@@ -43,12 +44,11 @@ env:
       - extendedWaitUntil:
           visible: "Save to host"
           timeout: 20000
-      # Opened in Rich text: the paragraph is drawn without its stars, and the
-      # table as a table, behind its lock.
+      # Opened in Rich text: one document, the task drawn as a box to tick.
       - extendedWaitUntil:
-          visible: "(?s).*A plain paragraph here\\..*"
+          visible: "(?s).*paragraph here\\..*"
           timeout: 10000
-      - assertVisible: "Read-only here: edit this table in Source"
+      - assertVisible: "task box"
       # Opened, not edited: nothing to save.
       - assertVisible:
           text: "Save to host"
@@ -60,7 +60,14 @@ env:
     when:
       true: ${STEP == 'focus'}
     commands:
-      - tapOn: "(?s).*A plain paragraph here\\..*"
+      - tapOn: "(?s).*paragraph here\\..*"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'tick'}
+    commands:
+      - tapOn: "task box"
       - waitForAnimationToEnd
 
 - runFlow:
@@ -70,10 +77,7 @@ env:
       - extendedWaitUntil:
           visible: "(?s).*Unsaved changes.*"
           timeout: 5000
-      - extendedWaitUntil:
-          visible: "(?s).*A plain paragraph here\\. added.*"
-          timeout: 5000
-      - takeScreenshot: md-rich-text-typed
+      - takeScreenshot: md-rich-text-edited
       - tapOn: "Save to host"
       - extendedWaitUntil:
           notVisible: "(?s).*Unsaved changes.*"
