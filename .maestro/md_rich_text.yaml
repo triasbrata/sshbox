@@ -9,6 +9,7 @@
 #   open   the file opened from the drawer, in Rich text, nothing to save
 #   focus  the text tapped, for the caret and the keyboard
 #   tick   the task's box tapped
+#   bold   a word double-tapped and B on the bar
 #   save   Unsaved changes, then Save to host and nothing unsaved
 #   close  the file tab closed
 appId: cloud.brata.terminal
@@ -73,6 +74,18 @@ env:
       # line, at the left of the 320x640 CI emulator's page.
       - tapOn:
           point: "8%,55%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'bold'}
+    commands:
+      # "paragraph", as a phone selects a word, then B on the bar over the
+      # keyboard. By where it is drawn, for the same reason as the box.
+      - doubleTapOn:
+          point: "40%,50%"
+      - waitForAnimationToEnd
+      - tapOn: "B"
       - waitForAnimationToEnd
 
 - runFlow:

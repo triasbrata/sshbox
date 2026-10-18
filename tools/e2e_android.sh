@@ -641,21 +641,23 @@ editor_save() {
 # (.maestro/md_rich_text.yaml), read off the host. A 2x2:
 #   - opened in Rich text and left alone, the file is byte for byte as it was
 #     and its mtime has not moved: nothing is written for looking;
-#   - " added" typed at the end of the paragraph, a selection run with Shift
-#     and the arrows from the first list item down across the paragraph and
-#     bolded with Ctrl+B, and the task's box tapped, then saved: the file is
-#     the original with those four lines changed by those bytes, every other
-#     line as it was: the list's `*` and `-` markers, the paragraph's
-#     *plain*, the table and the heading.
+#   - the task's box tapped, "paragraph" double-tapped and bolded with B on
+#     the bar over the keyboard, and " added" typed at the end of its line,
+#     then saved: the file is the original with those two lines changed by
+#     those bytes, every other line as it was: the list's `*` and `-`
+#     markers, the paragraph's *plain*, the table and the heading.
 # A mutation that writes the document afresh on an edit fails the second,
 # since "* first item" or "*plain*" come back in another style.
+#
+# A selection across blocks with Shift and the arrows, and Ctrl+B, are the
+# Linux desktop test's: on the emulator Gboard takes the Shift and the Ctrl
+# of `input keycombination` before the app (the editor's Ctrl+S needed
+# MainActivity to take it first), so the phone's own way is driven here.
 md_rich_text() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-rich.md old=1577836800
-  local original expected got changed i
+  local original expected got changed
   original=$'# Rich e2e\n\n* first item\n- second item\n\nA *plain* paragraph here.\n\n- [ ] a task\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
-  expected=${original/A \*plain\* paragraph here./**A *plain* paragraph here. added**}
-  expected=${expected/\* first item/* **first item**}
-  expected=${expected/- second item/- **second item**}
+  expected=${original/A \*plain\* paragraph here./A *plain* **paragraph** here. added}
   expected=${expected/- \[ \] a task/- [x] a task}
   check() {
     local what=$1
@@ -664,11 +666,6 @@ md_rich_text() {
       echo "::error::md_rich_text: $what"
       status=1
     fi
-  }
-  key() { adb shell input keyevent "$@"; }
-  combo() { adb shell input keycombination "$@"; }
-  top() {
-    for i in $(seq 20); do key KEYCODE_DPAD_UP; done
   }
   printf '%s' "$original" | sudo -u "$SSH_USER" tee "$file" >/dev/null
   sudo touch -d "@$old" "$file"
@@ -680,28 +677,13 @@ md_rich_text() {
   check 'opened in Rich text, nothing was written' \
     [ "$(sudo stat -c %Y "$file")" = "$old" ]
 
-  # The task first, as the file opened, where its box is drawn.
+  # The task and the word first, as the file opened, where they are drawn.
   flow md_rich_text -e STEP=tick || status=1
-  flow md_rich_text -e STEP=focus || return 1
-  # The caret to the top, then down to the paragraph's line and its end:
-  # one document, so the arrows go from block to block.
-  top
-  for i in 1 2 3 4 5; do key KEYCODE_DPAD_DOWN; done
-  key KEYCODE_MOVE_END
+  flow md_rich_text -e STEP=bold || status=1
+  # The bolded word still selected: to the end of its line, and type.
+  adb shell input keyevent KEYCODE_MOVE_END
   sleep 1
   adb shell input text '%sadded'
-  sleep 1
-  # From the first item's start down across the blank line to the end of
-  # the paragraph, then Ctrl+B: one selection over three blocks.
-  top
-  key KEYCODE_DPAD_DOWN
-  key KEYCODE_DPAD_DOWN
-  # Four: to the paragraph's line or the blank line after it, which bold
-  # alike, a blank line holding nothing to mark; never as far as the task.
-  for i in 1 2 3 4; do combo KEYCODE_SHIFT_LEFT KEYCODE_DPAD_DOWN; done
-  combo KEYCODE_SHIFT_LEFT KEYCODE_MOVE_END
-  sleep 1
-  combo KEYCODE_CTRL_LEFT KEYCODE_B
   sleep 1
   flow md_rich_text -e STEP=save || status=1
   sleep 2
@@ -710,12 +692,12 @@ md_rich_text() {
   echo "The file on the host after the save:"
   printf '%s' "$got" | sed 's/^/  | /'
   changed=$(diff <(printf '%s' "$original") <(printf '%s' "$got") | grep -c '^>')
-  check 'the save holds the typing, the bold and the tick' [ "$got" = "$expected" ]
-  check 'four lines changed and no other' [ "$changed" = 4 ]
-  check 'the bold went round each block, markers kept' \
-    sudo grep -qx -- '\* \*\*first item\*\*' "$file"
+  check 'the save holds the tick, the bold and the typing' [ "$got" = "$expected" ]
+  check 'two lines changed and no other' [ "$changed" = 2 ]
+  check 'the untouched list kept its markers' \
+    sudo grep -qx -- '\* first item' "$file"
   check 'the untouched emphasis kept its stars' \
-    sudo grep -q -- 'A \*plain\* paragraph' "$file"
+    sudo grep -q -- 'A \*plain\* \*\*paragraph\*\*' "$file"
   check 'the task was ticked, one character' \
     sudo grep -qx -- '- \[x\] a task' "$file"
   check 'the table is as it was' sudo grep -qx -- '|---|---|' "$file"

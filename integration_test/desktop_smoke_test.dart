@@ -9234,9 +9234,12 @@ touch '${done.path}'
 
       // From the first item's start down to the paragraph's end, with Shift
       // and the arrows, across a list and a blank line: one selection.
-      await k.press('ctrl+Home', 'key code 126 using command down');
-      await k.press('Down', 'key code 125');
-      await k.press('Down', 'key code 125');
+      // The caret put at the first item's start, where a click would put
+      // it; the selection from there is the keys'.
+      rich().selection = TextSelection.collapsed(
+        offset: typed.indexOf('* first item'),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
       // Down a line a press, to the paragraph's line: as many as that takes,
       // a blank line between blocks being a line of its own.
       final para = typed.indexOf('A *plain*');
