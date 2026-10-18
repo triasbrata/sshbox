@@ -656,7 +656,7 @@ editor_save() {
 md_rich_text() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-rich.md old=1577836800
   local original expected got changed
-  original=$'# Rich e2e\n\n- [ ] a task\n\n* first item\n- second item\n\nA *plain* paragraph here.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+  original=$'# Rich e2e\n\nA *plain* paragraph here.\n\n- [ ] a task\n\n* first item\n- second item\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
   expected=${original/A \*plain\* paragraph here./A *plain* **paragraph** here. added}
   expected=${expected/- \[ \] a task/- [x] a task}
   check() {
