@@ -936,15 +936,11 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         onPointerUp: (_) => _toggleTask(at?.call() ?? swap.range.start),
         child: Padding(
           padding: const EdgeInsets.only(right: 2),
-          // Named, for a screen reader and for the e2e flow that ticks it.
-          child: Semantics(
-            label: 'task box',
-            child: IgnorePointer(
-              child: TuiCheckbox(
-                value: swap.checked,
-                dense: true,
-                onChanged: (_) {},
-              ),
+          child: IgnorePointer(
+            child: TuiCheckbox(
+              value: swap.checked,
+              dense: true,
+              onChanged: (_) {},
             ),
           ),
         ),

@@ -65,6 +65,7 @@ import 'package:sshbox/src/ui/markdown_rich_editor.dart'
 import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart'
     show TuiChatBubble, TuiChatSessionList;
+import 'package:sshbox/src/ui/termul/tui_checkbox.dart' show TuiCheckbox;
 import 'package:sshbox/src/ui/termul/tui_toast.dart' show TuiToastCard;
 import 'package:sshbox/src/ui/termul/tui_code_editor.dart' show TuiFindBar;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
@@ -9277,7 +9278,7 @@ touch '${done.path}'
         'Ctrl+B to bold each block of the selection',
       );
 
-      await tester.tap(find.bySemanticsLabel('task box'));
+      await tester.tap(find.byType(TuiCheckbox));
       await _until(
         tester,
         () => k.text() == expected,
