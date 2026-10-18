@@ -677,14 +677,15 @@ md_rich_text() {
   check 'opened in Rich text, nothing was written' \
     [ "$(sudo stat -c %Y "$file")" = "$old" ]
 
-  # The task and the word first, as the file opened, where they are drawn.
-  flow md_rich_text -e STEP=tick || status=1
+  # The word first, as the file opened, where it is drawn.
   flow md_rich_text -e STEP=bold || status=1
   # The bolded word still selected: to the end of its line, and type.
   adb shell input keyevent KEYCODE_MOVE_END
   sleep 1
   adb shell input text '%sadded'
   sleep 1
+  # The task last, the keyboard put away so the page is as it opened.
+  flow md_rich_text -e STEP=tick || status=1
   flow md_rich_text -e STEP=save || status=1
   sleep 2
   got=$(sudo cat "$file"; echo x)

@@ -69,9 +69,11 @@ env:
       true: ${STEP == 'tick'}
     commands:
       # The box by where it is drawn: the field gives a screen reader its
-      # text as one node, so the box has no node of its own to find. Tapped
-      # as the file opened, before anything typed can move it: the third
-      # line, at the left of the 320x640 CI emulator's page.
+      # text as one node, so the box has no node of its own to find. With
+      # the keyboard down, the short page is back at its top, as it opened:
+      # the third line, at the left of the 320x640 CI emulator's page.
+      - hideKeyboard
+      - waitForAnimationToEnd
       - tapOn:
           point: "8%,40%"
       - waitForAnimationToEnd
@@ -83,7 +85,7 @@ env:
       # "paragraph", as a phone selects a word, then B on the bar over the
       # keyboard. By where it is drawn, for the same reason as the box.
       - doubleTapOn:
-          point: "40%,55%"
+          point: "40%,54%"
       - waitForAnimationToEnd
       - tapOn: "B"
       - waitForAnimationToEnd
