@@ -48,7 +48,7 @@ env:
       - extendedWaitUntil:
           visible: "(?s).*paragraph here\\..*"
           timeout: 10000
-      - assertVisible: "task box"
+      - assertVisible: "(?s).*a task.*"
       # Opened, not edited: nothing to save.
       - assertVisible:
           text: "Save to host"
@@ -67,7 +67,12 @@ env:
     when:
       true: ${STEP == 'tick'}
     commands:
-      - tapOn: "task box"
+      # The box by where it is drawn: the field gives a screen reader its
+      # text as one node, so the box has no node of its own to find. Tapped
+      # as the file opened, before anything typed can move it: the fifth
+      # line, at the left of the 320x640 CI emulator's page.
+      - tapOn:
+          point: "8%,55%"
       - waitForAnimationToEnd
 
 - runFlow:

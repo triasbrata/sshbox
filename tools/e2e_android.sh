@@ -680,6 +680,8 @@ md_rich_text() {
   check 'opened in Rich text, nothing was written' \
     [ "$(sudo stat -c %Y "$file")" = "$old" ]
 
+  # The task first, as the file opened, where its box is drawn.
+  flow md_rich_text -e STEP=tick || status=1
   flow md_rich_text -e STEP=focus || return 1
   # The caret to the top, then down to the paragraph's line and its end:
   # one document, so the arrows go from block to block.
@@ -694,12 +696,13 @@ md_rich_text() {
   top
   key KEYCODE_DPAD_DOWN
   key KEYCODE_DPAD_DOWN
-  for i in 1 2 3; do combo KEYCODE_SHIFT_LEFT KEYCODE_DPAD_DOWN; done
+  # Four: to the paragraph's line or the blank line after it, which bold
+  # alike, a blank line holding nothing to mark; never as far as the task.
+  for i in 1 2 3 4; do combo KEYCODE_SHIFT_LEFT KEYCODE_DPAD_DOWN; done
   combo KEYCODE_SHIFT_LEFT KEYCODE_MOVE_END
   sleep 1
   combo KEYCODE_CTRL_LEFT KEYCODE_B
   sleep 1
-  flow md_rich_text -e STEP=tick || status=1
   flow md_rich_text -e STEP=save || status=1
   sleep 2
   got=$(sudo cat "$file"; echo x)
