@@ -111,6 +111,62 @@ env:
 
 - runFlow:
     when:
+      true: ${STEP == 'caret'}
+    commands:
+      # The caret in the paragraph, by where it is drawn as for bold: the
+      # runner then sends the hardware chords with adb.
+      - tapOn:
+          point: "40%,39%"
+      - waitForAnimationToEnd
+
+# The link file (jeansh-e2e-link.md): one long link, its label wrapping over
+# several lines from the top of the page, so a point on it is sure.
+- runFlow:
+    when:
+      true: ${STEP == 'link-open'}
+    commands:
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - eraseText
+      - inputText: "jeansh-e2e-link"
+      - tapOn: "(?s)\\W*jeansh-e2e-link.md"
+      - extendedWaitUntil:
+          visible: "(?s).*Jeansh e2e link.*"
+          timeout: 20000
+      - assertNotVisible: "Reload"
+
+- runFlow:
+    when:
+      true: ${STEP == 'link-tap'}
+    commands:
+      # A plain tap puts the caret in the link and opens nothing.
+      - tapOn:
+          point: "50%,36%"
+      - waitForAnimationToEnd
+      - hideKeyboard
+      - waitForAnimationToEnd
+      - takeScreenshot: md-rich-text-link-tapped
+      # No web tab: its Reload is not there.
+      - assertNotVisible: "Reload"
+
+- runFlow:
+    when:
+      true: ${STEP == 'link-press'}
+    commands:
+      - longPressOn:
+          point: "50%,36%"
+      # The link opened, in a web tab beside the shell, as a link from the
+      # terminal does on a phone.
+      - extendedWaitUntil:
+          visible: "Reload"
+          timeout: 15000
+      - takeScreenshot: md-rich-text-link-pressed
+
+- runFlow:
+    when:
       true: ${STEP == 'close'}
     commands:
       # Saved, so it closes with no question.

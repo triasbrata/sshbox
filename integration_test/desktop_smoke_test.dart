@@ -9313,6 +9313,117 @@ touch '${done.path}'
     },
   );
 
+  // #327: Rich text reads again only the sections an edit touched, and the
+  // whole text when the edit reaches past them. Real keys into a long file,
+  // a 2x2: a word typed mid-document leaves a heading far below drawn as a
+  // heading; a fence typed open in the same place draws everything below it
+  // as code, the heading far below included. Saved, the file is the original
+  // with those bytes and no other. A mutation that keeps the sections'
+  // reading when a fence runs on past them still draws the heading below as
+  // a heading.
+  _test(
+    'rich text: a fence typed open mid-document draws all below it as code, '
+    'and a word typed there leaves what is below as it was',
+    skip: editorSkip,
+    (tester) async {
+      final original = [
+        for (var i = 0; i < 40; i++) '## Head $i\n\nPara $i **b** text.\n',
+      ].join('\n');
+      final k = await _EditorSave.start(tester, 'fence.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      TextEditingController rich() =>
+          tester.widget<EditableText>(field).controller;
+      // The size [text] is drawn at: in the field's own text, or in a
+      // section drawn apart; null when drawn nowhere.
+      double? sizeOf(String text) {
+        double? found;
+        void walk(InlineSpan span, TextStyle? inherited) {
+          final style = inherited?.merge(span.style) ?? span.style;
+          if (span is TextSpan) {
+            if (found == null &&
+                (span.text ?? '').contains(text) &&
+                (style?.fontSize ?? 1) > 1) {
+              found = style?.fontSize;
+            }
+            for (final c in span.children ?? const <InlineSpan>[]) {
+              walk(c, style);
+            }
+          }
+        }
+
+        walk(
+          rich().buildTextSpan(
+            context: tester.element(field),
+            withComposing: false,
+          ),
+          null,
+        );
+        for (final r in tester.widgetList<RichText>(
+          find.descendant(
+            of: find.byType(MarkdownRichEditor),
+            matching: find.byType(RichText),
+          ),
+        )) {
+          walk(r.text, null);
+        }
+        return found;
+      }
+
+      const far = 'Head 35';
+      expect(sizeOf(far), greaterThan(20), reason: 'not drawn as a heading');
+
+      // The caret at the end of a paragraph mid-document.
+      const at = 'Para 12 **b** text.';
+      final end = original.indexOf(at) + at.length;
+      await tester.showKeyboard(field);
+      rich().selection = TextSelection.collapsed(offset: end);
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // A word: what is below is as it was.
+      await k.type(' word');
+      final worded = original.replaceFirst(at, '$at word');
+      await _until(
+        tester,
+        () => k.text() == worded,
+        'the word to reach the document',
+      );
+      expect(
+        sizeOf(far),
+        greaterThan(20),
+        reason: 'a word typed mid-document redrew a heading below it',
+      );
+
+      // A fence opened on the next line: all below it is code.
+      await k.press('Return', 'key code 36');
+      await k.type('```');
+      final fenced = worded.replaceFirst('$at word', '$at word\n```');
+      await _until(
+        tester,
+        () => k.text() == fenced,
+        'the fence to reach the document',
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await _grab(tester, 'desktop-md-rich-text-fence');
+      expect(
+        sizeOf(far),
+        lessThan(16),
+        reason: 'a fence opened above it, yet $far is not drawn as code',
+      );
+
+      await k.chord(save);
+      await _until(
+        tester,
+        () => k.file.readAsStringSync() == fenced,
+        'the save to write the word and the fence alone',
+        timeout: const Duration(seconds: 8),
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
   // the engine reports them. Run it in profile to read a real number.
