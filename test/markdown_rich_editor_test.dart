@@ -665,7 +665,7 @@ void main() {
       final done = find.bySemanticsLabel('done one');
       expect(
         tester.getSemantics(open),
-        containsSemantics(
+        isSemantics(
           hasCheckedState: true,
           isChecked: false,
           hasTapAction: true,
@@ -673,7 +673,7 @@ void main() {
       );
       expect(
         tester.getSemantics(done),
-        containsSemantics(hasCheckedState: true, isChecked: true),
+        isSemantics(hasCheckedState: true, isChecked: true),
       );
       // Read as a page, with no caret: the boxes are in sections drawn
       // apart. A tap through the screen reader ticks the right one.
@@ -683,7 +683,7 @@ void main() {
       await tester.pump();
       expect(
         tester.getSemantics(find.bySemanticsLabel('open one')),
-        containsSemantics(isChecked: true),
+        isSemantics(isChecked: true),
       );
 
       // With the caret in the list the boxes are drawn in the field itself.
