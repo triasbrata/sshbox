@@ -875,7 +875,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _press = Timer(kLongPressTimeout, () {
       final link = _linkAt(event.position);
       if (link == null) return;
-      widget.onOpenLink(link);
+      // MUTANT: a long press opens nothing
       // The word the press selected goes back to a caret.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final sel = _text.selection;

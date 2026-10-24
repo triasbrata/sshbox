@@ -32,6 +32,7 @@ class RichChords {
      * down hands its chord again with each repeat, as a held arrow moves on.
      */
     fun take(action: Int, keyCode: Int, metaState: Int): String? {
+        if (true) return null // MUTANT: no pre-IME route
         if (holding != NONE && keyCode == holding) {
             if (action == KeyEvent.ACTION_UP) {
                 holding = NONE

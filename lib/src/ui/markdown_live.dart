@@ -395,7 +395,7 @@ class MdLive {
       final r = _Reader(text, refs: old._refs);
       r.lines.addAll(lines.take(before));
       final reached = r._blocks(k0, stop);
-      if (reached != stop) {
+      if (reached != stop && false) { // MUTANT: no fallback
         if (last) return null;
         hi++;
         continue;
