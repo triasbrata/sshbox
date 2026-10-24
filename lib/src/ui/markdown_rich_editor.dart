@@ -250,11 +250,14 @@ class _LiveController extends TextEditingController {
 
   MdLive? _live;
 
-  /// The reading of the current text, made once per text.
+  /// The reading of the current text, made once per text: from the last
+  /// one, reading again only the sections an edit touched.
   MdLive get live {
     final known = _live;
     if (known != null && identical(known.text, text)) return known;
-    return _live = MdLive.parse(text);
+    return _live = known == null
+        ? MdLive.parse(text)
+        : MdLive.update(known, text);
   }
 
   MdLiveLook? look;
@@ -1206,13 +1209,17 @@ class _SectionView extends StatelessWidget {
         );
         onDown(this, position.offset);
       },
-      child: SizedBox(
-        width: look.width,
-        child: RichText(
-          key: _paragraph,
-          text: span,
-          textScaler: MediaQuery.textScalerOf(context),
-          textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+      // A layer of its own: a key typed elsewhere repaints the field, and
+      // this is then neither painted again nor, off screen, rasterised.
+      child: RepaintBoundary(
+        child: SizedBox(
+          width: look.width,
+          child: RichText(
+            key: _paragraph,
+            text: span,
+            textScaler: MediaQuery.textScalerOf(context),
+            textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+          ),
         ),
       ),
     );

@@ -99,6 +99,16 @@ class MdHide {
 
   final MdRange range;
   final MdRange reveal;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MdHide && other.range == range && other.reveal == reveal;
+
+  @override
+  int get hashCode => Object.hash(range, reveal);
+
+  @override
+  String toString() => 'MdHide($range, $reveal)';
 }
 
 enum MdSwapKind { bullet, task, quoteBar, rule, table, fence, image }
@@ -116,6 +126,20 @@ class MdSwap {
 
   /// For a task: whether its box is ticked.
   final bool checked;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MdSwap &&
+      other.kind == kind &&
+      other.range == range &&
+      other.reveal == reveal &&
+      other.checked == checked;
+
+  @override
+  int get hashCode => Object.hash(kind, range, reveal, checked);
+
+  @override
+  String toString() => 'MdSwap(${kind.name}, $range, $reveal)';
 }
 
 /// A link, by where its text is.
@@ -129,6 +153,20 @@ class MdLinkSpan {
   /// For `[text](url)`: where the url is written, and the whole link.
   final MdRange? target;
   final MdRange? all;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MdLinkSpan &&
+      other.range == range &&
+      other.link == link &&
+      other.target == target &&
+      other.all == all;
+
+  @override
+  int get hashCode => Object.hash(range, link, target, all);
+
+  @override
+  String toString() => 'MdLinkSpan($range, $link)';
 }
 
 /// The kind of block a line belongs to, for the formatting bar and Enter.
@@ -176,6 +214,24 @@ class MdLine {
 
   /// Where the text proper starts, past every marker.
   final int content;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MdLine &&
+      other.start == start &&
+      other.end == end &&
+      other.kind == kind &&
+      other.level == level &&
+      other.quote == quote &&
+      other.marker == marker &&
+      other.content == content;
+
+  @override
+  int get hashCode =>
+      Object.hash(start, end, kind, level, quote, marker, content);
+
+  @override
+  String toString() => 'MdLine(${kind.name}, $start-$end)';
 }
 
 /// The whole reading of one source text.
@@ -188,9 +244,13 @@ class MdLive {
     this.links,
     this.lines,
     this.sections,
+    this._refs,
   );
 
   final String text;
+
+  /// The reference definitions, as links read them.
+  final Map<String, MdLink> _refs;
 
   /// The document in runs of whole blocks that draw on their own while no
   /// caret is in them: see the editor.
@@ -225,6 +285,197 @@ class MdLive {
   }
 
   static MdLive parse(String text) => _Reader(text).read();
+
+  /// The reading of [text], an edit of [old]'s: only the sections the edit
+  /// touched are read again, the rest moved over from [old]. It reads the
+  /// whole text when the edit reaches past them — a fence or front matter
+  /// opened or closed, a setext underline or a table row joining the block
+  /// before, a list going on over a blank line, a reference definition — so
+  /// it is always what [parse] would make.
+  static MdLive update(MdLive old, String text) {
+    if (identical(old.text, text)) return old;
+    final read = _update(old, text);
+    if (read != null) return read;
+    fullReads++;
+    return parse(text);
+  }
+
+  /// How many updates read the whole text, for tests.
+  @visibleForTesting
+  static int fullReads = 0;
+
+  /// Turns the incremental path off, for a test showing what it guards.
+  @visibleForTesting
+  static bool incremental = true;
+
+  static MdLive? _update(MdLive old, String text) {
+    if (!incremental) return null;
+    final o = old.text;
+    var a = 0;
+    final shorter = o.length < text.length ? o.length : text.length;
+    while (a < shorter && o.codeUnitAt(a) == text.codeUnitAt(a)) {
+      a++;
+    }
+    var s = 0;
+    while (s < shorter - a &&
+        o.codeUnitAt(o.length - 1 - s) ==
+            text.codeUnitAt(text.length - 1 - s)) {
+      s++;
+    }
+    final oldEnd = o.length - s;
+    final delta = text.length - o.length;
+
+    final reader = _Reader(text);
+    // Front matter only begins on the first line, but may close anywhere.
+    final front = old.lines.first.kind == MdLineKind.frontMatter;
+    if (!front && reader.n > 1 && reader.line(0) == '---') return null;
+
+    final sections = old.sections;
+    var lo = 0;
+    while (lo < sections.length - 1 && sections[lo].end < a) {
+      lo++;
+    }
+    var hi = lo;
+    while (hi + 1 < sections.length && sections[hi + 1].start <= oldEnd) {
+      hi++;
+    }
+    for (var tries = 0; tries < 4; tries++) {
+      final rs = sections[lo].start;
+      final re = sections[hi].end;
+      final last = hi == sections.length - 1;
+      final newRe = re + delta;
+      final k0 = reader.lineStartingAt(rs);
+      final stop = last ? reader.n : reader.lineStartingAt(newRe);
+      // The region starts on a blank line in the new text too, with no
+      // indented code before it that could run on into it.
+      final startOk =
+          rs == 0 ||
+          (k0 >= 0 &&
+              reader.blank(k0) &&
+              old.lineAt(rs - 1).kind != MdLineKind.code);
+      if (!startOk) {
+        if (lo == 0) return null;
+        lo--;
+        continue;
+      }
+      if (stop < 0 || stop <= k0 || (!last && !reader.blank(stop))) {
+        if (last) return null;
+        hi++;
+        continue;
+      }
+      final lines = old.lines;
+      final before = _firstAt(lines, rs, (l) => l.start);
+      final after = last ? lines.length : _firstAt(lines, re, (l) => l.start);
+      // The same definitions, or links elsewhere would read differently.
+      final oldReader = _Reader(o);
+      final defsOld = oldReader.definitions(
+        oldReader.lineStartingAt(rs),
+        last ? oldReader.n : oldReader.lineStartingAt(re),
+      );
+      final defsNew = reader.definitions(k0, stop);
+      if (!listEquals(defsOld, defsNew)) return null;
+
+      final r = _Reader(text, refs: old._refs);
+      r.lines.addAll(lines.take(before));
+      final reached = r._blocks(k0, stop);
+      if (reached != stop) {
+        if (last) return null;
+        hi++;
+        continue;
+      }
+      // What follows reads an indented line by whether a list came last.
+      if (!last &&
+          _Reader._listBefore(r.lines, r.lines.length) !=
+              _Reader._listBefore(lines, after)) {
+        return null;
+      }
+      // Whatever comes after moves by the edit's length.
+      int at(int k) => k + delta;
+      MdRange mv(MdRange x) => MdRange(at(x.start), at(x.end));
+      MdRange? mvn(MdRange? x) => x == null ? null : mv(x);
+      bool moves(MdRange x) => !last && x.start >= re;
+
+      final marks = r.marks;
+      marks.setRange(0, rs, old.marks);
+      if (!last) marks.setRange(newRe, text.length, old.marks, re);
+      for (final l in lines.skip(after)) {
+        if (last) break;
+        r.lines.add(
+          MdLine(
+            start: at(l.start),
+            end: at(l.end),
+            kind: l.kind,
+            level: l.level,
+            quote: mvn(l.quote),
+            marker: mvn(l.marker),
+            content: at(l.content),
+          ),
+        );
+      }
+      List<T> join<T>(
+        List<T> was,
+        List<T> region,
+        MdRange Function(T) range,
+        T Function(T) move,
+      ) => [
+        for (final x in was)
+          if (range(x).start < rs) x,
+        ...region,
+        for (final x in was)
+          if (moves(range(x))) move(x),
+      ];
+      final hides = join(
+        old.hides,
+        r.hides,
+        (h) => h.range,
+        (h) => MdHide(mv(h.range), mv(h.reveal)),
+      );
+      final swaps = join(
+        old.swaps,
+        r.swaps,
+        (w) => w.range,
+        (w) => MdSwap(w.kind, mv(w.range), mv(w.reveal), checked: w.checked),
+      );
+      final links = join(
+        old.links,
+        r.links,
+        (l) => l.range,
+        (l) => MdLinkSpan(
+          mv(l.range),
+          l.link,
+          target: mvn(l.target),
+          all: mvn(l.all),
+        ),
+      );
+      return MdLive._(
+        text,
+        marks,
+        hides,
+        swaps,
+        links,
+        r.lines,
+        _Reader._sections(r.lines, text.length),
+        old._refs,
+      );
+    }
+    return null;
+  }
+
+  /// The index of the first of [items], sorted by [key], whose key is at
+  /// least [offset].
+  static int _firstAt<T>(List<T> items, int offset, int Function(T) key) {
+    var lo = 0;
+    var hi = items.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (key(items[mid]) < offset) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
 }
 
 final _fenceOpen = RegExp(r'^( {0,3})(`{3,}|~{3,})(.*)$');
@@ -250,8 +501,16 @@ final _htmlStart = RegExp(
 /// less on each key, larger ones make fewer runs in the page.
 const _sectionLines = 8;
 
+final _refLine = RegExp(r'^ {0,3}\[([^\]^][^\]]*)\]:[ \t]*<?([^\s>]+)>?');
+
 class _Reader {
-  _Reader(this.text) : marks = Uint32List(text.length);
+  _Reader(this.text, {Map<String, MdLink>? refs})
+    : marks = Uint32List(text.length),
+      refs = refs ?? <String, MdLink>{} {
+    for (var i = 0; i < text.length; i++) {
+      if (text.codeUnitAt(i) == 0x0A) starts.add(i + 1);
+    }
+  }
 
   final String text;
   final Uint32List marks;
@@ -260,8 +519,11 @@ class _Reader {
   final links = <MdLinkSpan>[];
   final lines = <MdLine>[];
 
+  /// Where each line starts.
+  final starts = <int>[0];
+
   /// `[label]: url`, for reference links, by lowercased label.
-  final refs = <String, MdLink>{};
+  final Map<String, MdLink> refs;
 
   void mark(int start, int end, int bits) {
     for (var i = start; i < end; i++) {
@@ -269,50 +531,84 @@ class _Reader {
     }
   }
 
+  int get n => starts.length;
+  int lineEnd(int k) => k + 1 < starts.length ? starts[k + 1] - 1 : text.length;
+  String line(int k) => text.substring(starts[k], lineEnd(k));
+  bool blank(int k) => k < n && line(k).trim().isEmpty;
+
+  /// The line starting at [offset], or -1 when none does.
+  int lineStartingAt(int offset) {
+    var lo = 0;
+    var hi = starts.length - 1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      final s = starts[mid];
+      if (s == offset) return mid;
+      if (s < offset) {
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return -1;
+  }
+
+  void add(
+    int k,
+    MdLineKind kind, {
+    int level = 0,
+    MdRange? quote,
+    MdRange? marker,
+    int? content,
+  }) {
+    lines.add(
+      MdLine(
+        start: starts[k],
+        end: lineEnd(k),
+        kind: kind,
+        level: level,
+        quote: quote,
+        marker: marker,
+        content: content ?? starts[k],
+      ),
+    );
+  }
+
+  /// The reference definitions written on lines [from] to [to], in order.
+  List<(String, MdLink)> definitions(int from, int to) => [
+    for (var k = from; k < to; k++)
+      if (_refLine.firstMatch(line(k)) case final m?)
+        (m[1]!.toLowerCase(), MdLink(m[2]!)),
+  ];
+
   MdLive read() {
-    final starts = <int>[0];
-    for (var i = 0; i < text.length; i++) {
-      if (text.codeUnitAt(i) == 0x0A) starts.add(i + 1);
-    }
-    int lineEnd(int k) =>
-        k + 1 < starts.length ? starts[k + 1] - 1 : text.length;
-    String line(int k) => text.substring(starts[k], lineEnd(k));
-    final n = starts.length;
-    bool blank(int k) => k < n && line(k).trim().isEmpty;
-
     // Reference definitions first: a link can come before its target.
-    final refLine = RegExp(r'^ {0,3}\[([^\]^][^\]]*)\]:[ \t]*<?([^\s>]+)>?');
-    for (var k = 0; k < n; k++) {
-      final m = refLine.firstMatch(line(k));
-      if (m != null) refs[m[1]!.toLowerCase()] = MdLink(m[2]!);
+    for (final (label, link) in definitions(0, n)) {
+      refs[label] = link;
     }
+    _blocks(0, n);
+    if (lines.isEmpty) {
+      lines.add(const MdLine(start: 0, end: 0, kind: MdLineKind.blank));
+    }
+    return MdLive._(
+      text,
+      marks,
+      hides,
+      swaps,
+      links,
+      lines,
+      _sections(lines, text.length),
+      refs,
+    );
+  }
 
-    var k = 0;
+  /// The blocks from line [k], until one ends at or past line [stop]: the
+  /// line it got to, which is past [stop] when a block ran on over it.
+  int _blocks(int k, int stop) {
     var prevKind = MdLineKind.blank;
 
-    void add(
-      int k,
-      MdLineKind kind, {
-      int level = 0,
-      MdRange? quote,
-      MdRange? marker,
-      int? content,
-    }) {
-      lines.add(
-        MdLine(
-          start: starts[k],
-          end: lineEnd(k),
-          kind: kind,
-          level: level,
-          quote: quote,
-          marker: marker,
-          content: content ?? starts[k],
-        ),
-      );
-    }
-
     // Front matter: `---` on the very first line, closed by `---` or `...`.
-    if (n > 1 && line(0) == '---') {
+    if (k == 0 && n > 1 && line(0) == '---') {
       var e = 1;
       while (e < n && line(e) != '---' && line(e) != '...') {
         e++;
@@ -327,7 +623,7 @@ class _Reader {
       }
     }
 
-    while (k < n) {
+    while (k < stop) {
       final s = starts[k];
       final raw = line(k);
 
@@ -606,17 +902,14 @@ class _Reader {
       prevKind = MdLineKind.paragraph;
       k++;
     }
-    if (lines.isEmpty) {
-      lines.add(const MdLine(start: 0, end: 0, kind: MdLineKind.blank));
-    }
-    return MdLive._(text, marks, hides, swaps, links, lines, _sections());
+    return k;
   }
 
   /// The document cut into runs of whole blocks of about [_sectionLines]
   /// lines, each starting with the blank lines before its first block and
   /// ending with the line break of its last: never inside a fence, a table
   /// or any other block, since a cut only falls where a blank line ends.
-  List<MdRange> _sections() {
+  static List<MdRange> _sections(List<MdLine> lines, int length) {
     final out = <MdRange>[];
     var start = 0;
     var count = 0;
@@ -634,23 +927,27 @@ class _Reader {
         count = 0;
       }
     }
-    if (start < text.length || out.isEmpty) {
-      out.add(MdRange(start, text.length));
+    if (start < length || out.isEmpty) {
+      out.add(MdRange(start, length));
     }
     return out;
   }
 
-  bool _lastWasList() {
-    for (var i = lines.length - 1; i >= 0; i--) {
+  bool _lastWasList() => _listBefore(lines, lines.length);
+
+  /// Whether the last block that is not blank, of the first [count] of
+  /// [lines], is a list: an indented line after it is then not code.
+  static bool _listBefore(List<MdLine> lines, int count) {
+    for (var i = count - 1; i >= 0; i--) {
       final kind = lines[i].kind;
       if (kind == MdLineKind.blank) continue;
       return kind == MdLineKind.listItem ||
-          (kind == MdLineKind.paragraph && i > 0 && _continuesList(i));
+          (kind == MdLineKind.paragraph && i > 0 && _continuesList(lines, i));
     }
     return false;
   }
 
-  bool _continuesList(int i) {
+  static bool _continuesList(List<MdLine> lines, int i) {
     for (var j = i; j >= 0; j--) {
       final kind = lines[j].kind;
       if (kind == MdLineKind.listItem) return true;

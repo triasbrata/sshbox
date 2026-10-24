@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/markdown_live.dart';
@@ -350,6 +353,116 @@ void main() {
         selection: TextSelection(baseOffset: 0, extentOffset: q.text.length),
       );
       expect(toggleQuote(all, MdLive.parse(q.text)).text, 'Title\n\nbody');
+    });
+  });
+
+  group('incremental reading', () {
+    void same(MdLive got, MdLive want, String why) {
+      expect(got.text, want.text, reason: why);
+      expect(got.lines, want.lines, reason: '$why: lines');
+      expect(got.sections, want.sections, reason: '$why: sections');
+      expect(got.hides, want.hides, reason: '$why: hides');
+      expect(got.swaps, want.swaps, reason: '$why: swaps');
+      expect(got.links, want.links, reason: '$why: links');
+      expect(got.marks, want.marks, reason: '$why: marks');
+    }
+
+    // What people type, the structure-changing pieces among them: fences,
+    // front matter, setext underlines, list items, indented code, tables and
+    // reference definitions.
+    const pieces = [
+      'x',
+      'word ',
+      ' ',
+      '\n',
+      '\n\n',
+      '```\n',
+      '```',
+      '~~~\n',
+      '---\n',
+      '---',
+      '...\n',
+      '===\n',
+      '- ',
+      '- [ ] ',
+      '1. ',
+      '* ',
+      '> ',
+      '    ',
+      '\t',
+      '# ',
+      '## ',
+      '| a | b |\n',
+      '|---|---|\n',
+      '|',
+      '**',
+      '_',
+      '`',
+      '[x]: https://e.x\n',
+      '[x]',
+      '[a](b)',
+      '<div>\n',
+      '\\',
+      '~~',
+      'https://a.b ',
+    ];
+
+    test('an edit read in part reads as the whole text read again, over a '
+        'random edit script on the corpus', () {
+      final random = Random(327);
+      var edits = 0;
+      final fullBefore = MdLive.fullReads;
+      for (final MapEntry(key: name, value: start) in markdownCorpus.entries) {
+        final count = start.length > 100000
+            ? 15
+            : start.length > 10000
+            ? 120
+            : 300;
+        var text = start;
+        var live = MdLive.parse(text);
+        for (var i = 0; i < count; i++) {
+          final a = text.isEmpty ? 0 : random.nextInt(text.length + 1);
+          final cut = random.nextInt(4) == 0
+              ? random.nextInt(12).clamp(0, text.length - a)
+              : 0;
+          final ins = random.nextInt(5) == 0
+              ? ''
+              : pieces[random.nextInt(pieces.length)];
+          final next = text.replaceRange(a, a + cut, ins);
+          final want = MdLive.parse(next);
+          live = MdLive.update(live, next);
+          same(live, want, '$name, edit $i: $cut at $a for ${jsonEncode(ins)}');
+          text = next;
+          edits++;
+        }
+      }
+      expect(edits, greaterThanOrEqualTo(2000));
+      // Most edits stay inside their sections, or this tests nothing.
+      expect(MdLive.fullReads - fullBefore, lessThan(edits ~/ 2));
+    });
+
+    test(
+      'a fence opened mid-document reads every section after it as code',
+      () {
+        final text = List.filled(40, 'Para **b**\n\n').join();
+        final live = MdLive.parse(text);
+        expect(live.sections.length, greaterThan(2));
+        final at = text.length ~/ 2;
+        final open = text.indexOf('\n\n', at) + 2;
+        final next = text.replaceRange(open, open, '```\n');
+        final read = MdLive.update(live, next);
+        same(read, MdLive.parse(next), 'fence opened');
+        expect(read.lineAt(next.length - 3).kind, MdLineKind.fence);
+      },
+    );
+
+    test('front matter closed far down is read', () {
+      const text = '---\n\nbody\n\n';
+      final long = text + List.filled(30, 'Para\n\n').join();
+      final live = MdLive.parse(long);
+      expect(live.lines.first.kind, isNot(MdLineKind.frontMatter));
+      final next = long.replaceRange(long.length - 6, long.length - 6, '---\n');
+      same(MdLive.update(live, next), MdLive.parse(next), 'front matter');
     });
   });
 }
