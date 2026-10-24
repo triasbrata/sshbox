@@ -9326,10 +9326,14 @@ touch '${done.path}'
     'and a word typed there leaves what is below as it was',
     skip: editorSkip,
     (tester) async {
-      final original = [
-        for (var i = 0; i < 40; i++) '## Head $i\n\nPara $i **b** text.\n',
-      ].join('\n');
+      // Front matter and a task first, drawn rendered, for the evidence.
+      final original =
+          '---\ntitle: Rich e2e\ntags: [e2e, md]\n---\n\n'
+          '- [ ] a task <b>with HTML</b>\n- [x] a done task\n\n'
+          '${[for (var i = 0; i < 40; i++) '## Head $i\n\nPara $i **b** text.\n'].join('\n')}';
       final k = await _EditorSave.start(tester, 'fence.md', text: original);
+      expect(find.text('title'), findsOneWidget, reason: 'no front matter');
+      await _grab(tester, 'desktop-md-rich-text-front-matter');
       final field = find.descendant(
         of: find.byType(MarkdownRichEditor),
         matching: find.byType(EditableText),
