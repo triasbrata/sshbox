@@ -615,6 +615,85 @@ void main() {
     expect(host.refused, ['Select the text to link first.']);
   });
 
+  group('task boxes for a screen reader', () {
+    const doc = '# Tasks\n\n- [ ] open one\n- [x] done one\n\nA paragraph.\n';
+
+    testWidgets('each box is a checkbox node with its state and its text, '
+        'and a tap on the node ticks it, one character', (tester) async {
+      final host = await _pump(tester, doc);
+      await tester.pump();
+      final open = find.bySemanticsLabel('open one');
+      final done = find.bySemanticsLabel('done one');
+      expect(
+        tester.getSemantics(open),
+        containsSemantics(
+          hasCheckedState: true,
+          isChecked: false,
+          hasTapAction: true,
+        ),
+      );
+      expect(
+        tester.getSemantics(done),
+        containsSemantics(hasCheckedState: true, isChecked: true),
+      );
+      // Read as a page, with no caret: the boxes are in sections drawn
+      // apart. A tap through the screen reader ticks the right one.
+      tester.semantics.tap(find.semantics.byLabel('open one'));
+      await tester.pump();
+      expect(host.text, doc.replaceFirst('- [ ] open', '- [x] open'));
+      await tester.pump();
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('open one')),
+        containsSemantics(isChecked: true),
+      );
+
+      // With the caret in the list the boxes are drawn in the field itself.
+      await tester.showKeyboard(find.byType(EditableText));
+      _controller(tester).selection = TextSelection.collapsed(
+        offset: host.text.indexOf('done one'),
+      );
+      await tester.pump();
+      await tester.pump();
+      tester.semantics.tap(find.semantics.byLabel('done one'));
+      await tester.pump();
+      expect(
+        host.text,
+        doc.replaceAll('[x]', '[ ]').replaceFirst('- [ ] open', '- [x] open'),
+      );
+    });
+
+    testWidgets('a box scrolled out of the page has no node until it is '
+        'scrolled back in', (tester) async {
+      final text =
+          '${List.filled(60, 'A line of text.').join('\n\n')}\n\n- [ ] far task\n';
+      await _pump(tester, text);
+      await tester.pump();
+      expect(find.bySemanticsLabel('far task'), findsNothing);
+      final scroll = tester
+          .widget<EditableText>(find.byType(EditableText))
+          .scrollController!;
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pump();
+      await tester.pump();
+      expect(find.bySemanticsLabel('far task'), findsOneWidget);
+    });
+
+    testWidgets('with no semantics asked for, no nodes are laid over the '
+        'boxes', (tester) async {
+      await _pump(tester, doc);
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byType(MarkdownRichEditor),
+          matching: find.byWidgetPredicate(
+            (w) => w is Semantics && w.properties.label == 'open one',
+          ),
+        ),
+        findsNothing,
+      );
+    }, semanticsEnabled: false);
+  });
+
   group('Android hardware chords', () {
     const share = MethodChannel('sshbox/share');
     late List<Object?> told;
