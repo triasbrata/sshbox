@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import 'key_bar.dart';
 import 'markdown_live.dart';
+import 'save_chord.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
 import 'termul/tui_checkbox.dart';
@@ -480,6 +481,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _text.addListener(_onText);
     _focus.addListener(() {
       _text.focused = _focus.hasFocus;
+      RichChords.want(this, _focus.hasFocus ? _onChord : null);
       // Revealed markup hides again, and the bars dim, as focus leaves.
       setState(() {});
       widget.controller?._changed();
@@ -500,6 +502,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   @override
   void dispose() {
     if (widget.controller?._state == this) widget.controller!._state = null;
+    RichChords.want(this, null);
     _text.dispose();
     _focus.dispose();
     _scroll.dispose();
@@ -622,6 +625,47 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     if (run == null) return KeyEventResult.ignored;
     run();
     return KeyEventResult.handled;
+  }
+
+  /// A chord MainActivity took before Gboard could (see [RichChords]): the
+  /// same as [_onKey] does with it when it reaches Flutter.
+  void _onChord(String chord) {
+    if (!_focus.hasFocus) return;
+    switch (chord) {
+      case 'bold':
+        _toggleInline('**', MdMark.bold);
+      case 'italic':
+        _toggleInline('_', MdMark.italic);
+      case 'code':
+        _toggleInline('`', MdMark.code);
+      case 'link':
+        unawaited(_editLink());
+      default:
+        final parts = chord.split(':');
+        if (parts.length < 2 || parts.first != 'select') return;
+        final forward = parts[1] == 'right' || parts[1] == 'down';
+        final word = parts.length > 2 && parts[2] == 'word';
+        final Intent intent = switch (parts[1]) {
+          'left' ||
+          'right' when word => ExtendSelectionToNextWordBoundaryIntent(
+            forward: forward,
+            collapseSelection: false,
+          ),
+          'left' || 'right' => ExtendSelectionByCharacterIntent(
+            forward: forward,
+            collapseSelection: false,
+          ),
+          'up' || 'down' => ExtendSelectionVerticallyToAdjacentLineIntent(
+            forward: forward,
+            collapseSelection: false,
+          ),
+          _ => const DoNothingIntent(),
+        };
+        // The field's own action, so the selection moves as Shift and an
+        // arrow move it on a desktop.
+        final context = _focus.context;
+        if (context != null) Actions.maybeInvoke(context, intent);
+    }
   }
 
   MdFormat? _format() {

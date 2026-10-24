@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/markdown_live.dart';
 import 'package:sshbox/src/ui/markdown_rich_editor.dart';
+import 'package:sshbox/src/ui/save_chord.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
 import 'package:sshbox/src/ui/termul/termul_theme.dart';
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart';
@@ -612,5 +613,143 @@ void main() {
     _controller(tester).selection = const TextSelection.collapsed(offset: 1);
     await host.controller.editLink();
     expect(host.refused, ['Select the text to link first.']);
+  });
+
+  group('Android hardware chords', () {
+    const share = MethodChannel('sshbox/share');
+    late List<Object?> told;
+
+    setUp(() {
+      RichChords.reset();
+      SaveChord.reset();
+      told = [];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(share, (call) async {
+            if (call.method == 'richChords') told.add(call.arguments);
+            return null;
+          });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(share, null);
+      RichChords.reset();
+      SaveChord.reset();
+    });
+
+    /// MainActivity's call when it takes a chord before Gboard.
+    Future<void> native(String chord) => TestDefaultBinaryMessengerBinding
+        .instance
+        .defaultBinaryMessenger
+        .handlePlatformMessage(
+          'sshbox/keys',
+          const StandardMethodCodec().encodeMethodCall(
+            MethodCall('rich', chord),
+          ),
+          (_) {},
+        );
+
+    testWidgets('claimed while Rich text holds the focus: Ctrl+B, I, E and '
+        'Shift+arrows from native act on the selection', (tester) async {
+      final host = await _pump(tester, 'one word here\nnext line\n');
+      expect(told, isEmpty);
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      expect(told, [true]);
+
+      final c = _controller(tester);
+      c.selection = const TextSelection(baseOffset: 4, extentOffset: 8);
+      await native('bold');
+      await tester.pump();
+      expect(host.text, 'one **word** here\nnext line\n');
+      await native('bold');
+      await tester.pump();
+      expect(host.text, 'one word here\nnext line\n');
+
+      c.selection = const TextSelection(baseOffset: 4, extentOffset: 8);
+      await native('italic');
+      await tester.pump();
+      expect(host.text, 'one _word_ here\nnext line\n');
+      host.set('one word here\nnext line\n');
+      await tester.pump();
+      c.selection = const TextSelection(baseOffset: 4, extentOffset: 8);
+      await native('code');
+      await tester.pump();
+      expect(host.text, 'one `word` here\nnext line\n');
+
+      host.set('one word here\nnext line\n');
+      await tester.pump();
+      c.selection = const TextSelection.collapsed(offset: 4);
+      await native('select:right');
+      await tester.pump();
+      expect(c.selection, const TextSelection(baseOffset: 4, extentOffset: 5));
+      await native('select:right:word');
+      await tester.pump();
+      expect(c.selection, const TextSelection(baseOffset: 4, extentOffset: 8));
+      await native('select:left');
+      await tester.pump();
+      expect(c.selection, const TextSelection(baseOffset: 4, extentOffset: 7));
+      await native('select:left:word');
+      await tester.pump();
+      expect(c.selection.extentOffset, 4);
+      await native('select:down');
+      await tester.pump();
+      // Down a line: the selection now ends on the next line.
+      expect(c.selection.baseOffset, 4);
+      expect(c.selection.extentOffset, greaterThan('one word here\n'.length));
+      await native('select:up');
+      await tester.pump();
+      expect(c.selection.extentOffset, lessThan('one word here\n'.length));
+      // Nothing the editor does not know: no change.
+      final before = c.value;
+      await native('select:sideways');
+      await native('nonsense');
+      await tester.pump();
+      expect(c.value, before);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('a link chord asks for the address', (tester) async {
+      final host = await _pump(tester, 'one word here');
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      host.linkAnswer = 'https://e.x';
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 4,
+        extentOffset: 8,
+      );
+      await native('link');
+      await tester.pumpAndSettle();
+      expect(host.text, 'one [word](https://e.x) here');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('let go when the focus leaves and when it closes; a chord '
+        'then changes nothing', (tester) async {
+      final host = await _pump(tester, 'one word here');
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 4,
+        extentOffset: 8,
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      expect(told, [true, false]);
+      await native('bold');
+      await tester.pump();
+      expect(host.text, 'one word here');
+
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      expect(told, [true, false, true]);
+      await tester.pumpWidget(const SizedBox());
+      expect(told, [true, false, true, false]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('nothing is claimed on a desktop', (tester) async {
+      await _pump(tester, 'one word here');
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      expect(told, isEmpty);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 }

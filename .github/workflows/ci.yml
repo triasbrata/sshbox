@@ -171,7 +171,7 @@ jobs:
         # A minute when well; a stuck Gradle once held the job to its 40.
         timeout-minutes: 15
         working-directory: android
-        run: gradle :app:testDebugUnitTest --tests 'dev.triasbrata.sshbox.NativeCrashesTest' --tests 'dev.triasbrata.sshbox.NotificationIconTest'
+        run: gradle :app:testDebugUnitTest --tests 'dev.triasbrata.sshbox.NativeCrashesTest' --tests 'dev.triasbrata.sshbox.NotificationIconTest' --tests 'dev.triasbrata.sshbox.SaveChordTest' --tests 'dev.triasbrata.sshbox.RichChordsTest'
 
       - name: Result
         if: always()
