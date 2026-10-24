@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/markdown_live.dart';
 import 'package:sshbox/src/ui/markdown_rich_editor.dart';
+import 'package:sshbox/src/ui/save_chord.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
 import 'package:sshbox/src/ui/termul/termul_theme.dart';
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart';
@@ -612,5 +613,261 @@ void main() {
     _controller(tester).selection = const TextSelection.collapsed(offset: 1);
     await host.controller.editLink();
     expect(host.refused, ['Select the text to link first.']);
+  });
+
+  testWidgets('front matter draws as keys and values, <details> as its '
+      'summary and <img> as its picture; the caret shows the source, and '
+      'nothing changes', (tester) async {
+    const doc =
+        '---\ntitle: notes\ntags:\n  - a\n  - b\nloose line\n---\n\n'
+        'Text<br>more and <img src="p.png" alt="P">.\n\n'
+        '<details>\n<summary>More</summary>\n\nInside.\n\n</details>\n';
+    final host = await _pump(tester, doc);
+    await tester.pump();
+    expect(find.text('title'), findsOneWidget);
+    expect(find.text('notes'), findsOneWidget);
+    expect(find.text('tags'), findsOneWidget);
+    expect(find.text('- a\n- b\nloose line'), findsOneWidget);
+    expect(find.text('▾ More'), findsOneWidget);
+    expect(find.text('RENDERED ![P](<p.png>)'), findsOneWidget);
+    expect(_shown(tester), isNot(contains('<br>')));
+
+    // The caret in the front matter: its source, and the rows go.
+    await tester.showKeyboard(find.byType(EditableText));
+    _controller(tester).selection = const TextSelection.collapsed(offset: 6);
+    await tester.pump();
+    expect(find.text('title'), findsNothing);
+    expect(_shown(tester), startsWith('---\ntitle: notes\n'));
+    // In the paragraph: the tags as written.
+    _controller(tester).selection = TextSelection.collapsed(
+      offset: doc.indexOf('<br>') + 1,
+    );
+    await tester.pump();
+    expect(_shown(tester), contains('Text<br>more'));
+    expect(host.changes, isEmpty);
+
+    // An empty front matter and an unnamed summary draw too.
+    FocusManager.instance.primaryFocus?.unfocus();
+    host.set('---\n---\n\n<details open>\n\nx\n');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('▾ Details'), findsOneWidget);
+  });
+
+  group('task boxes for a screen reader', () {
+    const doc = '# Tasks\n\n- [ ] open one\n- [x] done one\n\nA paragraph.\n';
+
+    testWidgets('each box is a checkbox node with its state and its text, '
+        'and a tap on the node ticks it, one character', (tester) async {
+      final host = await _pump(tester, doc);
+      await tester.pump();
+      final open = find.bySemanticsLabel('open one');
+      final done = find.bySemanticsLabel('done one');
+      expect(
+        tester.getSemantics(open),
+        isSemantics(
+          hasCheckedState: true,
+          isChecked: false,
+          hasTapAction: true,
+        ),
+      );
+      expect(
+        tester.getSemantics(done),
+        isSemantics(hasCheckedState: true, isChecked: true),
+      );
+      // Read as a page, with no caret: the boxes are in sections drawn
+      // apart. A tap through the screen reader ticks the right one.
+      tester.semantics.tap(find.semantics.byLabel('open one'));
+      await tester.pump();
+      expect(host.text, doc.replaceFirst('- [ ] open', '- [x] open'));
+      await tester.pump();
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('open one')),
+        isSemantics(isChecked: true),
+      );
+
+      // With the caret in the list the boxes are drawn in the field itself.
+      await tester.showKeyboard(find.byType(EditableText));
+      _controller(tester).selection = TextSelection.collapsed(
+        offset: host.text.indexOf('done one'),
+      );
+      await tester.pump();
+      await tester.pump();
+      tester.semantics.tap(find.semantics.byLabel('done one'));
+      await tester.pump();
+      expect(
+        host.text,
+        doc.replaceAll('[x]', '[ ]').replaceFirst('- [ ] open', '- [x] open'),
+      );
+    });
+
+    testWidgets('a box scrolled out of the page has no node until it is '
+        'scrolled back in', (tester) async {
+      final text =
+          '${List.filled(60, 'A line of text.').join('\n\n')}\n\n- [ ] far task\n';
+      await _pump(tester, text);
+      await tester.pump();
+      expect(find.bySemanticsLabel('far task'), findsNothing);
+      final scroll = tester
+          .widget<EditableText>(find.byType(EditableText))
+          .scrollController!;
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pump();
+      await tester.pump();
+      expect(find.bySemanticsLabel('far task'), findsOneWidget);
+    });
+
+    testWidgets('with no semantics asked for, no nodes are laid over the '
+        'boxes', (tester) async {
+      await _pump(tester, doc);
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byType(MarkdownRichEditor),
+          matching: find.byWidgetPredicate(
+            (w) => w is Semantics && w.properties.label == 'open one',
+          ),
+        ),
+        findsNothing,
+      );
+    }, semanticsEnabled: false);
+  });
+
+  group('Android hardware chords', () {
+    const share = MethodChannel('sshbox/share');
+    late List<Object?> told;
+
+    setUp(() {
+      RichChords.reset();
+      SaveChord.reset();
+      told = [];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(share, (call) async {
+            if (call.method == 'richChords') told.add(call.arguments);
+            return null;
+          });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(share, null);
+      RichChords.reset();
+      SaveChord.reset();
+    });
+
+    /// MainActivity's call when it takes a chord before Gboard.
+    Future<void> native(String chord) => TestDefaultBinaryMessengerBinding
+        .instance
+        .defaultBinaryMessenger
+        .handlePlatformMessage(
+          'sshbox/keys',
+          const StandardMethodCodec().encodeMethodCall(
+            MethodCall('rich', chord),
+          ),
+          (_) {},
+        );
+
+    testWidgets('claimed while Rich text holds the focus: Ctrl+B, I, E and '
+        'Shift+arrows from native act on the selection', (tester) async {
+      final host = await _pump(tester, 'one word here\nnext line\n');
+      expect(told, isEmpty);
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      expect(told, [true]);
+
+      final c = _controller(tester);
+      c.selection = const TextSelection(baseOffset: 4, extentOffset: 8);
+      await native('bold');
+      await tester.pump();
+      expect(host.text, 'one **word** here\nnext line\n');
+      await native('bold');
+      await tester.pump();
+      expect(host.text, 'one word here\nnext line\n');
+
+      c.selection = const TextSelection(baseOffset: 4, extentOffset: 8);
+      await native('italic');
+      await tester.pump();
+      expect(host.text, 'one _word_ here\nnext line\n');
+      host.set('one word here\nnext line\n');
+      await tester.pump();
+      c.selection = const TextSelection(baseOffset: 4, extentOffset: 8);
+      await native('code');
+      await tester.pump();
+      expect(host.text, 'one `word` here\nnext line\n');
+
+      host.set('one word here\nnext line\n');
+      await tester.pump();
+      c.selection = const TextSelection.collapsed(offset: 4);
+      await native('select:right');
+      await tester.pump();
+      expect(c.selection, const TextSelection(baseOffset: 4, extentOffset: 5));
+      await native('select:right:word');
+      await tester.pump();
+      expect(c.selection, const TextSelection(baseOffset: 4, extentOffset: 8));
+      await native('select:left');
+      await tester.pump();
+      expect(c.selection, const TextSelection(baseOffset: 4, extentOffset: 7));
+      await native('select:left:word');
+      await tester.pump();
+      expect(c.selection.extentOffset, 4);
+      await native('select:down');
+      await tester.pump();
+      // Down a line: the selection now ends on the next line.
+      expect(c.selection.baseOffset, 4);
+      expect(c.selection.extentOffset, greaterThan('one word here\n'.length));
+      await native('select:up');
+      await tester.pump();
+      expect(c.selection.extentOffset, lessThan('one word here\n'.length));
+      // Nothing the editor does not know: no change.
+      final before = c.value;
+      await native('select:sideways');
+      await native('nonsense');
+      await tester.pump();
+      expect(c.value, before);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('a link chord asks for the address', (tester) async {
+      final host = await _pump(tester, 'one word here');
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      host.linkAnswer = 'https://e.x';
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 4,
+        extentOffset: 8,
+      );
+      await native('link');
+      await tester.pumpAndSettle();
+      expect(host.text, 'one [word](https://e.x) here');
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('let go when the focus leaves and when it closes; a chord '
+        'then changes nothing', (tester) async {
+      final host = await _pump(tester, 'one word here');
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 4,
+        extentOffset: 8,
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      expect(told, [true, false]);
+      await native('bold');
+      await tester.pump();
+      expect(host.text, 'one word here');
+
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      expect(told, [true, false, true]);
+      await tester.pumpWidget(const SizedBox());
+      expect(told, [true, false, true, false]);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('nothing is claimed on a desktop', (tester) async {
+      await _pump(tester, 'one word here');
+      await tester.showKeyboard(find.byType(EditableText));
+      await tester.pump();
+      expect(told, isEmpty);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
   });
 }

@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import 'key_bar.dart';
 import 'markdown_live.dart';
+import 'save_chord.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
 import 'termul/tui_checkbox.dart';
@@ -250,11 +251,14 @@ class _LiveController extends TextEditingController {
 
   MdLive? _live;
 
-  /// The reading of the current text, made once per text.
+  /// The reading of the current text, made once per text: from the last
+  /// one, reading again only the sections an edit touched.
   MdLive get live {
     final known = _live;
     if (known != null && identical(known.text, text)) return known;
-    return _live = MdLive.parse(text);
+    return _live = known == null
+        ? MdLive.parse(text)
+        : MdLive.update(known, text);
   }
 
   MdLiveLook? look;
@@ -377,7 +381,13 @@ TextSpan liveSpan(
     }
     // A block drawn whole takes its line: the break after it hides too, or
     // the rows it stands for leave a line of their own below it.
-    final block = s.kind == MdSwapKind.table || s.kind == MdSwapKind.fence;
+    final block = switch (s.kind) {
+      MdSwapKind.table ||
+      MdSwapKind.fence ||
+      MdSwapKind.frontMatter ||
+      MdSwapKind.details => true,
+      _ => false,
+    };
     if (block && s.range.end + 1 < n && t.codeUnitAt(s.range.end) == 0x0A) {
       draw[s.range.end] = _hide;
     }
@@ -418,7 +428,9 @@ TextSpan liveSpan(
             MdSwapKind.table ||
             MdSwapKind.fence ||
             MdSwapKind.image ||
-            MdSwapKind.rule => PlaceholderAlignment.bottom,
+            MdSwapKind.rule ||
+            MdSwapKind.frontMatter ||
+            MdSwapKind.details => PlaceholderAlignment.bottom,
             _ => PlaceholderAlignment.middle,
           },
           child: swapBuilder!(
@@ -460,6 +472,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
       ScrollController(initialScrollOffset: widget.at)..addListener(() {
         if (_scroll.hasClients) widget.onScroll?.call(_scroll.offset);
         _placeBar();
+        _placeTaskNodes();
       });
 
   /// Whether the next change out continues a run of typing.
@@ -475,8 +488,10 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     super.initState();
     widget.controller?._state = this;
     _text.addListener(_onText);
+    SemanticsBinding.instance.addSemanticsEnabledListener(_placeTaskNodes);
     _focus.addListener(() {
       _text.focused = _focus.hasFocus;
+      RichChords.want(this, _focus.hasFocus ? _onChord : null);
       // Revealed markup hides again, and the bars dim, as focus leaves.
       setState(() {});
       widget.controller?._changed();
@@ -497,11 +512,14 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   @override
   void dispose() {
     if (widget.controller?._state == this) widget.controller!._state = null;
+    RichChords.want(this, null);
     _text.dispose();
     _focus.dispose();
     _scroll.dispose();
     _settle?.cancel();
     _bar.dispose();
+    SemanticsBinding.instance.removeSemanticsEnabledListener(_placeTaskNodes);
+    _taskNodes.dispose();
     super.dispose();
   }
 
@@ -531,6 +549,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   void _onText() {
     widget.controller?._changed();
     _placeBar();
+    _placeTaskNodes();
     final text = _text.text;
     if (text == _known) return;
     _known = text;
@@ -619,6 +638,47 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     if (run == null) return KeyEventResult.ignored;
     run();
     return KeyEventResult.handled;
+  }
+
+  /// A chord MainActivity took before Gboard could (see [RichChords]): the
+  /// same as [_onKey] does with it when it reaches Flutter.
+  void _onChord(String chord) {
+    if (!_focus.hasFocus) return;
+    switch (chord) {
+      case 'bold':
+        _toggleInline('**', MdMark.bold);
+      case 'italic':
+        _toggleInline('_', MdMark.italic);
+      case 'code':
+        _toggleInline('`', MdMark.code);
+      case 'link':
+        unawaited(_editLink());
+      default:
+        final parts = chord.split(':');
+        if (parts.length < 2 || parts.first != 'select') return;
+        final forward = parts[1] == 'right' || parts[1] == 'down';
+        final word = parts.length > 2 && parts[2] == 'word';
+        final Intent intent = switch (parts[1]) {
+          'left' ||
+          'right' when word => ExtendSelectionToNextWordBoundaryIntent(
+            forward: forward,
+            collapseSelection: false,
+          ),
+          'left' || 'right' => ExtendSelectionByCharacterIntent(
+            forward: forward,
+            collapseSelection: false,
+          ),
+          'up' || 'down' => ExtendSelectionVerticallyToAdjacentLineIntent(
+            forward: forward,
+            collapseSelection: false,
+          ),
+          _ => const DoNothingIntent(),
+        };
+        // The field's own action, so the selection moves as Shift and an
+        // arrow move it on a desktop.
+        final context = _focus.context;
+        if (context != null) Actions.maybeInvoke(context, intent);
+    }
   }
 
   MdFormat? _format() {
@@ -849,6 +909,60 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     SchedulerBinding.instance.ensureVisualUpdate();
   }
 
+  /// Every task box drawn now, and the nodes a screen reader finds over them.
+  final _tasks = <_TaskMarkState>{};
+  final _taskNodes = ValueNotifier<List<_TaskNode>>(const []);
+  final _stackKey = GlobalKey();
+  bool _taskNodesDue = false;
+
+  /// Places the task boxes' nodes after the frame lays the boxes out, while
+  /// a screen reader or anything else asks for semantics: otherwise nothing.
+  void _placeTaskNodes() {
+    if (_taskNodesDue) return;
+    if (!SemanticsBinding.instance.semanticsEnabled &&
+        _taskNodes.value.isEmpty) {
+      return;
+    }
+    _taskNodesDue = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _taskNodesDue = false;
+      if (!mounted) return;
+      final stack = _stackKey.currentContext?.findRenderObject() as RenderBox?;
+      final nodes = <_TaskNode>[];
+      final t = _text.text;
+      if (stack != null && stack.hasSize) {
+        final page = Offset.zero & stack.size;
+        for (final mark in _tasks) {
+          final box = mark.context.findRenderObject() as RenderBox?;
+          if (box == null || !box.attached || !box.hasSize) continue;
+          // A field's inline widget is placed as if the field were not
+          // scrolled: it paints with the scroll added, its transform does not.
+          final scrolled = _scroll.hasClients ? _scroll.offset : 0.0;
+          final rect =
+              stack.globalToLocal(
+                box.localToGlobal(Offset.zero) - Offset(0, scrolled),
+              ) &
+              box.size;
+          if (!page.overlaps(rect)) continue;
+          final start = mark.widget.start();
+          if (start + 3 > t.length) continue;
+          var end = t.indexOf('\n', start);
+          if (end < 0) end = t.length;
+          nodes.add(
+            _TaskNode(
+              rect,
+              t[start + 1] != ' ',
+              start,
+              t.substring(start + 3, end).trim(),
+            ),
+          );
+        }
+      }
+      nodes.sort((a, b) => a.start.compareTo(b.start));
+      if (!listEquals(nodes, _taskNodes.value)) _taskNodes.value = nodes;
+    });
+  }
+
   /// Ticks or clears the task whose box starts at [start]: one character.
   void _toggleTask(int start) {
     final t = _text.text;
@@ -930,17 +1044,22 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           ),
         ),
       ),
-      MdSwapKind.task => Listener(
+      MdSwapKind.task => _TaskMark(
         key: ValueKey('md-task-${swap.range.start}'),
-        behavior: HitTestBehavior.opaque,
-        onPointerUp: (_) => _toggleTask(at?.call() ?? swap.range.start),
-        child: Padding(
-          padding: const EdgeInsets.only(right: 2),
-          child: IgnorePointer(
-            child: TuiCheckbox(
-              value: swap.checked,
-              dense: true,
-              onChanged: (_) {},
+        marks: _tasks,
+        checked: swap.checked,
+        start: () => at?.call() ?? swap.range.start,
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerUp: (_) => _toggleTask(at?.call() ?? swap.range.start),
+          child: Padding(
+            padding: const EdgeInsets.only(right: 2),
+            child: IgnorePointer(
+              child: TuiCheckbox(
+                value: swap.checked,
+                dense: true,
+                onChanged: (_) {},
+              ),
             ),
           ),
         ),
@@ -968,10 +1087,15 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           child: _Rendered(
             key: ValueKey(source),
             builder: widget.blockBuilder,
-            markdown: source,
+            markdown: htmlImage(source) ?? source,
           ),
         ),
       ),
+      // A line of its own for what follows: as wide as the column and no
+      // height, so the text after it wraps to the next line.
+      MdSwapKind.lineBreak => SizedBox(width: look.width, height: 0),
+      MdSwapKind.frontMatter => block(_FrontMatter(source: source, look: look)),
+      MdSwapKind.details => _Details(source: source, look: look),
     };
   }
 
@@ -1023,6 +1147,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         _text.swapBuilder = _swap;
         _text.sectionBuilder = _section;
         _text.beforeBuild = _beforeBuild;
+        _placeTaskNodes();
         final field = TextField(
           key: _fieldKey,
           controller: _text,
@@ -1085,6 +1210,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           onPointerUp: (event) => _onPointerUp(event.position),
           onPointerCancel: (_) => _onPointerUp(Offset.infinite),
           child: Stack(
+            key: _stackKey,
             children: [
               Positioned.fill(
                 child: Focus(
@@ -1100,6 +1226,28 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
                       ),
                     ),
                     child: field,
+                  ),
+                ),
+              ),
+              // A checkbox node over each task box, for a screen reader. They
+              // take no pointer: a touch goes on to the box below.
+              Positioned.fill(
+                child: ValueListenableBuilder<List<_TaskNode>>(
+                  valueListenable: _taskNodes,
+                  builder: (context, nodes, _) => Stack(
+                    children: [
+                      for (final n in nodes)
+                        Positioned.fromRect(
+                          rect: n.rect,
+                          child: Semantics(
+                            container: true,
+                            checked: n.checked,
+                            label: n.label.isEmpty ? 'Task' : n.label,
+                            onTap: () => _toggleTask(n.start),
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -1131,6 +1279,189 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     TargetPlatform.windows => 'Segoe UI',
     _ => 'Cantarell',
   };
+}
+
+/// An `<img>` tag as the Markdown picture it stands for, which the block
+/// builder draws as Preview does; null for anything else.
+@visibleForTesting
+String? htmlImage(String source) {
+  if (!source.toLowerCase().startsWith('<img')) return null;
+  String? attr(String name) {
+    final m = RegExp(
+      '\\b$name\\s*=\\s*("([^"]*)"|\'([^\']*)\'|([^\\s>]+))',
+      caseSensitive: false,
+    ).firstMatch(source);
+    return m?[2] ?? m?[3] ?? m?[4];
+  }
+
+  final src = attr('src');
+  if (src == null) return null;
+  final alt = (attr('alt') ?? '').replaceAll(RegExp(r'[\[\]]'), '');
+  return '![$alt](<$src>)';
+}
+
+/// Front matter drawn as a quiet block: each top-level key beside its value,
+/// a list or nested lines under a key kept with it.
+class _FrontMatter extends StatelessWidget {
+  const _FrontMatter({required this.source, required this.look});
+
+  final String source;
+  final MdLiveLook look;
+
+  /// The keys and values, in order.
+  static List<(String, String)> rows(String source) {
+    final lines = source.split('\n');
+    final body = lines.length > 2
+        ? lines.sublist(1, lines.length - 1)
+        : const <String>[];
+    final key = RegExp(r'^([A-Za-z0-9_.-]+)\s*:\s?(.*)$');
+    final out = <(String, String)>[];
+    for (final line in body) {
+      final m = key.firstMatch(line);
+      if (m != null) {
+        out.add((m[1]!, m[2]!.trim()));
+      } else if (out.isNotEmpty && line.trim().isNotEmpty) {
+        final (k, v) = out.removeLast();
+        out.add((k, v.isEmpty ? line.trim() : '$v\n${line.trim()}'));
+      } else if (line.trim().isNotEmpty) {
+        out.add(('', line.trim()));
+      }
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = look.palette;
+    final small = look.base.copyWith(
+      fontSize: look.size * 0.85,
+      height: 1.45,
+      color: p.muted,
+    );
+    final keyStyle = small.merge(look.code).copyWith(color: p.dim);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: p.border, width: 2)),
+      ),
+      child: Table(
+        columnWidths: const {0: IntrinsicColumnWidth(), 1: FlexColumnWidth()},
+        defaultVerticalAlignment: TableCellVerticalAlignment.top,
+        children: [
+          for (final (k, v) in rows(source))
+            TableRow(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Text(k, style: keyStyle),
+                ),
+                Text(v, style: small),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// `<details>` drawn as its summary with a disclosure mark, what follows it
+/// read as the document goes on; its `</details>` draws as nothing.
+class _Details extends StatelessWidget {
+  const _Details({required this.source, required this.look});
+
+  final String source;
+  final MdLiveLook look;
+
+  @override
+  Widget build(BuildContext context) {
+    if (source.trim().toLowerCase().startsWith('</')) {
+      return SizedBox(width: look.width, height: 0);
+    }
+    final summary = RegExp(
+      r'<summary>([^<]*)</summary>',
+      caseSensitive: false,
+    ).firstMatch(source)?[1]?.trim();
+    final p = look.palette;
+    return SizedBox(
+      width: look.width,
+      child: Text(
+        '▾ ${summary == null || summary.isEmpty ? 'Details' : summary}',
+        style: look.base.copyWith(fontWeight: FontWeight.w600, color: p.text),
+      ),
+    );
+  }
+}
+
+/// A task's box as drawn, registered with the editor while it is in the
+/// tree: the field gives a screen reader its text as one node and passes on
+/// nothing of a widget inside it, so the editor lays a checkbox node of its
+/// own over each box from here.
+class _TaskMark extends StatefulWidget {
+  const _TaskMark({
+    super.key,
+    required this.marks,
+    required this.checked,
+    required this.start,
+    required this.child,
+  });
+
+  final Set<_TaskMarkState> marks;
+  final bool checked;
+
+  /// Where its `[ ]` starts in the text now.
+  final int Function() start;
+  final Widget child;
+
+  @override
+  State<_TaskMark> createState() => _TaskMarkState();
+}
+
+class _TaskMarkState extends State<_TaskMark> {
+  @override
+  void initState() {
+    super.initState();
+    widget.marks.add(this);
+  }
+
+  @override
+  void didUpdateWidget(_TaskMark old) {
+    super.didUpdateWidget(old);
+    if (old.marks != widget.marks) {
+      old.marks.remove(this);
+      widget.marks.add(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.marks.remove(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+/// A task box's node for a screen reader, where the box is drawn.
+@immutable
+class _TaskNode {
+  const _TaskNode(this.rect, this.checked, this.start, this.label);
+
+  final Rect rect;
+  final bool checked;
+  final int start;
+  final String label;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _TaskNode &&
+      other.rect == rect &&
+      other.checked == checked &&
+      other.start == start &&
+      other.label == label;
+
+  @override
+  int get hashCode => Object.hash(rect, checked, start, label);
 }
 
 /// A rendered block, built once per source so a picture or a diagram is not
@@ -1206,13 +1537,17 @@ class _SectionView extends StatelessWidget {
         );
         onDown(this, position.offset);
       },
-      child: SizedBox(
-        width: look.width,
-        child: RichText(
-          key: _paragraph,
-          text: span,
-          textScaler: MediaQuery.textScalerOf(context),
-          textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+      // A layer of its own: a key typed elsewhere repaints the field, and
+      // this is then neither painted again nor, off screen, rasterised.
+      child: RepaintBoundary(
+        child: SizedBox(
+          width: look.width,
+          child: RichText(
+            key: _paragraph,
+            text: span,
+            textScaler: MediaQuery.textScalerOf(context),
+            textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+          ),
         ),
       ),
     );

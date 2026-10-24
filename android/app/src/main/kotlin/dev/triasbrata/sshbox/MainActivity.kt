@@ -47,7 +47,12 @@ class MainActivity : FlutterActivity() {
     // Ctrl+S for the file editor, taken before the IME: see SaveChord.
     private val saveChord = SaveChord()
 
-    // Native to Dart: "save", when saveChord takes a Ctrl+S.
+    // Rich text's Ctrl+B/I/E/K and Shift+arrows, taken the same way: see
+    // RichChords.
+    private val richChords = RichChords()
+
+    // Native to Dart: "save", when saveChord takes a Ctrl+S, and "rich" with
+    // a chord's name when richChords takes one.
     private var keys: MethodChannel? = null
 
     // FlutterActivity's view goes into a frame of ours, the one place a key
@@ -63,9 +68,18 @@ class MainActivity : FlutterActivity() {
             override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
                 val taken = saveChord.take(event.action, event.keyCode, event.metaState)
                 trace(event, "pre-IME", taken)
-                if (!taken) return super.dispatchKeyEventPreIme(event)
-                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    keys?.invokeMethod("save", null)
+                if (taken) {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                        keys?.invokeMethod("save", null)
+                    }
+                    return true
+                }
+                val chord = richChords.take(event.action, event.keyCode, event.metaState)
+                    ?: return super.dispatchKeyEventPreIme(event)
+                if (chord.isNotEmpty()) {
+                    // The chord's name, never the key typed.
+                    trace("rich $chord")
+                    keys?.invokeMethod("rich", chord)
                 }
                 return true
             }
@@ -186,6 +200,10 @@ class MainActivity : FlutterActivity() {
                 } else if (call.method == "saveChord") {
                     saveChord.wanted = call.arguments as Boolean
                     trace("wanted=${saveChord.wanted}")
+                    result.success(null)
+                } else if (call.method == "richChords") {
+                    richChords.wanted = call.arguments as Boolean
+                    trace("rich wanted=${richChords.wanted}")
                     result.success(null)
                 } else if (call.method == "notificationIcon") {
                     // By id, never by name: JEANSH-8, see NotificationIcon.

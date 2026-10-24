@@ -649,13 +649,20 @@ editor_save() {
 # A mutation that writes the document afresh on an edit fails the second,
 # since "* first item" or "*plain*" come back in another style.
 #
-# A selection across blocks with Shift and the arrows, and Ctrl+B, are the
-# Linux desktop test's: on the emulator Gboard takes the Shift and the Ctrl
-# of `input keycombination` before the app (the editor's Ctrl+S needed
-# MainActivity to take it first), so the phone's own way is driven here.
+# #327, after that: Gboard takes the Shift and the Ctrl of a hardware chord
+# before the app, so MainActivity takes Rich text's (RichChords) first, as
+# it takes the editor's Ctrl+S. Shift+Left from `input keycombination`
+# selects "added" and Ctrl+B bolds it, the file getting **added** and no
+# other byte; with the editor closed, Ctrl+B in the terminal reaches the app
+# and is not taken. A mutation with the route taken out leaves the file
+# without **added**.
+#
+# Then a link file: a plain tap on the link opens no web tab, and a long
+# press on it opens it in one. A mutation that never opens on a long press
+# fails the second.
 md_rich_text() {
   local status=0 file=/home/$SSH_USER/jeansh-e2e-rich.md old=1577836800
-  local original expected got changed
+  local original expected got changed rich_trail
   original=$'# Rich e2e\n\nA *plain* paragraph here.\n\n- [ ] a task\n\n* first item\n- second item\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
   expected=${original/A \*plain\* paragraph here./A *plain* **paragraph** here. added}
   expected=${expected/- \[ \] a task/- [x] a task}
@@ -703,7 +710,69 @@ md_rich_text() {
     sudo grep -qx -- '- \[x\] a task' "$file"
   check 'the table is as it was' sudo grep -qx -- '|---|---|' "$file"
 
+  # #327: hardware chords, through MainActivity's pre-IME route while Rich
+  # text holds the focus. The caret at the paragraph's end, Shift+Left five
+  # times selects "added" and Ctrl+B bolds it: the file gets **added** and
+  # no other byte changes.
+  adb logcat -c 2>/dev/null
+  flow md_rich_text -e STEP=caret || status=1
+  adb shell input keyevent KEYCODE_MOVE_END
+  sleep 1
+  for _ in 1 2 3 4 5; do
+    adb shell input keycombination KEYCODE_SHIFT_LEFT KEYCODE_DPAD_LEFT
+  done
+  sleep 1
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_B
+  sleep 1
+  rich_trail=$(adb logcat -d -s SaveChord:I 2>/dev/null | grep -v '^-' | grep rich)
+  echo "MainActivity's Rich text trail:"
+  echo "$rich_trail" | sed 's/^/  | /'
+  flow md_rich_text -e STEP=save || status=1
+  sleep 2
+  echo "The file on the host after the chords:"
+  sudo sed 's/^/  | /' "$file"
+  check 'Shift+Left was taken before the IME' grep -q 'rich select:left$' <<<"$rich_trail"
+  check 'Ctrl+B was taken before the IME' grep -q 'rich bold$' <<<"$rich_trail"
+  check 'Ctrl+B on the selection bolded it' \
+    sudo grep -qx -- 'A \*plain\* \*\*paragraph\*\* here\. \*\*added\*\*' "$file"
+  check 'the chords changed that line alone' \
+    [ "$(sudo cat "$file"; echo x)" = "${expected/here. added/here. **added**}x" ]
+
   flow md_rich_text -e STEP=close || status=1
+
+  # The editor closed: in the terminal Ctrl+B is the shell's again, and
+  # MainActivity takes none of it.
+  adb logcat -c 2>/dev/null
+  sudo rm -f "/home/$SSH_USER/jeansh-e2e-ctrlb.txt"
+  adb shell "input text 'head%s-n1%s>jeansh-e2e-ctrlb.txt'"
+  adb shell input keyevent KEYCODE_ENTER
+  sleep 2
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_B
+  sleep 1
+  adb shell input keyevent KEYCODE_ENTER
+  sleep 2
+  rich_trail=$(adb logcat -d -s SaveChord:I 2>/dev/null | grep -v '^-')
+  echo "terminal, editor closed: MainActivity's trail:"
+  echo "${rich_trail:-(none)}" | sed 's/^/  | /'
+  # Report only: what the shell read of it, which is Gboard's business.
+  echo "report: the shell read: $(sudo od -An -c "/home/$SSH_USER/jeansh-e2e-ctrlb.txt" 2>/dev/null)"
+  check 'in the terminal Ctrl+B reaches the app' \
+    grep -q 'pre-IME KEYCODE_CTRL_LEFT action=0' <<<"$rich_trail"
+  check 'in the terminal Ctrl+B is not taken' \
+    [ -z "$(grep 'rich ' <<<"$rich_trail")" ]
+  sudo rm -f "/home/$SSH_USER/jeansh-e2e-ctrlb.txt"
+
+  # #327: a long press on a link opens it, in a web tab, and a plain tap on
+  # it opens nothing.
+  printf '[%s](https://example.com/jeansh-e2e)\n' \
+    "$(printf 'Jeansh e2e link %.0s' 1 2 3 4 5 6 7 8 9 10 11 12)" |
+    sudo -u "$SSH_USER" tee "/home/$SSH_USER/jeansh-e2e-link.md" >/dev/null
+  flow md_rich_text -e STEP=link-open || status=1
+  check 'a plain tap on a link opens no web tab' \
+    flow md_rich_text -e STEP=link-tap
+  check 'a long press on a link opens it in a web tab' \
+    flow md_rich_text -e STEP=link-press
+  sudo rm -f "/home/$SSH_USER/jeansh-e2e-link.md"
   # The flow's screenshots, the phone's Rich text, as evidence.
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-text-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
