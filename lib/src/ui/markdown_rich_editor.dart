@@ -381,7 +381,13 @@ TextSpan liveSpan(
     }
     // A block drawn whole takes its line: the break after it hides too, or
     // the rows it stands for leave a line of their own below it.
-    final block = s.kind == MdSwapKind.table || s.kind == MdSwapKind.fence;
+    final block = switch (s.kind) {
+      MdSwapKind.table ||
+      MdSwapKind.fence ||
+      MdSwapKind.frontMatter ||
+      MdSwapKind.details => true,
+      _ => false,
+    };
     if (block && s.range.end + 1 < n && t.codeUnitAt(s.range.end) == 0x0A) {
       draw[s.range.end] = _hide;
     }
@@ -422,7 +428,9 @@ TextSpan liveSpan(
             MdSwapKind.table ||
             MdSwapKind.fence ||
             MdSwapKind.image ||
-            MdSwapKind.rule => PlaceholderAlignment.bottom,
+            MdSwapKind.rule ||
+            MdSwapKind.frontMatter ||
+            MdSwapKind.details => PlaceholderAlignment.bottom,
             _ => PlaceholderAlignment.middle,
           },
           child: swapBuilder!(
@@ -1079,10 +1087,15 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           child: _Rendered(
             key: ValueKey(source),
             builder: widget.blockBuilder,
-            markdown: source,
+            markdown: htmlImage(source) ?? source,
           ),
         ),
       ),
+      // A line of its own for what follows: as wide as the column and no
+      // height, so the text after it wraps to the next line.
+      MdSwapKind.lineBreak => SizedBox(width: look.width, height: 0),
+      MdSwapKind.frontMatter => block(_FrontMatter(source: source, look: look)),
+      MdSwapKind.details => _Details(source: source, look: look),
     };
   }
 
@@ -1266,6 +1279,117 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     TargetPlatform.windows => 'Segoe UI',
     _ => 'Cantarell',
   };
+}
+
+/// An `<img>` tag as the Markdown picture it stands for, which the block
+/// builder draws as Preview does; null for anything else.
+@visibleForTesting
+String? htmlImage(String source) {
+  if (!source.toLowerCase().startsWith('<img')) return null;
+  String? attr(String name) {
+    final m = RegExp(
+      '\\b$name\\s*=\\s*("([^"]*)"|\'([^\']*)\'|([^\\s>]+))',
+      caseSensitive: false,
+    ).firstMatch(source);
+    return m?[2] ?? m?[3] ?? m?[4];
+  }
+
+  final src = attr('src');
+  if (src == null) return null;
+  final alt = (attr('alt') ?? '').replaceAll(RegExp(r'[\[\]]'), '');
+  return '![$alt](<$src>)';
+}
+
+/// Front matter drawn as a quiet block: each top-level key beside its value,
+/// a list or nested lines under a key kept with it.
+class _FrontMatter extends StatelessWidget {
+  const _FrontMatter({required this.source, required this.look});
+
+  final String source;
+  final MdLiveLook look;
+
+  /// The keys and values, in order.
+  static List<(String, String)> rows(String source) {
+    final lines = source.split('\n');
+    final body = lines.length > 2
+        ? lines.sublist(1, lines.length - 1)
+        : const <String>[];
+    final key = RegExp(r'^([A-Za-z0-9_.-]+)\s*:\s?(.*)$');
+    final out = <(String, String)>[];
+    for (final line in body) {
+      final m = key.firstMatch(line);
+      if (m != null) {
+        out.add((m[1]!, m[2]!.trim()));
+      } else if (out.isNotEmpty && line.trim().isNotEmpty) {
+        final (k, v) = out.removeLast();
+        out.add((k, v.isEmpty ? line.trim() : '$v\n${line.trim()}'));
+      } else if (line.trim().isNotEmpty) {
+        out.add(('', line.trim()));
+      }
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = look.palette;
+    final small = look.base.copyWith(
+      fontSize: look.size * 0.85,
+      height: 1.45,
+      color: p.muted,
+    );
+    final keyStyle = small.merge(look.code).copyWith(color: p.dim);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: p.border, width: 2)),
+      ),
+      child: Table(
+        columnWidths: const {0: IntrinsicColumnWidth(), 1: FlexColumnWidth()},
+        defaultVerticalAlignment: TableCellVerticalAlignment.top,
+        children: [
+          for (final (k, v) in rows(source))
+            TableRow(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Text(k, style: keyStyle),
+                ),
+                Text(v, style: small),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// `<details>` drawn as its summary with a disclosure mark, what follows it
+/// read as the document goes on; its `</details>` draws as nothing.
+class _Details extends StatelessWidget {
+  const _Details({required this.source, required this.look});
+
+  final String source;
+  final MdLiveLook look;
+
+  @override
+  Widget build(BuildContext context) {
+    if (source.trim().toLowerCase().startsWith('</')) {
+      return SizedBox(width: look.width, height: 0);
+    }
+    final summary = RegExp(
+      r'<summary>([^<]*)</summary>',
+      caseSensitive: false,
+    ).firstMatch(source)?[1]?.trim();
+    final p = look.palette;
+    return SizedBox(
+      width: look.width,
+      child: Text(
+        '▾ ${summary == null || summary.isEmpty ? 'Details' : summary}',
+        style: look.base.copyWith(fontWeight: FontWeight.w600, color: p.text),
+      ),
+    );
+  }
 }
 
 /// A task's box as drawn, registered with the editor while it is in the

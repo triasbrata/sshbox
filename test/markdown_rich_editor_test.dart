@@ -615,6 +615,45 @@ void main() {
     expect(host.refused, ['Select the text to link first.']);
   });
 
+  testWidgets('front matter draws as keys and values, <details> as its '
+      'summary and <img> as its picture; the caret shows the source, and '
+      'nothing changes', (tester) async {
+    const doc =
+        '---\ntitle: notes\ntags:\n  - a\n  - b\nloose line\n---\n\n'
+        'Text<br>more and <img src="p.png" alt="P">.\n\n'
+        '<details>\n<summary>More</summary>\n\nInside.\n\n</details>\n';
+    final host = await _pump(tester, doc);
+    await tester.pump();
+    expect(find.text('title'), findsOneWidget);
+    expect(find.text('notes'), findsOneWidget);
+    expect(find.text('tags'), findsOneWidget);
+    expect(find.text('- a\n- b\nloose line'), findsOneWidget);
+    expect(find.text('▾ More'), findsOneWidget);
+    expect(find.text('RENDERED ![P](<p.png>)'), findsOneWidget);
+    expect(_shown(tester), isNot(contains('<br>')));
+
+    // The caret in the front matter: its source, and the rows go.
+    await tester.showKeyboard(find.byType(EditableText));
+    _controller(tester).selection = const TextSelection.collapsed(offset: 6);
+    await tester.pump();
+    expect(find.text('title'), findsNothing);
+    expect(_shown(tester), startsWith('---\ntitle: notes\n'));
+    // In the paragraph: the tags as written.
+    _controller(tester).selection = TextSelection.collapsed(
+      offset: doc.indexOf('<br>') + 1,
+    );
+    await tester.pump();
+    expect(_shown(tester), contains('Text<br>more'));
+    expect(host.changes, isEmpty);
+
+    // An empty front matter and an unnamed summary draw too.
+    FocusManager.instance.primaryFocus?.unfocus();
+    host.set('---\n---\n\n<details open>\n\nx\n');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('▾ Details'), findsOneWidget);
+  });
+
   group('task boxes for a screen reader', () {
     const doc = '# Tasks\n\n- [ ] open one\n- [x] done one\n\nA paragraph.\n';
 

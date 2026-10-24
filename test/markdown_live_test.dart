@@ -356,6 +356,79 @@ void main() {
     });
   });
 
+  group('front matter and HTML', () {
+    test(
+      'front matter is one block, its source shown with the caret in it',
+      () {
+        const t = '---\ntitle: notes\ntags: [a]\n---\n\nBody';
+        final live = MdLive.parse(t);
+        final fm = live.swaps.where((s) => s.kind == MdSwapKind.frontMatter);
+        expect(fm.single.range, MdRange(0, t.indexOf('\n\nBody')));
+        expect(_shown(t, []), '■\nBody');
+        expect(_shown(t, [6]), t);
+      },
+    );
+
+    test('<b>, <strong>, <i>, <em> and <a href> hide their tags and style '
+        'what is between', () {
+      const t =
+          'A <b>bold</b>, <strong>strong</strong>, <i>it</i>, <em>em</em> '
+          "and <a href='https://e.x'>link</a>.";
+      final live = MdLive.parse(t);
+      expect(_shown(t, []), 'A bold, strong, it, em and link.');
+      expect(live.marks[t.indexOf('bold')] & MdMark.bold, MdMark.bold);
+      expect(live.marks[t.indexOf('strong<')] & MdMark.bold, MdMark.bold);
+      expect(live.marks[t.indexOf('it<')] & MdMark.italic, MdMark.italic);
+      expect(live.marks[t.indexOf('em<')] & MdMark.italic, MdMark.italic);
+      expect(live.linkAt(t.indexOf('link')), const MdLink('https://e.x'));
+      // The caret in one shows that one's tags alone.
+      expect(
+        _shown(t, [t.indexOf('bold')]),
+        'A <b>bold</b>, strong, it, em and link.',
+      );
+      expect(
+        MdLive.parse('<a href="u" title=x>t</a> <a href=v>w</a>').links
+            .map((l) => l.link.href),
+        ['u', 'v'],
+      );
+    });
+
+    test('<br> and <img> are drawn, other tags are quiet source', () {
+      expect(_shown('one<br>two<br/>three', []), 'one■two■three');
+      expect(_shown('see <img src="p.png" alt="P"> here', []), 'see ■ here');
+      const span = 'a <span>tag</span> and <b>open';
+      final live = MdLive.parse(span);
+      expect(_shown(span, []), span);
+      final quiet = MdMark.dim | MdMark.code;
+      expect(live.marks[span.indexOf('<span')] & quiet, quiet);
+      expect(live.marks[span.indexOf('</span')] & quiet, quiet);
+      expect(live.marks[span.indexOf('<b>')] & quiet, quiet);
+      expect(live.marks[span.indexOf('tag')] & quiet, 0);
+    });
+
+    test('a block of drawn tags reads as text; <details> is its summary; '
+        'any other block stays source', () {
+      expect(_shown('<b>Bold</b> start\n', []), 'Bold start\n');
+      const d = '<details>\n<summary>More</summary>\n\nHidden.\n\n</details>\n';
+      final live = MdLive.parse(d);
+      expect(live.swaps.where((s) => s.kind == MdSwapKind.details).length, 2);
+      expect(_shown(d, []), contains('Hidden.'));
+      expect(_shown(d, []), isNot(contains('summary')));
+      const div = '<div>\nx\n</div>\n';
+      expect(_shown(div, []), div);
+      expect(MdLive.parse(div).marks[0] & MdMark.code, MdMark.code);
+      expect(_shown('<!-- <b>x</b> -->\n', []), '<!-- <b>x</b> -->\n');
+    });
+
+    test('an <img> tag is the Markdown picture it stands for', () {
+      expect(htmlImage('<img src="a b.png" alt="[x]">'), '![x](<a b.png>)');
+      expect(htmlImage("<IMG alt='y' src='c.png'/>"), '![y](<c.png>)');
+      expect(htmlImage('<img src=d.png>'), '![](<d.png>)');
+      expect(htmlImage('<img alt="none">'), isNull);
+      expect(htmlImage('| a | b |'), isNull);
+    });
+  });
+
   group('incremental reading', () {
     void same(MdLive got, MdLive want, String why) {
       expect(got.text, want.text, reason: why);

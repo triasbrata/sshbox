@@ -111,7 +111,24 @@ class MdHide {
   String toString() => 'MdHide($range, $reveal)';
 }
 
-enum MdSwapKind { bullet, task, quoteBar, rule, table, fence, image }
+enum MdSwapKind {
+  bullet,
+  task,
+  quoteBar,
+  rule,
+  table,
+  fence,
+  image,
+
+  /// Front matter, drawn as a quiet block of its keys and values.
+  frontMatter,
+
+  /// `<details>` with its `<summary>`, or the `</details>` that ends it.
+  details,
+
+  /// `<br>`: the rest of the paragraph on a line of its own.
+  lineBreak,
+}
 
 /// Source drawn as something else until the caret goes into [reveal]: its
 /// first character becomes the widget and the rest hides, so the text and
@@ -497,6 +514,25 @@ final _htmlStart = RegExp(
   caseSensitive: false,
 );
 
+/// An HTML block that is a `<details>` opening, with its `<summary>`, or the
+/// `</details>` that closes one.
+final _details = RegExp(
+  r'^\s*(<details(\s+open)?\s*>\s*(<summary>[^<\n]*</summary>)?|</details>)\s*$',
+  caseSensitive: false,
+);
+
+/// The HTML drawn rather than shown as source: these tags, and no others.
+const _drawnTags = {'b', 'strong', 'i', 'em', 'a', 'br', 'img'};
+final _anyTag = RegExp(r'<(/?)([a-zA-Z][a-zA-Z0-9]*)\b[^<>]*>');
+
+/// Whether [source] holds only tags drawn as such, and no comment.
+bool _simpleHtml(String source) {
+  if (source.contains('<!')) return false;
+  final tags = _anyTag.allMatches(source).toList();
+  return tags.isNotEmpty &&
+      tags.every((m) => _drawnTags.contains(m[2]!.toLowerCase()));
+}
+
 /// How many lines a section takes before it may end: smaller sections shape
 /// less on each key, larger ones make fewer runs in the page.
 const _sectionLines = 8;
@@ -618,6 +654,8 @@ class _Reader {
           add(j, MdLineKind.frontMatter);
         }
         mark(0, lineEnd(e), MdMark.dim | MdMark.codeBlock);
+        final all = MdRange(0, lineEnd(e));
+        swaps.add(MdSwap(MdSwapKind.frontMatter, all, all));
         k = e + 1;
         prevKind = MdLineKind.frontMatter;
       }
@@ -736,7 +774,21 @@ class _Reader {
         for (var j = k; j <= e; j++) {
           add(j, MdLineKind.html, quote: quote);
         }
-        mark(b, lineEnd(e), MdMark.dim | MdMark.code);
+        final end = lineEnd(e);
+        final source = text.substring(b, end);
+        if (_details.hasMatch(source)) {
+          // Drawn as the summary it opens with, or as nothing for its end.
+          final r = MdRange(b, end);
+          mark(b, end, MdMark.dim | MdMark.code);
+          swaps.add(MdSwap(MdSwapKind.details, r, r));
+        } else if (_simpleHtml(source)) {
+          // Only tags drawn as Preview drew them: read as a paragraph's text.
+          for (var j = k; j <= e; j++) {
+            _inline(starts[j] + (j == k ? at : 0), lineEnd(j));
+          }
+        } else {
+          mark(b, end, MdMark.dim | MdMark.code);
+        }
         prevKind = MdLineKind.html;
         k = e + 1;
         continue;
@@ -1038,6 +1090,11 @@ class _Reader {
           i = all.end;
           continue;
         }
+        final html = _inlineHtml(i, end, bits);
+        if (html > i) {
+          i = html;
+          continue;
+        }
       }
       if ((c == 'h') &&
           (i == start || !RegExp(r'[A-Za-z0-9]').hasMatch(text[i - 1]))) {
@@ -1066,6 +1123,63 @@ class _Reader {
       }
       i++;
     }
+  }
+
+  /// A tag at [i]: where what it covers ends, or [i] when it is none. `<br>`
+  /// and `<img>` are drawn, `<b>`, `<strong>`, `<i>`, `<em>` and `<a href>`
+  /// hide their tags and style what is between, as Preview drew them; any
+  /// other tag is quiet source.
+  int _inlineHtml(int i, int end, int bits) {
+    final open = _anyTag.matchAsPrefix(text.substring(i, end));
+    if (open == null) return i;
+    final tag = MdRange(i, i + open[0]!.length);
+    final name = open[2]!.toLowerCase();
+    if (open[1]!.isNotEmpty || !_drawnTags.contains(name)) {
+      mark(tag.start, tag.end, MdMark.dim | MdMark.code);
+      return tag.end;
+    }
+    if (name == 'br') {
+      mark(tag.start, tag.end, MdMark.dim);
+      swaps.add(MdSwap(MdSwapKind.lineBreak, tag, tag));
+      return tag.end;
+    }
+    if (name == 'img') {
+      mark(tag.start, tag.end, MdMark.dim);
+      swaps.add(MdSwap(MdSwapKind.image, tag, tag));
+      return tag.end;
+    }
+    final close = RegExp('</$name\\s*>', caseSensitive: false);
+    final m = close.firstMatch(text.substring(tag.end, end));
+    if (m == null) {
+      mark(tag.start, tag.end, MdMark.dim | MdMark.code);
+      return tag.end;
+    }
+    final inner = MdRange(tag.end, tag.end + m.start);
+    final shut = MdRange(inner.end, tag.end + m.end);
+    final all = MdRange(tag.start, shut.end);
+    final style = switch (name) {
+      'b' || 'strong' => MdMark.bold,
+      'i' || 'em' => MdMark.italic,
+      _ => 0,
+    };
+    if (name == 'a') {
+      final href = RegExp(
+        r'''\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))''',
+        caseSensitive: false,
+      ).firstMatch(open[0]!);
+      final url = href?[2] ?? href?[3] ?? href?[4];
+      if (url != null) {
+        links.add(MdLinkSpan(inner, MdLink(url), all: all));
+        mark(inner.start, inner.end, MdMark.link);
+      }
+    }
+    mark(inner.start, inner.end, style);
+    mark(tag.start, tag.end, MdMark.dim | style);
+    mark(shut.start, shut.end, MdMark.dim | style);
+    hides.add(MdHide(tag, all));
+    hides.add(MdHide(shut, all));
+    _span(inner.start, inner.end, bits | style);
+    return all.end;
   }
 
   int _closingTicks(int from, int end, int len) {
