@@ -358,9 +358,22 @@ class ChatModel {
       choices.any((c) => c.alias == alias) ? alias : null;
 
   /// What the app log says of a model: the id comes from the host, so only a
-  /// name this app knows is written, `other` for any other.
-  static String logName(String? model) =>
-      model == null ? 'model unknown' : shortName(model) ?? 'other';
+  /// name this app knows is written, `other` for any other: an alias it
+  /// offers, or an id of a family it offers, never a family word the host
+  /// made up.
+  static String logName(String? model) {
+    if (model == null) return 'model unknown';
+    for (final c in choices) {
+      if (c.alias == model) return c.label;
+    }
+    final name = shortName(model);
+    if (name == null) return 'other';
+    final family = name.split(' ').first.toLowerCase();
+    final offered = choices.any(
+      (c) => c.alias != defaultAlias && c.alias == family,
+    );
+    return offered ? name : 'other';
+  }
 
   /// `claude-opus-5-5` → `Opus 5.5`; `claude-haiku-4-5-20251001` → `Haiku 4.5`;
   /// an alias → its label. Null for an id of a shape this does not know, so
