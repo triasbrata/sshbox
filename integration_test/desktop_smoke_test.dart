@@ -62,7 +62,8 @@ import 'package:sshbox/src/ui/file_editor_page.dart' show FileEditorPage;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/markdown_rich_editor.dart'
     show MarkdownRichEditor;
-import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
+import 'package:sshbox/src/ui/mermaid_canvas.dart' show MermaidCanvas;
+import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidBlock, MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart'
     show TuiChatBubble, TuiChatSessionList;
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart' show TuiCheckbox;
@@ -2264,11 +2265,14 @@ touch '${done.path}'
     },
   );
 
-  // #131: a terminal selection holding Mermaid is shown as a diagram, where
-  // a web view draws one — the Mac — from the right-click menu, and not
-  // offered at all where none does.
+  // #131, then #333: a terminal selection holding Mermaid is shown as a
+  // diagram from the right-click menu. A flowchart is drawn natively, so it
+  // is offered on every desktop; a pie only Mermaid in a web view draws, so
+  // it is offered only where there is one, the Mac, whose dialog shows its
+  // source and Open in Mermaid. Real OS input: the drag and the right-click
+  // go through xdotool or CoreGraphics.
   _test(
-    'a selection holding Mermaid is shown as a diagram',
+    'a selection holding Mermaid is shown as a diagram, drawn natively',
     skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
@@ -2276,21 +2280,30 @@ touch '${done.path}'
       final script = File('${_scratch().path}/diagram.sh')
         ..writeAsStringSync(
           "printf '  \\140\\140\\140mermaid\\n  graph TD\\n    A --> B\\n"
-          "  \\140\\140\\140\\n'\n",
+          "  \\140\\140\\140\\n'\n"
+          "printf '  \\140\\140\\140mermaid\\n  pie title Pets\\n"
+          "    Dogs : 3\\n  \\140\\140\\140\\n'\n",
         );
       _run(view, 'sh ${script.path}');
 
       final lines = view.terminal.buffer.lines;
-      var open = -1;
-      await _until(tester, () {
-        for (var i = 0; i + 3 < lines.length; i++) {
+      // The fence opening the block whose first line starts with [kind].
+      int open(String kind) {
+        for (var i = lines.length - 4; i >= 0; i--) {
           if (lines[i].getText().trim() == '```mermaid' &&
+              lines[i + 1].getText().trim().startsWith(kind) &&
               lines[i + 3].getText().trim() == '```') {
-            open = i;
+            return i;
           }
         }
-        return open >= 0;
-      }, 'the mermaid block to be drawn');
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => open('graph TD') >= 0 && open('pie') >= 0,
+        'the two mermaid blocks to be drawn',
+      );
 
       final render = tester
           .state<TerminalViewState>(find.byType(TerminalView))
@@ -2299,57 +2312,102 @@ touch '${done.path}'
         render.getOffset(CellOffset(col, row)) +
             Offset(render.cellSize.width / 2, render.lineHeight / 2),
       );
-      final mouse = await tester.startGesture(
-        cell(0, open),
-        kind: PointerDeviceKind.mouse,
-      );
-      for (final (col, row) in [(6, open + 1), (10, open + 2), (5, open + 3)]) {
-        await mouse.moveTo(cell(col, row));
-        await tester.pump();
+      // The block at [at] selected with a real drag, and the menu opened on
+      // it with a real right-click.
+      Future<void> menuOn(int at) async {
+        await _realPointer(() async {
+          final from = cell(0, at);
+          await _osMouse(tester, [
+            'move ${from.dx} ${from.dy}',
+            'down',
+            'sleep 60',
+            for (final (col, row) in [
+              (6, at + 1),
+              (10, at + 2),
+              (5, at + 3),
+            ]) ...[
+              'move ${cell(col, row).dx} ${cell(col, row).dy}',
+              'sleep 60',
+            ],
+            'up',
+          ]);
+          await _until(
+            tester,
+            () => find.byType(TuiToastCard).evaluate().isEmpty,
+            'the toasts to go',
+          );
+          await _realRightClick(tester, cell(4, at + 1));
+        });
+        await _until(
+          tester,
+          () => _label('Copy').evaluate().isNotEmpty,
+          'the menu to open',
+        );
       }
-      await mouse.up();
-      await tester.pump(const Duration(milliseconds: 300));
+
+      // The flowchart: offered, and drawn natively in the dialog.
+      await menuOn(open('graph TD'));
+      expect(
+        _label('Show as diagram'),
+        findsOneWidget,
+        reason: 'a flowchart is drawn natively, yet Show as diagram is missing',
+      );
+      await _pick(tester, 'Show as diagram');
       await _until(
         tester,
-        () => find.byType(TuiToastCard).evaluate().isEmpty,
-        'the toasts to go',
+        () => find.byType(MermaidBlock).evaluate().isNotEmpty,
+        'the diagram dialog',
       );
-      await tester.tapAt(
-        cell(4, open + 1),
-        kind: PointerDeviceKind.mouse,
-        buttons: kSecondaryMouseButton,
+      expect(
+        tester.widget<MermaidBlock>(find.byType(MermaidBlock)).source,
+        'graph TD\n  A --> B\n',
       );
+      final semantics = tester.ensureSemantics();
+      await tester.pump();
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      expect(
+        tester.getSemantics(find.byType(MermaidCanvas)).label,
+        startsWith('Flowchart: A, B'),
+      );
+      semantics.dispose();
+      expect(find.byType(MermaidView), findsNothing);
+      expect(find.textContaining('not drawn natively'), findsNothing);
+      debugPrint(
+        '✅ terminal: graph TD selected, Show as diagram drew it natively',
+      );
+      await _grab(tester, 'desktop-mermaid-terminal-flowchart');
+      await tester.tap(_label('Close'));
       await _until(
         tester,
-        () => _label('Copy').evaluate().isNotEmpty,
-        'the menu to open',
+        () => find.byType(MermaidBlock).evaluate().isEmpty,
+        'the dialog to close',
       );
+
+      // The pie: no native drawing. With no web view it is not offered at
+      // all; on the Mac it is, and shows its source.
+      await menuOn(open('pie'));
       if (!hasWebView) {
-        expect(_label('Show as diagram'), findsNothing);
+        expect(
+          _label('Show as diagram'),
+          findsNothing,
+          reason: 'a pie with no web view to draw it was offered',
+        );
+        debugPrint('✅ terminal: a pie selection offers no Show as diagram');
         await _escape(tester);
       } else {
         await _pick(tester, 'Show as diagram');
         await _until(
           tester,
-          () => find.byType(MermaidView).evaluate().isNotEmpty,
+          () => find.byType(MermaidBlock).evaluate().isNotEmpty,
           'the diagram dialog',
         );
-        expect(
-          tester.widget<MermaidView>(find.byType(MermaidView)).source,
-          'graph TD\n  A --> B\n',
+        expect(find.byType(MermaidCanvas), findsNothing);
+        expect(find.text('pie is not drawn natively'), findsOneWidget);
+        expect(_label('Open in Mermaid'), findsOneWidget);
+        debugPrint(
+          '✅ terminal: a pie shows its source and Open in Mermaid, no canvas',
         );
-        await _until(
-          tester,
-          () => find
-              .descendant(
-                of: find.byType(MermaidView),
-                matching: find.byIcon(Icons.account_tree_outlined),
-              )
-              .evaluate()
-              .isEmpty,
-          'the diagram to be drawn',
-          timeout: const Duration(seconds: 30),
-        );
+        await _grab(tester, 'desktop-mermaid-terminal-pie');
         await tester.tap(_label('Close'));
         await tester.pump(const Duration(milliseconds: 600));
       }
@@ -4578,42 +4636,22 @@ touch '${done.path}'
         reason: 'the composer',
       );
 
-      // #131: its mermaid fences are diagrams where a web view draws them,
-      // the Mac, and their source as code where none does.
-      final diagrams = find.byType(MermaidView);
-      if (!hasWebView) {
-        expect(diagrams, findsNothing);
-        expect(
-          find.textContaining('E2E1 --> Done1', findRichText: true),
-          findsWidgets,
-        );
-      } else {
-        // Drawn: the placeholder a view shows until the page says its height.
-        Finder waiting() => find.descendant(
-          of: diagrams,
-          matching: find.byIcon(Icons.account_tree_outlined),
-        );
-        expect(diagrams, findsWidgets);
-        expect(
-          find.textContaining('E2E1 --> Done1', findRichText: true),
-          findsNothing,
-          reason: 'a diagram shown as its source',
-        );
-        await _until(
-          tester,
-          () => waiting().evaluate().length < diagrams.evaluate().length,
-          'a diagram in the reply to be drawn',
-          timeout: const Duration(seconds: 60),
-        );
-        // Given the time, how many of those built came to be drawn, and none
-        // as the grey of a widget that threw.
-        await tester.pump(const Duration(seconds: 5));
-        debugPrint(
-          'Diagrams built ${diagrams.evaluate().length}, '
-          'still waiting ${waiting().evaluate().length}',
-        );
-        expect(find.byType(ErrorWidget), findsNothing);
-      }
+      // #131, then #333: its mermaid fences are flowcharts, drawn natively
+      // on every desktop, web view or none, never as their source.
+      final diagrams = find.byType(MermaidCanvas);
+      expect(diagrams, findsWidgets);
+      expect(find.byType(MermaidView), findsNothing);
+      expect(
+        find.textContaining('E2E1 --> Done1', findRichText: true),
+        findsNothing,
+        reason: 'a diagram shown as its source',
+      );
+      expect(find.byTooltip('Copy diagram source'), findsWidgets);
+      expect(find.byType(ErrorWidget), findsNothing);
+      debugPrint(
+        '✅ chat: ${diagrams.evaluate().length} mermaid fences drawn '
+        'natively, none as source',
+      );
       await _closeTabs(tester);
     },
   );
@@ -9424,6 +9462,130 @@ touch '${done.path}'
         'the save to write the word and the fence alone',
         timeout: const Duration(seconds: 8),
       );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #333: a Markdown file's flowchart and sequence diagram, the first and
+  // the last of docs/notification-architecture.md, are drawn natively in
+  // Rich text on every desktop, web view or none, never as their source;
+  // a pie, which has no native drawing, shows its source under a line
+  // saying so, and Open in Mermaid only where a web view is (the Mac).
+  // Opened and looked at, the file is not written.
+  _test(
+    'rich text: a flowchart and a sequence diagram draw natively, and a pie '
+    'shows its source',
+    skip: editorSkip,
+    (tester) async {
+      const original = r'''
+# Mermaid e2e
+
+```mermaid
+flowchart LR
+  subgraph Tablet
+    App["Jeansh app"]
+    Store[("Secret store<br/>sshbox.notify.keys<br/>sshbox.notify.revoke")]
+  end
+  subgraph Server["SSH server"]
+    SSHD["sshd or Tailscale SSH"]
+    Shell["shell or tmux"]
+    Notify["sshbox-notify<br/>(notify.sh)"]
+  end
+  subgraph Cloudflare
+    Relay["jeansh-notify Worker<br/>jeansh-notify.brata.cloud"]
+    KV[("Workers KV<br/>KEYS")]
+  end
+  subgraph Google
+    OAuth["OAuth token endpoint"]
+    FCM["FCM HTTP v1"]
+  end
+
+  App --- Store
+  App <-->|"SSH connection: shell, LC_SSHBOX_* variables,<br/>remote forward on 127.0.0.1:0"| SSHD
+  SSHD --> Shell --> Notify
+  Notify -->|"1 direct: HTTP to 127.0.0.1:port,<br/>down the SSH connection"| SSHD
+  Notify -->|"2 fallback: signed POST /v1/send"| Relay
+  App -->|"signed POST /v1/register<br/>and DELETE /v1/key"| Relay
+  Relay --- KV
+  Relay -->|"service-account JWT"| OAuth
+  Relay -->|"messages:send"| FCM
+  FCM -->|"push"| App
+```
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant FCM as FCM SDK on the tablet
+  participant App as Jeansh app
+  participant Store as Secret store
+  participant Relay as jeansh-notify relay
+  participant KV as Workers KV
+
+  Note over FCM,App: PushMessaging.initialize: getToken() at launch, then every onTokenRefresh
+  FCM->>App: token T2, replacing T1
+  App->>App: NotifyKeys.useFcmToken(T2): _fcmToken = T2,<br/>and the keys waiting for a revoke are tried again (diagram 6)
+  loop every host with a key, all at once (Future.wait)
+    App->>App: _sync(hostId): registered for T1, not T2
+    App->>Relay: POST /v1/register {token: T2, publicKey: the same SPKI, host: hostId},<br/>signed with that key (diagram 1)
+    Relay->>KV: put k:keyId, the same keyId, now with token T2
+    Relay-->>App: 200 {keyId}, the same id
+    App->>Store: save the key with fcmToken T2
+  end
+  Note over App,Relay: _register goes round again if the token changed meanwhile.<br/>Servers keep their LC_SSHBOX_KEY and carry on, with no reconnect.<br/>A failure keeps the T1 registration, tried again at the next connect, token or launch.
+```
+
+```mermaid
+pie title E2E pets
+  "Dogs" : 3
+  "Cats" : 2
+```
+''';
+      final k = await _EditorSave.start(tester, 'diagrams.md', text: original);
+      final canvases = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(MermaidCanvas),
+      );
+      await _until(
+        tester,
+        () => canvases.evaluate().length == 2,
+        'the flowchart and the sequence diagram to be drawn',
+      );
+      final semantics = tester.ensureSemantics();
+      await tester.pump();
+      expect(
+        tester.getSemantics(canvases.at(0)).label,
+        startsWith('Flowchart: '),
+      );
+      expect(
+        tester.getSemantics(canvases.at(1)).label,
+        startsWith('Sequence diagram between User, Android, Jeansh app'),
+      );
+      semantics.dispose();
+      // What is drawn as text outside the field: no diagram's source.
+      Finder drawn(String text) => find.byWidgetPredicate(
+        (w) => w is RichText && w.text.toPlainText().contains(text),
+      );
+      expect(drawn('flowchart LR'), findsNothing);
+      expect(drawn('sequenceDiagram'), findsNothing);
+      debugPrint(
+        '✅ rich text: flowchart and sequence diagram drawn natively, '
+        'no source shown',
+      );
+
+      // The pie: its source, the word, and Open in Mermaid where a web view
+      // can draw it.
+      expect(find.text('pie is not drawn natively'), findsOneWidget);
+      expect(drawn('pie title E2E pets'), findsWidgets);
+      expect(
+        _label('Open in Mermaid'),
+        hasWebView ? findsOneWidget : findsNothing,
+      );
+      debugPrint(
+        '✅ rich text: a pie shows its source, '
+        '${hasWebView ? 'with' : 'and no'} Open in Mermaid',
+      );
+      await _grab(tester, 'desktop-md-mermaid');
+      expect(k.file.readAsStringSync(), original, reason: 'looking wrote it');
       await _closeTabs(tester);
     },
   );

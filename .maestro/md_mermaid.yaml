@@ -1,0 +1,133 @@
+# Mermaid drawn natively in a Markdown file's Rich text (#333):
+# tools/e2e_android.sh's md_mermaid puts two files in the login home, and
+# compares the screen before and after a swipe between this flow's steps.
+#
+#   jeansh-e2e-mermaid.md  the flowchart and the last sequence diagram of
+#                          docs/notification-architecture.md
+#   jeansh-e2e-pie.md      a pie, which has no native drawing
+#
+# A drawn diagram is one node for a screen reader, labelled "Flowchart: …"
+# or "Sequence diagram between …"; Maestro finds it by that label.
+# The field gives its whole text as one node, so a diagram's source is in
+# that node whether drawn or not: a source shown in its place is a node of
+# its own, starting with its first line, which is what is looked for.
+#
+# STEP comes from -e alone (see chat_images.yaml):
+#   open        the diagrams file, both drawn, no source shown
+#   swipe-left  a swipe to the left on the flowchart, which is 2248 wide
+#   swipe-right and back
+#   tap         a tap on the flowchart: the caret in it, its source shown
+#   pie         the pie file: its source and the word, no diagram; Open in
+#               Mermaid opens a dialog
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - inputText: "jeansh-e2e-mermaid"
+      # \W*: the redesign draws a glyph before each name in the tree.
+      - tapOn: "(?s)\\W*jeansh-e2e-mermaid.md"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      - extendedWaitUntil:
+          visible: "(?s)Flowchart: Jeansh app.*"
+          timeout: 15000
+      - assertVisible: "(?s)Sequence diagram between User, Android.*"
+      # Neither shown as its source, and nothing said about not drawing it.
+      - assertNotVisible: "(?s)flowchart LR\\n.*"
+      - assertNotVisible: "(?s)sequenceDiagram\\n.*"
+      - assertNotVisible: "(?s).*not drawn natively.*"
+      - takeScreenshot: md-mermaid-opened
+
+- runFlow:
+    when:
+      true: ${STEP == 'swipe-left'}
+    commands:
+      - swipe:
+          from: "(?s)Flowchart: Jeansh app.*"
+          direction: LEFT
+          duration: 600
+      - waitForAnimationToEnd
+      # Still drawn: a swipe is not a tap.
+      - assertVisible: "(?s)Flowchart: Jeansh app.*"
+      - takeScreenshot: md-mermaid-swiped
+
+- runFlow:
+    when:
+      true: ${STEP == 'swipe-right'}
+    commands:
+      - swipe:
+          from: "(?s)Flowchart: Jeansh app.*"
+          direction: RIGHT
+          duration: 600
+      - waitForAnimationToEnd
+      - assertVisible: "(?s)Flowchart: Jeansh app.*"
+
+- runFlow:
+    when:
+      true: ${STEP == 'tap'}
+    commands:
+      - tapOn: "(?s)Flowchart: Jeansh app.*"
+      # The caret in the block shows its source in the field, and the
+      # drawing goes; the sequence diagram below is still drawn.
+      - extendedWaitUntil:
+          notVisible: "(?s)Flowchart: Jeansh app.*"
+          timeout: 5000
+      - takeScreenshot: md-mermaid-source
+      - hideKeyboard
+      - waitForAnimationToEnd
+      - tapOn: "Close file"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'pie'}
+    commands:
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - eraseText
+      - inputText: "jeansh-e2e-pie"
+      - tapOn: "(?s)\\W*jeansh-e2e-pie.md"
+      - extendedWaitUntil:
+          visible: "(?s).*pie is not drawn natively.*"
+          timeout: 20000
+      # Its source, as a node of its own, and no diagram.
+      - assertVisible: "(?s)(.*not drawn natively\\W*)?pie title E2E pets.*"
+      - assertNotVisible: "(?s)(Flowchart: |Sequence diagram between ).*"
+      - takeScreenshot: md-mermaid-pie
+      - tapOn: "(?i)open in mermaid"
+      - extendedWaitUntil:
+          visible: "(?i)copy source"
+          timeout: 10000
+      - waitForAnimationToEnd:
+          timeout: 3000
+      - takeScreenshot: md-mermaid-pie-dialog
+      - tapOn: "(?i)close"
+      - waitForAnimationToEnd
+      - tapOn: "Close file"
+      - waitForAnimationToEnd

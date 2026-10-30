@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text editor_save file_editor text_size)
+  md_rich_text md_mermaid editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -776,6 +776,82 @@ md_rich_text() {
   # The flow's screenshots, the phone's Rich text, as evidence.
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-text-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
+
+# #333: Mermaid drawn natively, in a Markdown file's Rich text
+# (.maestro/md_mermaid.yaml) and in a chat reply (.maestro/chat_mermaid.yaml).
+# A 2x2:
+#   - the flowchart and the last sequence diagram of
+#     docs/notification-architecture.md are drawn, each a node labelled
+#     "Flowchart: …" or "Sequence diagram between …", and neither's source
+#     is shown; the flowchart, 2248 wide, moves under a swipe to the left and
+#     comes back as it was under one to the right (the screen between the
+#     status and navigation bars compared); a tap on it puts the caret in
+#     and the drawing goes;
+#   - a pie, which has no native drawing, shows "pie is not drawn natively"
+#     and its source, with no diagram's node; Open in Mermaid opens a dialog.
+# Then chat: a reply's ```mermaid graph is drawn, "Flowchart: E2EA, E2EB",
+# with Copy diagram source and no source. A mutation in which readMermaid
+# draws no kind fails at the first file's "Flowchart:".
+md_mermaid() {
+  local status=0 home=/home/$SSH_USER before swiped back
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_mermaid: $what"
+      status=1
+    fi
+  }
+  # The screen between the status and the navigation bar, as a hash.
+  screen_sum() {
+    adb exec-out screencap | python3 -c '
+import hashlib, sys
+d = sys.stdin.buffer.read()
+w = int.from_bytes(d[0:4], "little")
+h = int.from_bytes(d[4:8], "little")
+px = d[len(d) - w * h * 4:]
+row = w * 4
+print(hashlib.sha256(px[row * (h // 10):row * (h * 9 // 10)]).hexdigest())'
+  }
+  {
+    printf '# Mermaid e2e\n\n'
+    awk '/^```mermaid/{n++; p=1}
+      p && (n == 1 || n == 8) {print}
+      /^```$/ {if (p && (n == 1 || n == 8)) print ""; p=0}' \
+      "$ROOT/docs/notification-architecture.md"
+  } | sudo -u "$SSH_USER" tee "$home/jeansh-e2e-mermaid.md" >/dev/null
+  printf '# Pie e2e\n\n```mermaid\npie title E2E pets\n  "Dogs" : 3\n  "Cats" : 2\n```\n' |
+    sudo -u "$SSH_USER" tee "$home/jeansh-e2e-pie.md" >/dev/null
+  echo "The diagrams file:"
+  sudo sed 's/^/  | /' "$home/jeansh-e2e-mermaid.md"
+
+  app_fresh
+  check 'the flowchart and the sequence diagram are drawn, no source shown' \
+    flow md_mermaid -e STEP=open
+  if [ "$status" = 0 ]; then
+    sleep 3
+    before=$(screen_sum)
+    check 'a swipe to the left on the flowchart' flow md_mermaid -e STEP=swipe-left
+    sleep 3
+    swiped=$(screen_sum)
+    check 'and one to the right' flow md_mermaid -e STEP=swipe-right
+    sleep 3
+    back=$(screen_sum)
+    echo "screen: opened $before, swiped $swiped, back $back"
+    check 'the flowchart moved sideways under the swipe' [ "$swiped" != "$before" ]
+    check 'swiped back, it is where it opened' [ "$back" = "$before" ]
+    check 'a tap on the flowchart puts the caret in, and the drawing goes' \
+      flow md_mermaid -e STEP=tap
+  fi
+  check 'a pie shows its source and no diagram; Open in Mermaid opens a dialog' \
+    flow md_mermaid -e STEP=pie
+  keep_shots 'md-mermaid-*.png'
+  sudo rm -f "$home/jeansh-e2e-mermaid.md" "$home/jeansh-e2e-pie.md"
+
+  check 'a chat reply draws its mermaid graph, with Copy diagram source' \
+    stand_in_flow chat_mermaid
   return "$status"
 }
 
@@ -3487,6 +3563,7 @@ done
 # land, on main or in the redesign. It wants its checks moved to this host.
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
+u_md_mermaid() { report md_mermaid md_mermaid; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.
