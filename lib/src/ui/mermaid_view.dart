@@ -10,13 +10,15 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../platform.dart';
+import '../mermaid/mermaid.dart';
+import 'mermaid_canvas.dart';
 import 'toast.dart';
 import 'tui.dart';
 
-/// Draws a Markdown file's ```mermaid blocks as diagrams, as the builder for
-/// `code` in [Markdown.builders]. Any other code, block or inline, is left to
-/// the package — and so is a mermaid block where there is no web view to draw
-/// it in, Linux and Windows, which show its source as code.
+/// Draws a Markdown file's ```mermaid blocks, as the builder for `code` in
+/// [Markdown.builders]: a flowchart or a sequence diagram natively, through
+/// [MermaidCanvas], and any other kind as its source with a word saying so.
+/// Any other code, block or inline, is left to the package.
 class MermaidBuilder extends MarkdownElementBuilder {
   /// [copyable] puts a button beside each diagram that copies its source:
   /// chat's, where a reply has no Source view to copy it from.
@@ -31,20 +33,120 @@ class MermaidBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
-    if (!hasWebView) return null;
     if (element.attributes['class'] != 'language-mermaid') return null;
     final source = element.textContent;
-    if (!copyable) return MermaidView(key: ValueKey(source), source: source);
-    return Row(
+    return MermaidBlock(
       key: ValueKey(source),
+      source: source,
+      copyable: copyable,
+      codeStyle: preferredStyle,
+    );
+  }
+}
+
+/// One Mermaid diagram: drawn by [MermaidCanvas] when it is a kind drawn
+/// natively, scrolling sideways when wider than the page; otherwise its
+/// source, under a line naming why it is not drawn and, where the system
+/// has a web view, a button that opens it in Mermaid itself.
+class MermaidBlock extends StatefulWidget {
+  const MermaidBlock({
+    super.key,
+    required this.source,
+    this.copyable = false,
+    this.codeStyle,
+  });
+
+  final String source;
+  final bool copyable;
+
+  /// The face the source is shown in when it is not drawn.
+  final TextStyle? codeStyle;
+
+  @override
+  State<MermaidBlock> createState() => _MermaidBlockState();
+}
+
+class _MermaidBlockState extends State<MermaidBlock> {
+  final _scroll = ScrollController();
+  late MermaidRead _read = readMermaid(widget.source);
+
+  @override
+  void didUpdateWidget(MermaidBlock old) {
+    super.didUpdateWidget(old);
+    if (old.source != widget.source) _read = readMermaid(widget.source);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final background = Theme.of(context).colorScheme.surfaceContainerHighest;
+    final Widget body = switch (_read) {
+      MermaidDrawable diagram => Scrollbar(
+        controller: _scroll,
+        child: SingleChildScrollView(
+          controller: _scroll,
+          scrollDirection: Axis.horizontal,
+          child: MermaidCanvas(
+            diagram: diagram,
+            source: widget.source,
+            background: background,
+          ),
+        ),
+      ),
+      MermaidNotDrawn(:final reason) => Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.account_tree_outlined, size: 16, color: p.muted),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    reason,
+                    style: TextStyle(color: p.muted, fontSize: 12),
+                  ),
+                ),
+                if (hasWebView) ...[
+                  const SizedBox(width: 8),
+                  TuiButton(
+                    label: 'Open in Mermaid',
+                    logName: 'Open in Mermaid',
+                    variant: TuiButtonVariant.ghost,
+                    onPressed: () =>
+                        unawaited(showMermaidWebDialog(context, widget.source)),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text.rich(
+              TextSpan(
+                text: widget.source.endsWith('\n')
+                    ? widget.source.substring(0, widget.source.length - 1)
+                    : widget.source,
+                style: widget.codeStyle,
+              ),
+            ),
+          ],
+        ),
+      ),
+    };
+    if (!widget.copyable) return body;
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(child: MermaidView(source: source)),
-        // Beside it rather than over the web view, as the preview's code
-        // blocks keep theirs.
+        Expanded(child: body),
         IconButton(
           tooltip: 'Copy diagram source',
-          onPressed: () => copyMermaid(context, source),
+          onPressed: () => copyMermaid(context, widget.source),
           icon: const Icon(Icons.content_copy, size: 18),
           visualDensity: VisualDensity.compact,
           padding: EdgeInsets.zero,
@@ -54,6 +156,11 @@ class MermaidBuilder extends MarkdownElementBuilder {
     );
   }
 }
+
+/// Whether Show as diagram can do anything with [source]: drawn natively,
+/// or there is a web view for Mermaid itself.
+bool canShowMermaid(String source) =>
+    hasWebView || readMermaid(source) is MermaidDrawable;
 
 void copyMermaid(BuildContext context, String source) {
   unawaited(Clipboard.setData(ClipboardData(text: source)));
@@ -177,26 +284,51 @@ String? mermaidSource(String selection) {
 
 /// [source] drawn in a dialog of its own, with a button to copy it: what a
 /// terminal selection's Show as diagram opens.
-Future<void> showMermaidDialog(BuildContext context, String source) =>
-    showDialog<void>(
-      context: context,
-      builder: (dialog) => TuiDialog(
-        title: 'Diagram',
-        maxWidth: 720,
-        actions: [
-          TuiButton(
-            label: 'Close', logName: 'Close',
-            variant: TuiButtonVariant.ghost,
-            onPressed: () => Navigator.pop(dialog),
-          ),
-          TuiButton(
-            label: 'Copy source', logName: 'Copy source',
-            onPressed: () => copyMermaid(dialog, source),
-          ),
-        ],
-        child: SingleChildScrollView(child: MermaidView(source: source)),
-      ),
+Future<void> showMermaidDialog(BuildContext context, String source) => _dialog(
+  context,
+  source,
+  (dialog) => SingleChildScrollView(
+    child: MermaidBlock(
+      source: source,
+      codeStyle: TextStyle(fontFamily: TermulFonts.mono, fontSize: 13),
+    ),
+  ),
+);
+
+/// [source] drawn by Mermaid itself in a web view: for the kinds Jeansh does
+/// not draw natively, on the systems that have a web view.
+Future<void> showMermaidWebDialog(BuildContext context, String source) =>
+    _dialog(
+      context,
+      source,
+      (_) => SingleChildScrollView(child: MermaidView(source: source)),
     );
+
+Future<void> _dialog(
+  BuildContext context,
+  String source,
+  Widget Function(BuildContext dialog) child,
+) => showDialog<void>(
+  context: context,
+  builder: (dialog) => TuiDialog(
+    title: 'Diagram',
+    maxWidth: 720,
+    actions: [
+      TuiButton(
+        label: 'Close',
+        logName: 'Close',
+        variant: TuiButtonVariant.ghost,
+        onPressed: () => Navigator.pop(dialog),
+      ),
+      TuiButton(
+        label: 'Copy source',
+        logName: 'Copy source',
+        onPressed: () => copyMermaid(dialog, source),
+      ),
+    ],
+    child: child(dialog),
+  ),
+);
 
 /// One Mermaid diagram, drawn by Mermaid itself (assets/mermaid) in a web
 /// view the diagram's height. A wide one scrolls sideways; one Mermaid can't

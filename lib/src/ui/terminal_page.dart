@@ -45,7 +45,8 @@ import 'file_download.dart';
 import 'git_page.dart';
 import 'key_bar.dart';
 import 'magic_key.dart';
-import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
+import 'mermaid_view.dart'
+    show canShowMermaid, mermaidSource, showMermaidDialog;
 import 'pane_menu.dart';
 import 'right_click.dart';
 import 'settings_page.dart';
@@ -619,10 +620,9 @@ class _TerminalPageState extends State<TerminalPage> {
     final tmux = _session.tmux;
     final pane = tmux?.panes.where((p) => p.terminal == terminal).firstOrNull;
     final buffer = terminal.buffer;
-    // The Mermaid source the selection holds, where a web view can draw it.
-    final diagram = selected == null || !hasWebView
-        ? null
-        : mermaidSource(selected);
+    // The Mermaid source the selection holds, where it can be drawn.
+    final source = selected == null ? null : mermaidSource(selected);
+    final diagram = source != null && canShowMermaid(source) ? source : null;
     showActionsAt(
       context,
       at,

@@ -1,0 +1,62 @@
+size 1155x852
+line lifeline dashed none-none (95.5,44) (95.5,808)
+line lifeline dashed none-none (327.5,44) (327.5,808)
+line lifeline dashed none-none (622.5,44) (622.5,808)
+line lifeline dashed none-none (799,44) (799,808)
+line lifeline dashed none-none (1098,44) (1098,808)
+box frame 307.5,282 810.5x366
+box frameTab 307.5,282 44x24
+box actorBox 8,8 175x36
+text actor 22,18 147x16 "FCM SDK on the tablet"
+box actorBox 278.5,8 98x36
+text actor 292.5,18 70x16 "Jeansh app"
+box actorBox 566.5,8 112x36
+text actor 580.5,18 84x16 "Secret store"
+box actorBox 718.5,8 161x36
+text actor 732.5,18 133x16 "jeansh-notify relay"
+box actorBox 1049,8 98x36
+text actor 1063,18 70x16 "Workers KV"
+box note 75.5,68 272x46
+text note 85.5,75 252x32 "PushMessaging.initialize: getToken() at launch, then every onTokenRefresh"
+text message 134.5,128 154x16 "token T2, replacing T1"
+line edge solid none-arrow (95.5,150) (327.5,150)
+box badge 86.5,141 18x18
+text number 92,142 7x16 "1"
+text message 337.5,172 259x64 "NotifyKeys.useFcmToken(T2): _fcmToken = T2,\nand the keys waiting for a revoke are tried again (diagram 6)"
+line edge solid none-arrow (327.5,242) (361.5,242) (361.5,260) (327.5,260)
+box badge 318.5,233 18x18
+text number 324,234 7x16 "2"
+text message 337.5,330 259x32 "_sync(hostId): registered for T1, not T2"
+line edge solid none-arrow (327.5,368) (361.5,368) (361.5,386) (327.5,386)
+box badge 318.5,359 18x18
+text number 324,360 7x16 "3"
+text message 451.3,408 224x64 "POST /v1/register {token: T2, publicKey: the same SPKI, host: hostId},\nsigned with that key (diagram 1)"
+line edge solid none-arrow (327.5,478) (799,478)
+box badge 318.5,469 18x18
+text number 324,470 7x16 "4"
+text message 819,500 259x32 "put k:keyId, the same keyId, now with token T2"
+line edge solid none-arrow (799,538) (1098,538)
+box badge 790,529 18x18
+text number 795.5,530 7x16 "5"
+text message 479.3,560 168x16 "200 {keyId}, the same id"
+line edge dashed none-arrow (799,582) (327.5,582)
+box badge 790,573 18x18
+text number 795.5,574 7x16 "6"
+text message 373.5,604 203x16 "save the key with fcmToken T2"
+line edge solid none-arrow (327.5,626) (622.5,626)
+box badge 318.5,617 18x18
+text number 324,618 7x16 "7"
+text frameKind 315.5,286 28x16 "loop"
+text frameTitle 612.3,286 245x32 "[every host with a key, all at once (Future.wait)]"
+box note 307.5,660 511.5x126
+text note 437.3,667 252x112 "_register goes round again if the token changed meanwhile.\nServers keep their LC_SSHBOX_KEY and carry on, with no reconnect.\nA failure keeps the T1 registration, tried again at the next connect, token or launch."
+box actorBox 8,808 175x36
+text actor 22,818 147x16 "FCM SDK on the tablet"
+box actorBox 278.5,808 98x36
+text actor 292.5,818 70x16 "Jeansh app"
+box actorBox 566.5,808 112x36
+text actor 580.5,818 84x16 "Secret store"
+box actorBox 718.5,808 161x36
+text actor 732.5,818 133x16 "jeansh-notify relay"
+box actorBox 1049,808 98x36
+text actor 1063,818 70x16 "Workers KV"
