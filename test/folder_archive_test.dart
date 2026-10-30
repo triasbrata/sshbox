@@ -593,6 +593,77 @@ void main() {
       }
     });
 
+    test('a temp folder named with a trailing slash, as macOS names it, '
+        'gives an archive and leaves nothing behind', () async {
+      final src = tree();
+      Directory('${src.path}/d').createSync();
+      File('${src.path}/d/f').writeAsStringSync('x');
+      final bin = Directory('${_tmp.path}/bin')..createSync();
+      final stub = _stub(bin, 'tool');
+      for (final tmpdir in ['${_tmp.path}/', '${_tmp.path}//']) {
+        final archiver = FolderArchiver(
+          processRunner(
+            (script) => Process.start(
+              'sh',
+              ['-c', script],
+              environment: {'TMPDIR': tmpdir},
+            ),
+          ),
+        );
+        final made = await archiver.archiveFolder(
+          '${src.path}/d',
+          ArchiveTool(ArchiveKind.zip, stub),
+        );
+        expect(made.path, startsWith('${_tmp.path}/jeansh-zip.'));
+        expect(made.path, isNot(contains('//')));
+        expect(File(made.path).existsSync(), isTrue, reason: tmpdir);
+        await archiver.removeArchive(made.path);
+        expect(_leftovers(_tmp), isEmpty, reason: tmpdir);
+      }
+    });
+
+    test('a temp folder named with a trailing slash: a cancel and the sweep '
+        'still find our folder', () async {
+      const token = 'aaaaBBBB11112222';
+      final run = processRunner(
+        (script) => Process.start(
+          'sh',
+          ['-c', script],
+          environment: {'TMPDIR': '${_tmp.path}/'},
+        ),
+      );
+      final ours = Directory('${_tmp.path}/jeansh-zip.$token')..createSync();
+      await run(FolderArchiver.cleanupScript(token)!);
+      expect(ours.existsSync(), isFalse);
+      final old = Directory('${_tmp.path}/jeansh-zip.OLD123')..createSync();
+      Process.runSync('touch', ['-t', '202001010000', old.path]);
+      await run(FolderArchiver.sweepScript);
+      expect(old.existsSync(), isFalse);
+    });
+
+    test('a temp folder that is no absolute path is not trusted', () async {
+      final src = tree();
+      Directory('${src.path}/d').createSync();
+      final bin = Directory('${_tmp.path}/bin')..createSync();
+      final stub = _stub(bin, 'tool');
+      final script = FolderArchiver.archiveScript(
+        '${src.path}/d',
+        ArchiveTool(ArchiveKind.zip, stub),
+        'aaaaBBBB11112222',
+      );
+      // Run from a scratch folder with TMPDIR relative: /tmp is used instead.
+      final result = Process.runSync(
+        'sh',
+        ['-c', script],
+        environment: {'TMPDIR': 'relative'},
+        workingDirectory: _tmp.path,
+      );
+      final made = (result.stdout as String).split('\n').first;
+      expect(made, '/tmp/jeansh-zip.aaaaBBBB11112222/jeansh.zip');
+      expect(Directory('${_tmp.path}/relative').existsSync(), isFalse);
+      Directory('/tmp/jeansh-zip.aaaaBBBB11112222').deleteSync(recursive: true);
+    });
+
     test('a real tar.gz holds the folder, spaces and quotes and all', () async {
       final src = tree();
       final dir = Directory("${src.path}/it's \$(x) here")..createSync();
@@ -732,6 +803,11 @@ void main() {
       expect(
         FolderArchiver.removeScript('/tmp/jeansh-zip.abc123/jeansh.tar.gz'),
         isNotNull,
+      );
+      // A temp folder named with a slash at its end, or one doubled.
+      expect(
+        FolderArchiver.removeScript('/var/T//jeansh-zip.abc123/jeansh.zip'),
+        "rm -rf -- '/var/T/jeansh-zip.abc123'",
       );
       for (final bad in [
         '/tmp',
