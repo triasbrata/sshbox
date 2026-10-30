@@ -63,7 +63,11 @@ if [ "$1" = notify ] && [ $# -ge 2 ] && [ $# -le 3 ]; then
     echo "jeansh: notify needs openssl" >&2
     exit 1
   fi
-  esc() { printf %s "$1" | tr '\n' ' ' | sed 's/[\\"]/\\&/g'; }
+  # The backslash is made by printf rather than written twice, so the
+  # script reads the same to a login shell, such as fish, that takes a
+  # doubled backslash in single quotes as one.
+  bs=$(printf '\134')
+  esc() { printf %s "$1" | tr '\n' ' ' | sed "s/[$bs\"]/$bs$bs&/g"; }
   if [ -n "$title" ]; then
     data=$(printf '{"title":"%s","body":"%s"}' "$(esc "$title")" "$(esc "$body")")
   else
@@ -137,6 +141,13 @@ for a in "$@"; do
     continue
   }
   p=$d/$(basename "$p")
+  # The app takes at most 4096 bytes, and a link can resolve to more.
+  if [ "$(printf %s "$p" | wc -c | tr -d ' ')" -gt 4096 ]; then
+    echo "jeansh: $a: not opened, the path is longer than 4096 bytes" >&2
+    rc=1
+    bad=$((bad + 1))
+    continue
+  fi
   case $p in
     *[[:cntrl:]]*)
       echo "jeansh: $a: name holds a control character" >&2

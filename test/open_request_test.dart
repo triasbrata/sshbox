@@ -312,6 +312,64 @@ void main() {
     expect(OpenRequests.constantTimeEquals('a', ''), isFalse);
   });
 
+  test('the install line reaches sh the same whether a POSIX shell or fish '
+      'reads its quotes, so the installed jeansh is the script', () {
+    // sshd hands the line to the login shell. In fish's single quotes a
+    // backslash before a backslash or a quote escapes it; in sh's nothing
+    // does. The line must mean the same to both.
+    String word(String line, {required bool fish}) {
+      final out = StringBuffer();
+      var quoted = false;
+      for (var i = 0; i < line.length; i++) {
+        final c = line[i];
+        final next = i + 1 < line.length ? line[i + 1] : '';
+        if (quoted) {
+          if (fish && c == r'\' && (next == r'\' || next == "'")) {
+            out.write(next);
+            i++;
+          } else if (c == "'") {
+            quoted = false;
+          } else {
+            out.write(c);
+          }
+        } else if (c == "'") {
+          quoted = true;
+        } else if (c == r'\') {
+          out.write(next);
+          i++;
+        } else {
+          out.write(c);
+        }
+      }
+      return out.toString();
+    }
+
+    final line = openCommandInstallScript();
+    expect(line, startsWith("sh -c '"));
+    final argument = line.substring('sh -c '.length);
+    final bySh = word(argument, fish: false);
+    expect(bySh, contains(openCommandScript));
+    expect(word(argument, fish: true), bySh);
+  });
+
+  test('jeansh notify escapes a quote and a backslash in the relay body', () {
+    final home = Directory.systemTemp.createTempSync('jeansh-esc');
+    addTearDown(() => home.deleteSync(recursive: true));
+    // The script's own esc(), run alone.
+    final esc = RegExp(
+      r'^  (?:bs=|esc\(\)).*$',
+      multiLine: true,
+    ).allMatches(openCommandScript).map((m) => m.group(0)).join('\n');
+    final result = Process.runSync('sh', [
+      '-c',
+      '$esc\nesc "\$1"',
+      'sh',
+      'say "hi" \\ there\nnext',
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stderr}');
+    expect(result.stdout, r'say \"hi\" \\ there next');
+  });
+
   test(
     'the remote install writes new, renames in, and leaves others alone',
     () {
@@ -548,6 +606,44 @@ void main() {
       File('${dir.path}/elsewhere').writeAsStringSync('sek-ret\n');
       Link(file.path).createSync('${dir.path}/elsewhere');
       expect(run(['a b\'s.txt']).exitCode, 1);
+      expect(tty.readAsStringSync(), isEmpty);
+    });
+
+    test('a path that resolves longer than the app takes is said, writes '
+        'nothing, and exits non-zero; one that resolves to the most still '
+        'opens', () {
+      // A folder whose real path is 3900 bytes, reached through a short
+      // link: the script resolves the link, and the path it would send is
+      // the long one. Each name stays under a filesystem's 255 bytes.
+      const real = 3900;
+      var deep = '${dir.path}/r';
+      while (real - deep.length > 201) {
+        deep = '$deep/${'d' * 200}';
+      }
+      deep = '$deep/${'e' * (real - deep.length - 1)}';
+      expect(deep, hasLength(real));
+      Directory(deep).createSync(recursive: true);
+      Link('${dir.path}/s').createSync(deep);
+      final fits = File('${dir.path}/s/${'f' * (openLongestPath - real - 1)}');
+      final over = File('${dir.path}/s/${'g' * (openLongestPath - real)}');
+      fits.writeAsStringSync('x');
+      over.writeAsStringSync('x');
+      // Removed through the short link: by their real paths they are too
+      // long to delete, and the folders left are not.
+      addTearDown(() {
+        if (fits.existsSync()) fits.deleteSync();
+        if (over.existsSync()) over.deleteSync();
+      });
+
+      final ok = run(['s/${fits.uri.pathSegments.last}']);
+      expect(ok.exitCode, 0, reason: '${ok.stderr}');
+      expect('\x07'.allMatches(tty.readAsStringSync()), hasLength(1));
+
+      tty.writeAsStringSync('');
+      final long = run(['s/${over.uri.pathSegments.last}']);
+      expect(long.exitCode, 1);
+      expect(long.stderr, contains('the path is longer than 4096 bytes'));
+      expect(long.stderr, contains('1 of 1 not opened'));
       expect(tty.readAsStringSync(), isEmpty);
     });
 
