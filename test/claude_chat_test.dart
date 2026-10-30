@@ -349,6 +349,11 @@ class _LiveHost {
         final keys = utf8.decode(data);
         typed.add(keys);
         chipsWhenTyped.add(drawn);
+        final after = drawsAfterFirstKey;
+        if (after != null && typed.length == 1) {
+          screen.add(Uint8List.fromList(utf8.encode(after)));
+          return;
+        }
         if (keys.startsWith('\x1b[200~/')) {
           if (!drawChips) return;
           Timer(chipDelay, () {
@@ -374,6 +379,10 @@ class _LiveHost {
 
   /// What an attach draws when it comes up, in place of the input line.
   String? attachDraws;
+
+  /// What an attach draws once the first key has been written to it, in
+  /// place of the screen it had.
+  String? drawsAfterFirstKey;
 
   /// Whether a terminal draws a chip for each path pasted into it.
   var drawChips = false;
@@ -9806,6 +9815,26 @@ void main() {
       expect(why, contains('is not waiting for an answer but for '
           'permission prompt'));
       expect(host.terminals, isEmpty);
+    });
+
+    test('a dialog that closes while the answer is typed gets no more keys: '
+        'what comes up next, a permission prompt here, is never typed into',
+        () async {
+      final (chat, host, ask) = await watch();
+      // Answered or dismissed elsewhere after the first key: Claude goes on,
+      // and asks for a permission next.
+      host.drawsAfterFirstKey =
+          '\x1b[2J\x1b[HDo you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\n'
+          'Esc to cancel';
+      final why = await chat.answerAtTerminal(ask, picks);
+      final terminal = host.terminals.single;
+      expect(terminal.typed, [keys.first]);
+      expect(terminal.typed, isNot(contains('\r')));
+      expect(terminal.closed.single, isTrue);
+      expect(why, startsWith('Not answered: '));
+      expect(why, contains('1 key'));
+      expect(why, contains('claude attach ${_live.id}'));
+      expect(ask.sending, isFalse);
     });
 
     test('a screen that does not show the question gets no keys', () async {

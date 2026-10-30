@@ -4356,6 +4356,16 @@ class ClaudeChat extends ChangeNotifier {
       shown.buffer.lines[line].getText(),
   ];
 
+  /// What [shown] has on screen now, its scrollback left out: a dialog that
+  /// was cleared away is no longer in it.
+  static List<String> _viewLines(Terminal shown) {
+    final from = math.max(0, shown.buffer.height - shown.viewHeight);
+    return [
+      for (var line = from; line < shown.buffer.height; line++)
+        shown.buffer.lines[line].getText(),
+    ];
+  }
+
   /// How many `[Image #N]` chips Claude Code's input line holds, in a screen
   /// of [lines]: from the last line that starts with its `❯`, the line
   /// before it holding the turns already sent.
@@ -5643,6 +5653,14 @@ class ClaudeChat extends ChangeNotifier {
               ? 'the chat moved to another session first.'
               : 'the chat moved to another session while it was typed; '
                     'what was typed is in the dialog at `claude attach $id`.';
+        }
+        // The dialog can close while this types, answered or dismissed
+        // elsewhere: a key meant for it then goes to whatever comes up next.
+        // So each one goes only while the screen still shows it.
+        if (!dialogStillShows(_viewLines(shown), ask)) {
+          return 'the question\'s dialog closed while the answer was typed, '
+              'after $index ${index == 1 ? 'key' : 'keys'}, so nothing more '
+              'was typed. Look at it with `claude attach $id`.';
         }
         terminal.write(Uint8List.fromList(utf8.encode(step.bytes)));
       }
