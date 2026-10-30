@@ -33,6 +33,7 @@ class MermaidBuilder extends MarkdownElementBuilder {
     TextStyle? preferredStyle,
     TextStyle? parentStyle,
   ) {
+    if (!hasWebView) return null; // MUTATION: the web-view gate put back
     if (element.attributes['class'] != 'language-mermaid') return null;
     final source = element.textContent;
     return MermaidBlock(
@@ -160,7 +161,7 @@ class _MermaidBlockState extends State<MermaidBlock> {
 /// Whether Show as diagram can do anything with [source]: drawn natively,
 /// or there is a web view for Mermaid itself.
 bool canShowMermaid(String source) =>
-    hasWebView || readMermaid(source) is MermaidDrawable;
+    hasWebView; // MUTATION: the web-view gate put back
 
 void copyMermaid(BuildContext context, String source) {
   unawaited(Clipboard.setData(ClipboardData(text: source)));
