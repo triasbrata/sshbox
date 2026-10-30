@@ -5475,6 +5475,26 @@ void main() {
       chat.dispose();
     });
 
+    testWidgets('a chat closed while it lists ends the listing, and a channel '
+        'opened after that is closed at once', (tester) async {
+      final closed = <bool>[];
+      final open = Completer<CommandChannel>();
+      final chat = ClaudeChat(open: (_) => open.future);
+      Object? why;
+      unawaited(chat.agents().then((_) {}, onError: (Object e) => why = e));
+      await tester.pump();
+      chat.dispose();
+      await tester.pump();
+      expect(why, isA<StateError>());
+      open.complete((
+        output: const Stream<Uint8List>.empty(),
+        write: (Uint8List data) {},
+        close: () => closed.add(true),
+      ));
+      await tester.pump();
+      expect(closed, [true]);
+    });
+
     testWidgets('a listing nobody waits for any more gives up, its timer and '
         'its channel gone, while the chat stays', (tester) async {
       final closed = <bool>[];
@@ -9263,6 +9283,427 @@ void main() {
       await wait(400);
       box = await onDisk(newKey);
       expect(box.entries, isEmpty);
+    });
+
+    /// A chat's own Claude on session [_live], every start a new process in
+    /// `claudes`, the transcript read answering [history].
+    Future<({ClaudeChat chat, List<_FakeClaude> claudes, List<String> opened})>
+    own({
+      String Function()? history,
+      bool Function()? connected,
+      Duration? Function(int)? backoff,
+      OutboxStore? outbox,
+    }) async {
+      final settle = ClaudeChat.settleDelay;
+      ClaudeChat.settleDelay = Duration.zero;
+      addTearDown(() => ClaudeChat.settleDelay = settle);
+      final claudes = <_FakeClaude>[];
+      final opened = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          opened.add(command);
+          if (command.contains('.jsonl')) {
+            return _says(history?.call() ?? '0\n');
+          }
+          if (!command.contains('stream-json')) return _says('');
+          final claude = _FakeClaude();
+          claudes.add(claude);
+          return claude.channel;
+        },
+        hostKey: 'h1',
+        outbox: outbox ?? store(),
+        backoff: backoff ?? (_) => null,
+        connected: connected,
+      );
+      addTearDown(chat.dispose);
+      await chat.start();
+      claudes.last.event({
+        'type': 'system',
+        'subtype': 'init',
+        'session_id': _live.sessionId,
+      });
+      await _settle();
+      return (chat: chat, claudes: claudes, opened: opened);
+    }
+
+    /// What [claude] was sent as the user's words.
+    List<String> userTexts(_FakeClaude claude) => [
+      for (final sent in claude.sent)
+        if (sent['type'] == 'user')
+          for (final part in (sent['message'] as Map)['content'] as List)
+            if (part is Map && part['type'] == 'text') part['text'] as String,
+    ];
+
+    test('a message waiting for the connection after its Claude went away is '
+        'sent to the Claude started again for the same session, once the '
+        'transcript shows it did not arrive', () async {
+      var down = false;
+      final t = await own(
+        connected: () => !down,
+        backoff: (_) => const Duration(milliseconds: 20),
+      );
+      await t.chat.send('keep me');
+      await _settle();
+      expect(userTexts(t.claudes.single), ['keep me']);
+
+      down = true;
+      await t.claudes.single.end();
+      await wait(100);
+      final said = t.chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.queued);
+      expect(said.why, contains('Waiting for the connection'));
+
+      down = false;
+      await t.chat.resume();
+      await until(() => t.claudes.length == 2 && t.claudes.last.sent.isNotEmpty);
+
+      expect(t.claudes, hasLength(2));
+      expect(userTexts(t.claudes.last), ['keep me']);
+      final now = t.chat.entries.whereType<ChatSaid>().single;
+      expect(now.text, 'keep me');
+      expect(now.delivery, Delivery.sending);
+      expect((await onDisk()).entries.single.failed, isFalse);
+    });
+
+    test('a message waiting for its next try when Claude is restarted from '
+        'the menu goes to the new process at once', () async {
+      final t = await own(backoff: (_) => const Duration(seconds: 30));
+      await t.chat.send('again please');
+      await _settle();
+      await t.claudes.single.end();
+      await wait(100);
+      final said = t.chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.queued);
+      expect(said.why, contains('Trying again in 30 s'));
+
+      await t.chat.restart();
+      await until(() => t.claudes.length == 2 && t.claudes.last.sent.isNotEmpty);
+
+      expect(userTexts(t.claudes.last), ['again please']);
+      final now = t.chat.entries.whereType<ChatSaid>().single;
+      expect(now.text, 'again please');
+      expect(now.delivery, Delivery.sending);
+    });
+
+    test('a message sent while another is still being sent, for a session '
+        'the chat then leaves, is kept for that session and never typed into '
+        'the one picked meanwhile', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(host, outbox: flaky);
+      await chat.continueFrom(_interactive);
+      host.paneTyping.clear();
+
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      final behind = chat.send('yes, delete them');
+      await _settle();
+
+      final other = ClaudeAgent(
+        sessionId: '99999999-9999-4999-8999-999999999999',
+        name: 'other',
+        cwd: '/srv',
+        kind: 'interactive',
+        status: 'idle',
+        pid: 4242,
+      );
+      await chat.continueFrom(other);
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await behind;
+      await wait();
+
+      expect(
+        [for (final typed in host.paneTyping) typed.stdin.join()],
+        isNot(contains('yes, delete them')),
+      );
+      final otherKey = OutboxStore.keyOf('h1', other.sessionId);
+      expect((await flaky.inner.load(otherKey)).entries, isEmpty);
+      final kept = (await flaky.inner.load(key)).entries
+          .where((e) => e.text == 'yes, delete them')
+          .single;
+      expect(kept.failed, isTrue);
+      expect(kept.transient, isFalse);
+      expect(
+        chat.entries.whereType<ChatNotice>().last.text,
+        contains('moved to another session'),
+      );
+    });
+
+    test('a message sent while another is still being sent, in a chat then '
+        'closed, is kept on the device for its session', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        hostKey: 'h1',
+        outbox: flaky,
+        backoff: (_) => null,
+      );
+      await chat.continueFrom(_interactive);
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      final behind = chat.send('written before closing');
+      await _settle();
+      chat.dispose();
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await behind;
+      await wait(100);
+
+      final kept = (await flaky.inner.load(key)).entries
+          .where((e) => e.text == 'written before closing')
+          .single;
+      expect(kept.failed, isTrue);
+      expect(kept.why, contains('closed'));
+    });
+
+    test('a Retry waiting behind a slow send, for a session the chat then '
+        'leaves, stays failed and kept for that session', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no draft\n';
+      final chat = make(host, outbox: flaky);
+      await chat.continueFrom(_interactive);
+      chat.send('try me later');
+      await wait(400);
+      final failed = chat.entries.whereType<ChatSaid>().single;
+      expect(failed.delivery, Delivery.failed);
+      host.paneTyping.clear();
+      host.typedAnswer = 'sshbox:pasted\nsshbox:typed %3\n';
+
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      expect(chat.retry(failed), isNull);
+      await _settle();
+      final other = ClaudeAgent(
+        sessionId: '99999999-9999-4999-8999-999999999999',
+        name: 'other',
+        cwd: '/srv',
+        kind: 'interactive',
+        status: 'idle',
+        pid: 4242,
+      );
+      await chat.continueFrom(other);
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await wait();
+
+      expect(
+        [for (final typed in host.paneTyping) typed.stdin.join()],
+        isNot(contains('try me later')),
+      );
+      final kept = (await flaky.inner.load(key)).entries
+          .where((e) => e.text == 'try me later')
+          .single;
+      expect(kept.failed, isTrue);
+      expect(kept.why, contains('moved to another session'));
+    });
+
+    test('a message the chat moved away from that cannot be kept on the '
+        'device says so, with what was written', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(host, outbox: flaky);
+      await chat.continueFrom(_interactive);
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      final behind = chat.send('nowhere to keep');
+      await _settle();
+      await chat.newChat();
+      flaky.failSave = true;
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await behind;
+      await wait(100);
+
+      final notice = chat.entries.whereType<ChatNotice>().last.text;
+      expect(notice, contains('could not be kept on this device'));
+      expect(notice, contains('nowhere to keep'));
+    });
+
+    test('a message a closed chat cannot keep on the device is logged, with '
+        'nothing of what was written', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        hostKey: 'h1',
+        outbox: flaky,
+        backoff: (_) => null,
+      );
+      await chat.continueFrom(_interactive);
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      final behind = chat.send('private words');
+      await _settle();
+      final mark = appLog.length;
+      chat.dispose();
+      flaky.failSave = true;
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await behind;
+      await wait(100);
+
+      final written = appLog.current.split('\n').skip(mark).join('\n');
+      expect(written, contains('outbox: not kept after close'));
+      expect(written, isNot(contains('private words')));
+    });
+
+    test('a message delivered to a chat\'s own Claude with no turn named '
+        'still owns its turn: the same words sent again, and lost, are sent '
+        'again rather than taken as delivered', () async {
+      var history = '0\n';
+      final t = await own(history: () => history);
+      await t.chat.send('ok');
+      await _settle();
+      t.claudes.single
+        ..event(_said('done'))
+        ..event({'type': 'result', 'subtype': 'success'});
+      await wait(100);
+      expect((await onDisk()).entries, isEmpty);
+
+      await t.chat.send('ok');
+      await _settle();
+      await t.claudes.single.end();
+      await wait(100);
+      final second = t.chat.entries.whereType<ChatSaid>().lastWhere(
+        (s) => s.mine,
+      );
+      expect(second.delivery, Delivery.failed);
+
+      // The transcript holds the first "ok" alone.
+      history = transcript([('u-first', 'ok')]);
+      await t.chat.restart();
+      expect(t.chat.retry(second), isNull);
+      await until(() => t.claudes.length == 2 && t.claudes.last.sent.isNotEmpty);
+
+      expect(userTexts(t.claudes.last), ['ok']);
+      expect(
+        t.chat.entries.whereType<ChatSaid>().where((s) => s.mine).last.delivery,
+        Delivery.sending,
+      );
+    });
+
+    test('two chats on one host keep each other\'s messages: both are on the '
+        'device, and neither takes the other\'s for a leftover to send', () async {
+      final shared = store();
+      final host = _LiveHost('0\n', interactive: true);
+      final a = make(host, outbox: shared);
+      final b = make(host, outbox: shared);
+      await a.continueFrom(_interactive);
+      await b.continueFrom(_interactive);
+      host.paneTyping.clear();
+
+      await a.send('from a');
+      await b.send('from b');
+      await wait();
+
+      final box = await onDisk();
+      expect(
+        [for (final e in box.entries) e.text],
+        unorderedEquals(['from a', 'from b']),
+      );
+      // B opening its session again finds A's message waiting: A's to send.
+      await b.continueFrom(_interactive);
+      await b.restoreOutbox();
+      await wait();
+      expect(
+        b.entries.whereType<ChatSaid>().map((s) => s.text),
+        isNot(contains('from a')),
+      );
+      expect(
+        [for (final t in host.paneTyping) t.stdin.join()]
+            .where((text) => text == 'from a'),
+        hasLength(1),
+      );
+    });
+
+    test('a new chat whose session started is never started again by Retry, '
+        'even when the session cannot then be listed', () async {
+      var started = 0;
+      final chat = ClaudeChat(
+        open: (command) async {
+          if (command.contains(' --bg ')) {
+            started++;
+            return _says('backgrounded · e2e0c0de · x\n');
+          }
+          return _noHistory();
+        },
+        hostKey: 'h1',
+        outbox: store(),
+        backoff: (_) => null,
+        startLook: const Duration(milliseconds: 1),
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send('start something');
+      await wait(400);
+
+      expect(started, 1);
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, isNot(Delivery.failed));
+      expect(
+        chat.entries.whereType<ChatNotice>().last.text,
+        contains('claude attach e2e0c0de'),
+      );
+      expect(chat.retry(said), isNotNull);
+      await wait(200);
+      expect(started, 1);
+    });
+
+    test('a new chat whose start never answers says it may have started, '
+        'not that it did not', () async {
+      final timeout = ClaudeChat.startTimeout;
+      ClaudeChat.startTimeout = const Duration(milliseconds: 100);
+      addTearDown(() => ClaudeChat.startTimeout = timeout);
+      final chat = ClaudeChat(
+        open: (command) async {
+          if (command.contains(' --bg ')) {
+            return (
+              output: StreamController<Uint8List>().stream,
+              write: (Uint8List _) {},
+              close: () {},
+            );
+          }
+          return _noHistory();
+        },
+        hostKey: 'h1',
+        outbox: store(),
+        backoff: (_) => null,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send('slow host');
+      await wait(300);
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.why, contains('Not known whether it started'));
+      expect(said.why, contains('sessions list'));
+      expect(said.why, isNot(startsWith('Not started')));
+    });
+
+    test('a new chat\'s session started with pictures that did not reach it: '
+        'Retry says to send them in that session, and starts nothing', () {
+      final said = ChatSaid('look [Image #1]', mine: true)
+        ..delivery = Delivery.failed
+        ..startedAs = 'e2e0c0de';
+      final chat = ClaudeChat(open: (_) async => _noHistory());
+      addTearDown(chat.dispose);
+      expect(chat.retry(said), contains('started as e2e0c0de'));
     });
 
     test('a new chat shows what was left waiting for it as failed, never '
