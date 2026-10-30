@@ -19,6 +19,16 @@ const openCommandMarker = '# jeansh-open: installed by Jeansh';
 const openSecretDir = '.config/jeansh';
 const openSecretFile = 'open-secret';
 
+/// Where `~` is for what Jeansh writes into this computer's home — the
+/// local shell's secret and the `jeansh` command — when nothing names one:
+/// HOME, unless this is set. Every test sets it to a folder of its own, see
+/// test/flutter_test_config.dart, so none writes into the real home.
+@visibleForTesting
+String? homeOverride;
+
+/// [homeOverride], or HOME.
+String? localHome() => homeOverride ?? Platform.environment['HOME'];
+
 /// The most files one `jeansh` sends, and the longest path, in bytes. What
 /// the app takes: see `OpenRequests.burst` and `OpenRequests.maxPath`.
 const openMostFiles = 5;
@@ -305,7 +315,7 @@ void writeOpenSecret(String home, String secret) {
 /// Null when it is there, else what to tell the user: a file or link that is
 /// not Jeansh's own, a missing HOME or a folder that cannot be written.
 String? installOpenCommandInHome([String? home]) {
-  home ??= Platform.environment['HOME'];
+  home ??= localHome();
   if (home == null || home.isEmpty) {
     return 'There is no home folder to put the jeansh command in.';
   }
