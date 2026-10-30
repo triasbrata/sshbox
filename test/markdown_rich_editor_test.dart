@@ -30,6 +30,7 @@ Future<_Host> _pump(
   WidgetTester tester,
   String text, {
   Size size = const Size(800, 600),
+  Widget Function(BuildContext, String)? blockBuilder,
 }) async {
   final host = _Host(text);
   tester.view.physicalSize = size;
@@ -49,7 +50,7 @@ Future<_Host> _pump(
                 host.changes.add((t, coalesce));
                 setState(() => host.text = t);
               },
-              blockBuilder: (context, md) => Text(
+              blockBuilder: blockBuilder ?? (context, md) => Text(
                 'RENDERED ${md.split('\n').first}',
                 key: ValueKey('rendered ${md.hashCode}'),
               ),
@@ -613,6 +614,26 @@ void main() {
     _controller(tester).selection = const TextSelection.collapsed(offset: 1);
     await host.controller.editLink();
     expect(host.refused, ['Select the text to link first.']);
+  });
+
+  testWidgets('a diagram takes the pointer, to scroll sideways; a picture '
+      'does not', (tester) async {
+    final downs = <String>[];
+    await _pump(
+      tester,
+      'Top\n\n```mermaid\ngraph LR\n  A --> B\n```\n\n![pic](a.png)\n\nEnd\n',
+      blockBuilder: (context, md) => Listener(
+        onPointerDown: (_) => downs.add(md.split('\n').first),
+        child: Text('RENDERED ${md.split('\n').first}'),
+      ),
+    );
+    await tester.tap(find.text('RENDERED ```mermaid'));
+    await tester.pump();
+    expect(downs, ['```mermaid']);
+    downs.clear();
+    await tester.tap(find.text('RENDERED ![pic](a.png)'));
+    await tester.pump();
+    expect(downs, isEmpty);
   });
 
   testWidgets('front matter draws as keys and values, <details> as its '

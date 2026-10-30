@@ -1075,15 +1075,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         height: line,
         child: Center(child: Container(height: 1, color: p.border)),
       ),
-      // A table scrolls sideways in the package's own scroller, and a code
-      // block keeps its copy button: neither takes a plain tap, which goes
+      // A table and a diagram scroll sideways in their own scrollers, and a
+      // code block keeps its copy button: none takes a plain tap, which goes
       // through to the text, puts the caret in the block and shows its
-      // source. A diagram is a web view, which would take every touch.
+      // source.
       MdSwapKind.table || MdSwapKind.fence || MdSwapKind.image => block(
         IgnorePointer(
-          ignoring:
-              swap.kind == MdSwapKind.image ||
-              RegExp(r'^ {0,3}(`{3,}|~{3,})\s*mermaid').hasMatch(source),
+          ignoring: swap.kind == MdSwapKind.image,
           child: _Rendered(
             key: ValueKey(source),
             builder: widget.blockBuilder,

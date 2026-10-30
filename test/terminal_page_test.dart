@@ -17,6 +17,7 @@ import 'package:sshbox/src/session/session_manager.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
+import 'package:sshbox/src/ui/mermaid_canvas.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/right_click.dart' show TabActions, TabMenu;
 import 'package:sshbox/src/ui/settings_page.dart';
@@ -1366,7 +1367,10 @@ void main() {
 
       /// The page with a mermaid block below the link line, drawn indented
       /// as Claude Code draws a code block, on rows 1 to 3.
-      Future<void> pumpDiagram(WidgetTester tester) async {
+      Future<void> pumpDiagram(
+        WidgetTester tester, {
+        String block = '\r\n  graph TD\r\n    A\x1b[1C-->\x1b[1CB\r\n',
+      }) async {
         WebViewPlatform.instance = FakeWebViewPlatform();
         copied = [];
         final platform = tester.binding.defaultBinaryMessenger;
@@ -1385,7 +1389,7 @@ void main() {
             .widget<TerminalView>(find.byType(TerminalView))
             .terminal
             // The gap a cursor move, as Claude Code draws one.
-            .write('\r\n  graph TD\r\n    A\x1b[1C-->\x1b[1CB\r\n');
+            .write(block);
         await tester.pump();
       }
 
@@ -1412,9 +1416,11 @@ void main() {
         await tester.tap(find.text('Show as diagram'));
         await tester.pumpAndSettle();
         expect(
-          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          tester.widget<MermaidBlock>(find.byType(MermaidBlock)).source,
           'graph TD\n  A --> B\n',
         );
+        expect(find.byType(MermaidCanvas), findsOneWidget);
+        expect(find.byType(MermaidView), findsNothing);
         await tester.tap(find.text('COPY SOURCE'));
         await tester.pumpAndSettle();
         expect(copied, [
@@ -1446,13 +1452,28 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.text('Show as diagram'));
         await tester.pumpAndSettle();
-        expect(find.byType(MermaidView), findsOneWidget);
+        expect(find.byType(MermaidCanvas), findsOneWidget);
       }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-      testWidgets('where no web view draws one, it is not offered', (
-        tester,
-      ) async {
+      testWidgets('where no web view is, a flowchart is still offered and '
+          'drawn natively', (tester) async {
         await pumpDiagram(tester);
+        selectDiagram(tester);
+        await tester.tapAt(
+          cellAt(tester, 4, 1),
+          buttons: kSecondaryButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Show as diagram'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MermaidCanvas), findsOneWidget);
+        expect(find.byType(MermaidView), findsNothing);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+      testWidgets('where no web view is, a kind not drawn natively is not '
+          'offered', (tester) async {
+        await pumpDiagram(tester, block: '\r\n  pie\r\n    "a" : 1\r\n');
         selectDiagram(tester);
         await tester.tapAt(
           cellAt(tester, 4, 1),

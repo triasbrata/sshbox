@@ -1,0 +1,116 @@
+size 1078.5x1944
+line lifeline dashed none-none (34,77) (34,1877)
+line lifeline dashed none-none (230.5,77) (230.5,1877)
+line lifeline dashed none-none (525.5,77) (525.5,1877)
+line lifeline dashed none-none (722.5,77) (722.5,1877)
+line lifeline dashed none-none (1021.5,77) (1021.5,1877)
+box frame 14,101 485.5x608
+box frameTab 14,101 37x24
+line separator dashed none-none (14,397) (499.5,397)
+line separator dashed none-none (14,599) (499.5,599)
+box frame 210.5,1121 831x480
+box frameTab 210.5,1121 37x24
+line separator dashed none-none (210.5,1305) (1041.5,1305)
+line separator dashed none-none (210.5,1459) (1041.5,1459)
+box frame 200.5,889 851x724
+box frameTab 200.5,889 44x24
+box actorFigure 22,8 24x34
+text actor 20,50 28x16 "User"
+box actorBox 181.5,41 98x36
+text actor 195.5,51 70x16 "Jeansh app"
+box actorBox 469.5,41 112x36
+text actor 483.5,51 84x16 "Secret store"
+box actorBox 642,41 161x36
+text actor 656,51 133x16 "jeansh-notify relay"
+box actorBox 972.5,41 98x36
+text actor 986.5,51 70x16 "Workers KV"
+text message 72.8,149 119x16 "Delete, confirmed"
+line edge solid none-arrow (34,171) (230.5,171)
+box badge 25,162 18x18
+text number 30.5,163 7x16 "1"
+text message 240.5,193 210x48 "closeHost(hostId), then NotifyKeys.revoke(hostId), not awaited"
+line edge solid none-arrow (230.5,247) (264.5,247) (264.5,265) (230.5,265)
+box badge 221.5,238 18x18
+text number 227,239 7x16 "2"
+text message 240.5,287 245x64 "wait for any registration under way for this host, then move\nits key to the waiting keys (a host with none: nothing more)"
+line edge solid none-arrow (230.5,357) (264.5,357) (264.5,375) (230.5,375)
+box badge 221.5,348 18x18
+text number 227,349 7x16 "3"
+text message 76.3,445 112x16 "Reset, confirmed"
+line edge solid none-arrow (34,467) (230.5,467)
+box badge 25,458 18x18
+text number 30.5,459 7x16 "4"
+text message 240.5,489 238x64 "NotifyKeys.reset(): wait for every registration under way,\nthen move every host's key to the waiting keys"
+line edge solid none-arrow (230.5,559) (264.5,559) (264.5,577) (230.5,577)
+box badge 221.5,550 18x18
+text number 227,551 7x16 "5"
+text message 240.5,647 238x16 "the keys still waiting from before"
+line edge solid none-arrow (230.5,669) (264.5,669) (264.5,687) (230.5,687)
+box badge 221.5,660 18x18
+text number 227,661 7x16 "6"
+text frameKind 22,105 21x16 "alt"
+text frameTitle 180.8,105 189x32 "[delete a host (HostsPage._confirmDelete)]"
+text frameTitle 137.8,401 238x32 "[Settings, Reset notification keys (_NotificationsSection._reset)]"
+text frameTitle 130.8,603 252x32 "[launch, and each FCM token after it (NotifyKeys.useFcmToken)]"
+text message 269.5,721 217x32 "save sshbox.notify.revoke, then sshbox.notify.keys without them"
+line edge solid none-arrow (230.5,759) (525.5,759)
+box badge 221.5,750 18x18
+text number 227,751 7x16 "7"
+box note 91,781 279x94
+text note 101,788 259x80 "From here no waiting key goes to a host or is registered again.\nStopped between the two writes, _load finds a key in both and keeps it waiting."
+text message 357.5,937 238x64 "DELETE /v1/key, no body, the four headers from _signed,\nover DELETE:/v1/key:hex SHA-256 of nothing:X-TIMESTAMP:X-EXTERNAL-ID"
+line edge solid none-arrow (230.5,1007) (722.5,1007)
+box badge 221.5,998 18x18
+text number 227,999 7x16 "8"
+text message 742.5,1029 259x64 "verified(): the checks of a send, in the same order (diagram 4),\nwriting n:keyId:externalId, but never counted against SEND_LIMIT"
+line edge solid none-arrow (722.5,1099) (1021.5,1099)
+box badge 713.5,1090 18x18
+text number 719,1091 7x16 "9"
+text message 823,1155 98x16 "delete k:keyId"
+line edge solid none-arrow (722.5,1177) (1021.5,1177)
+box badge 711.5,1166 22x22
+text number 715.5,1169 14x16 "10"
+text message 466,1199 21x16 "204"
+line edge dashed none-arrow (722.5,1221) (230.5,1221)
+box badge 711.5,1210 22x22
+text number 715.5,1213 14x16 "11"
+text message 240.5,1243 140x16 "done, forget the key"
+line edge solid none-arrow (230.5,1265) (264.5,1265) (264.5,1283) (230.5,1283)
+box badge 219.5,1254 22x22
+text number 223.5,1257 14x16 "12"
+text message 424,1353 105x16 "401 unknown key"
+line edge dashed none-arrow (722.5,1375) (230.5,1375)
+box badge 711.5,1364 22x22
+text number 715.5,1367 14x16 "13"
+text message 240.5,1397 140x16 "done, forget the key"
+line edge solid none-arrow (230.5,1419) (264.5,1419) (264.5,1437) (230.5,1437)
+box badge 219.5,1408 22x22
+text number 223.5,1411 14x16 "14"
+text message 240.5,1523 259x32 "RelayClient.revoke throws. Stop, this key and the rest keep waiting"
+line edge solid none-arrow (230.5,1561) (264.5,1561) (264.5,1579) (230.5,1579)
+box badge 219.5,1550 22x22
+text number 223.5,1553 14x16 "15"
+text frameKind 218.5,1125 21x16 "alt"
+text frameTitle 574.5,1125 140x16 "[every check passes]"
+text frameTitle 496.5,1309 259x32 "[the key is gone already (revoked, or deleted after a 410)]"
+text frameTitle 500,1463 252x48 "[no answer, or any other (401 stale or bad timestamp, 401 bad signature, 404, 409, 429, 5xx)]"
+text frameKind 208.5,893 28x16 "loop"
+text frameTitle 536,893 224x32 "[each waiting key, one at a time (_revokePending)]"
+text message 283.5,1625 189x16 "save the keys still waiting"
+line edge solid none-arrow (230.5,1647) (525.5,1647)
+box badge 219.5,1636 22x22
+text number 223.5,1639 14x16 "16"
+box note 91,1669 279x110
+text note 101,1676 259x96 "After a delete or at launch a failure is logged by its kind only.\nA reset throws, and a toast says some old keys are not revoked yet,\nno host gets them again, and Jeansh tries again when it next starts."
+box note 593.5,1793 258x62
+text note 603.5,1800 238x48 "A server still holding a revoked LC_SSHBOX_KEY now gets 401 unknown key"
+box actorFigure 22,1878 24x34
+text actor 20,1920 28x16 "User"
+box actorBox 181.5,1877 98x36
+text actor 195.5,1887 70x16 "Jeansh app"
+box actorBox 469.5,1877 112x36
+text actor 483.5,1887 84x16 "Secret store"
+box actorBox 642,1877 161x36
+text actor 656,1887 133x16 "jeansh-notify relay"
+box actorBox 972.5,1877 98x36
+text actor 986.5,1887 70x16 "Workers KV"

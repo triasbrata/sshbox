@@ -1,0 +1,45 @@
+size 2248x264.7
+box cluster 8,104.7 362x134
+text cluster 168,112.7 42x16 "Tablet"
+box cluster 592,8 619x160
+text cluster 866.5,16 70x16 "SSH server"
+box cluster 1440,85.2 397x118
+text cluster 1603.5,93.2 70x16 "Cloudflare"
+box cluster 2038,92.7 202x164
+text cluster 2118,100.7 42x16 "Google"
+line edge solid none-none curved (124,181.7) (154,181.7) (184,181.7)
+line edge solid arrow-arrow curved (124,174.7) (481,124.6) (608,105.1)
+line edge solid none-arrow curved (785,79.7) (815,75.6) (845,71.1)
+line edge solid none-arrow curved (966,68.5) (1044,76.8) (1074,83.8)
+line edge solid none-arrow curved (1074,112.1) (1044,119.1) (929.5,126) (815,117.2) (779.8,109.6)
+line edge solid none-arrow curved (1195,102.5) (1325.5,112.2) (1456,135.7)
+line edge solid none-arrow curved (124,183.1) (400,190.7) (680,206) (1241,192.1) (1456,166.4)
+line edge solid none-none curved (1661,154.2) (1691,154.2) (1721,154.2)
+line edge solid none-arrow curved (1661,150.4) (1937.5,140) (2054,143.9)
+line edge solid none-arrow curved (1661,159.3) (1916.5,172) (2054,208.5)
+line edge solid none-arrow curved (2054,220.4) (1867,212.1) (1440,223.2) (1259,230.9) (592,246.4) (400,228.3) (124,188.9)
+box rect 24,163.7 100x36
+box cylinder 184,140.7 170x82
+box rect 608,73.6 177x36
+box rect 845,44 121x36
+box rect 1074,72 121x52
+box rect 1456,128.2 205x52
+box cylinder 1721,121.2 100x66
+box rect 2054,128.7 170x36
+box rect 2054,204.7 107x36
+text edgeLabel 404,92.6 154x64 "SSH connection: shell, LC_SSHBOX_* variables,\nremote forward on 127.0.0.1:0"
+text edgeLabel 849,102 161x48 "1 direct: HTTP to 127.0.0.1:port,\ndown the SSH connection"
+text edgeLabel 1245,96.2 161x32 "2 fallback: signed POST /v1/send"
+text edgeLabel 596,190 168x32 "signed POST /v1/register\nand DELETE /v1/key"
+text edgeLabel 1871,132 133x16 "service-account JWT"
+text edgeLabel 1871,164 91x16 "messages:send"
+text edgeLabel 1245,222.9 28x16 "push"
+text node 39,173.7 70x16 "Jeansh app"
+text node 199,162.7 140x48 "Secret store\nsshbox.notify.keys\nsshbox.notify.revoke"
+text node 623,83.6 147x16 "sshd or Tailscale SSH"
+text node 860,54 91x16 "shell or tmux"
+text node 1089,82 91x32 "sshbox-notify\n(notify.sh)"
+text node 1471,138.2 175x32 "jeansh-notify Worker\njeansh-notify.brata.cloud"
+text node 1736,143.2 70x32 "Workers KV\nKEYS"
+text node 2069,138.7 140x16 "OAuth token endpoint"
+text node 2069,214.7 77x16 "FCM HTTP v1"
