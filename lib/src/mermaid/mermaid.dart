@@ -38,7 +38,8 @@ MermaidRead readMermaid(String source) {
   final kind = i < lines.length
       ? lines[i].trim().split(RegExp(r'[\s;]')).first
       : '';
-  if (!nativeMermaidKinds.contains(kind)) {
+  // MUTATION: no kind is drawn natively.
+  if (kind.isNotEmpty || !nativeMermaidKinds.contains(kind)) {
     return MermaidNotDrawn(
       kind,
       kind.isEmpty ? 'no diagram' : '$kind is not drawn natively',
