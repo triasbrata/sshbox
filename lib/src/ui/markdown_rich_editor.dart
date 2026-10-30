@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -82,10 +83,12 @@ class MarkdownRichEditor extends StatefulWidget {
   final TextStyle? codeFont;
 
   /// ponytail: the whole document is one paragraph, laid out again on every
-  /// key, at a cost that grows with how much markup it has: about 100 ms a
-  /// key for an 83 KB README in a debug build (see the PR). Past this a file
+  /// key, at a cost that grows with its length. Sections away from the caret
+  /// are shaped as blanks, so a key in the 83 KB README costs about 17 ms in
+  /// a debug widget test, and 240 KB about 45 ms, what 160 KB cost before
+  /// (test/markdown_rich_speed_test.dart, RICH_BENCH=1). Past this a file
   /// opens in Source, which lays out only the lines on screen.
-  static const limit = 160 * 1024;
+  static const limit = 240 * 1024;
 
   /// Whether the formatting goes in a bar floating over a selection, as on
   /// Medium, rather than in the bar over the keyboard.
@@ -317,6 +320,7 @@ class _LiveController extends TextEditingController {
       swapBuilder,
       sectionBuilder: sectionBuilder,
       active: pinned,
+      blankSections: !SemanticsBinding.instance.semanticsEnabled,
     );
   }
 }
@@ -325,6 +329,15 @@ class _LiveController extends TextEditingController {
 const _hide = 1;
 const _widget = 2;
 const _section = 3;
+
+/// [run] as spaces, its line breaks kept.
+String _blank(String run) {
+  final out = Uint16List(run.length);
+  for (var k = 0; k < run.length; k++) {
+    out[k] = run.codeUnitAt(k) == 0x0A ? 0x0A : 0x20;
+  }
+  return String.fromCharCodes(out);
+}
 
 /// The text drawn, from [from] to [to]: [live] styled by [look], with what
 /// [ends] does not touch hidden or swapped. Exactly as long as the text, a
@@ -336,6 +349,9 @@ const _section = 3;
 /// out once, and the rest of it one hidden run: what is shaped again on a key
 /// is then the section being typed in and a few runs a section, not the whole
 /// document.
+///
+/// [blankSections] puts spaces in place of that hidden run's characters,
+/// its line breaks kept: off while a screen reader reads the field's text.
 @visibleForTesting
 TextSpan liveSpan(
   MdLive live,
@@ -347,6 +363,7 @@ TextSpan liveSpan(
   int? to,
   Widget Function(MdRange section)? sectionBuilder,
   Set<int> active = const {},
+  bool blankSections = false,
 }) {
   final l = look;
   final t = live.text;
@@ -406,11 +423,13 @@ TextSpan liveSpan(
   }
 
   final children = <InlineSpan>[];
+  var afterSection = false;
   bool inComposing(int k) =>
       composing.isValid && k >= composing.start && k < composing.end;
   var i = from;
   while (i < end) {
     if (draw[i] == _section) {
+      afterSection = true;
       children.add(
         WidgetSpan(
           alignment: PlaceholderAlignment.top,
@@ -454,7 +473,17 @@ TextSpan liveSpan(
     }
     var style = d == _hide ? l.hidden : l.of(m);
     if (c) style = style.copyWith(decoration: TextDecoration.underline);
-    children.add(TextSpan(text: t.substring(i, j), style: style));
+    final run = t.substring(i, j);
+    children.add(
+      TextSpan(
+        // A section drawn apart keeps its text in the field only to keep
+        // every offset where it is: as spaces, with its line breaks, it is
+        // shaped in a fraction of the time, and nothing shows it.
+        text: blankSections && afterSection && d == _hide ? _blank(run) : run,
+        style: style,
+      ),
+    );
+    afterSection = false;
     i = j;
   }
   return TextSpan(style: l.root, children: children);
@@ -488,7 +517,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     super.initState();
     widget.controller?._state = this;
     _text.addListener(_onText);
-    SemanticsBinding.instance.addSemanticsEnabledListener(_placeTaskNodes);
+    SemanticsBinding.instance.addSemanticsEnabledListener(_onSemantics);
     _focus.addListener(() {
       _text.focused = _focus.hasFocus;
       RichChords.want(this, _focus.hasFocus ? _onChord : null);
@@ -518,7 +547,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _scroll.dispose();
     _settle?.cancel();
     _bar.dispose();
-    SemanticsBinding.instance.removeSemanticsEnabledListener(_placeTaskNodes);
+    SemanticsBinding.instance.removeSemanticsEnabledListener(_onSemantics);
     _taskNodes.dispose();
     super.dispose();
   }
@@ -914,6 +943,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   final _taskNodes = ValueNotifier<List<_TaskNode>>(const []);
   final _stackKey = GlobalKey();
   bool _taskNodesDue = false;
+
+  /// A screen reader come or gone: the field's text is drawn again, with or
+  /// without the sections' own characters, and the task nodes placed.
+  void _onSemantics() {
+    _text.restyle();
+    _placeTaskNodes();
+  }
 
   /// Places the task boxes' nodes after the frame lays the boxes out, while
   /// a screen reader or anything else asks for semantics: otherwise nothing.
