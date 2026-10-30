@@ -773,7 +773,8 @@ class LiveSession extends ChangeNotifier {
     _held.clear();
     _heldSize = 0;
     _heldOverflow = false;
-    if (any) _inputProblem = 'What you typed was not sent: the shell did not start.';
+    if (any)
+      _inputProblem = 'What you typed was not sent: the shell did not start.';
   }
 
   /// Bumped by every connect and by [abandon], so a connect that comes
@@ -1394,9 +1395,19 @@ class LiveSession extends ChangeNotifier {
       if (!done.isCompleted) done.complete();
     }
 
+    final clock = Stopwatch()..start();
     try {
       if (session is! ChannelCapable) throw StateError('no channel');
-      channel = await session.open(openCommandInstallScript());
+      // The open counts against the same ceiling: a host that never confirms
+      // the channel does not hold the shell. One that comes later is closed.
+      final opening = session.open(openCommandInstallScript());
+      channel = await opening.timeout(
+        openInstallTimeout,
+        onTimeout: () {
+          unawaited(opening.then((late) => late.close(), onError: (_) {}));
+          throw TimeoutException('open', openInstallTimeout);
+        },
+      );
       subscription = channel.output.listen(
         (bytes) => output.write(utf8.decode(bytes, allowMalformed: true)),
         onDone: finish,
@@ -1405,7 +1416,8 @@ class LiveSession extends ChangeNotifier {
       channel.write(
         Uint8List.fromList(utf8.encode('${secret ?? '-'}\n${key ?? '-'}\n')),
       );
-      await done.future.timeout(openInstallTimeout);
+      final left = openInstallTimeout - clock.elapsed;
+      await done.future.timeout(left.isNegative ? Duration.zero : left);
     } on TimeoutException {
       timedOut = true;
     } catch (_) {
@@ -1429,7 +1441,11 @@ class LiveSession extends ChangeNotifier {
     };
     appLog.add(
       'connect: session $id jeansh command '
-      '${known.contains(answer) ? answer : timedOut ? 'timed out' : 'failed'}',
+      '${known.contains(answer)
+          ? answer
+          : timedOut
+          ? 'timed out'
+          : 'failed'}',
     );
     if (_disposed) return;
     final what = open && key != null
