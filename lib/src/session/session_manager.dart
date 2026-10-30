@@ -1677,6 +1677,7 @@ printf "sshbox\t%s\t%s\t%s\t%s\n" "${p#/proc/}" "$t" "$(cat "$f/comm" 2>/dev/nul
     // which never closes them.
     _repos?.dispose();
     _repos = null;
+    openRequests.dispose();
     _terminal.dispose();
     super.dispose();
   }

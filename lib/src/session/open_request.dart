@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -43,6 +44,17 @@ class OpenSecretRing {
 
   /// The latest, what a new pane will read.
   String? get newest => _items.isEmpty ? null : _items.last;
+
+  /// The nonces of requests already honoured on this host, the newest
+  /// [_maxNonces], so a sequence opens once whichever tab shows it.
+  static const _maxNonces = 512;
+  final _seen = <String>{};
+
+  /// Records [nonce]; false when this host has already honoured it.
+  bool firstUse(String nonce) {
+    if (!_seen.add(nonce)) return false;
+    return true;
+  }
 
   /// Whether [candidate] is one of them. Every one is compared, whole, so
   /// the time says nothing of which matched or how far.
@@ -131,14 +143,13 @@ class OpenRequests {
 
   /// The longest path, in bytes.
   static const maxPath = openLongestPath;
-  static const _maxNonces = 512;
   static final _hex = RegExp(r'^[0-9a-f]{8,64}$');
   final _recent = <DateTime>[];
-  final _seen = <String>{};
   DateTime? _refusedAt;
   DateTime? _droppedAt;
   int _droppedSince = 0;
   String _droppedWhy = '';
+  Timer? _droppedTimer;
 
   static final _random = Random.secure();
   static String newSecret() => base64Url
@@ -163,9 +174,8 @@ class OpenRequests {
             ? (at - nowSeconds).abs() <= unmeasuredWindow
             : (at - (nowSeconds + offset)).abs() <= window) &&
         _hex.hasMatch(args[3]) &&
-        _seen.add(args[3]);
+        ring.firstUse(args[3]);
     if (!good) return _refuse(now);
-    if (_seen.length > _maxNonces) _seen.remove(_seen.first);
     final (:path, :why) = decode(args[4]);
     if (path == null) return _drop(now, why!);
     _recent.removeWhere((t) => now.difference(t) >= burstWindow);
@@ -187,18 +197,37 @@ class OpenRequests {
   }
 
   /// Counts a request that was right and not opened, and says so at most
-  /// once every [droppedEvery], with the count since.
+  /// once every [droppedEvery], with the count since. What is held back is
+  /// said when that time is up, with no later drop needed.
   bool _drop(DateTime now, String why) {
     _droppedSince++;
     _droppedWhy = why;
     final last = _droppedAt;
     if (last == null || now.difference(last) >= droppedEvery) {
-      _droppedAt = now;
-      final count = _droppedSince;
-      _droppedSince = 0;
-      onDropped?.call(count, _droppedWhy);
+      _sayDropped(now);
+    } else {
+      _droppedTimer ??= Timer(droppedEvery - now.difference(last), () {
+        _droppedTimer = null;
+        _sayDropped(_now());
+      });
     }
     return false;
+  }
+
+  void _sayDropped(DateTime now) {
+    _droppedTimer?.cancel();
+    _droppedTimer = null;
+    if (_droppedSince == 0) return;
+    _droppedAt = now;
+    final count = _droppedSince;
+    _droppedSince = 0;
+    onDropped?.call(count, _droppedWhy);
+  }
+
+  /// Stops a held drop from being said later.
+  void dispose() {
+    _droppedTimer?.cancel();
+    _droppedTimer = null;
   }
 
   /// [encoded] as an absolute path, or null: see [decode].

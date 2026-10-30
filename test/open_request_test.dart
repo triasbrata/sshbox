@@ -44,6 +44,7 @@ void main() {
       clockOffset: 0,
       now: () => clock,
     );
+    addTearDown(requests.dispose);
     terminal = ClipboardTerminal(
       onPrivateOSC: (code, args) => requests.handle(code, args),
     );
@@ -94,6 +95,25 @@ void main() {
     clock = clock.add(const Duration(seconds: 30));
     terminal.write(once);
     expect(opened, ['/srv/a.md']);
+  });
+
+  test('a sequence opens once per host: a second tab on the same host, '
+      'sharing its ring, does not open it again', () {
+    final ring = OpenSecretRing(['sek-ret']);
+    OpenRequests tab() => OpenRequests(
+      onOpen: opened.add,
+      ring: ring,
+      clockOffset: 0,
+      now: () => clock,
+    );
+    final once = osc('sek-ret', '/srv/a.md', nonce: 'deadbeef02');
+    ClipboardTerminal(onPrivateOSC: tab().handle).write(once);
+    ClipboardTerminal(onPrivateOSC: tab().handle).write(once);
+    expect(opened, ['/srv/a.md']);
+    // A fresh nonce in the second tab still opens.
+    ClipboardTerminal(onPrivateOSC: tab().handle)
+        .write(osc('sek-ret', '/srv/b.md'));
+    expect(opened, ['/srv/a.md', '/srv/b.md']);
   });
 
   test('a stale or future time opens nothing', () {
@@ -203,6 +223,38 @@ void main() {
     final before = dropped.length;
     terminal.write(osc('wrong', '/x'));
     expect(dropped, hasLength(before));
+  });
+
+  test('drops held back by the two-second spacing are said when it ends, '
+      'with no later drop needed', () async {
+    for (var i = 0; i < 7; i++) {
+      terminal.write(osc('sek-ret', '/f$i'));
+    }
+    expect(dropped, [(1, 'more than 5 files at a time')]);
+    await Future<void>.delayed(
+      OpenRequests.droppedEvery + const Duration(milliseconds: 200),
+    );
+    expect(dropped, [
+      (1, 'more than 5 files at a time'),
+      (1, 'more than 5 files at a time'),
+    ]);
+    // Nothing held, nothing more said.
+    await Future<void>.delayed(
+      OpenRequests.droppedEvery + const Duration(milliseconds: 200),
+    );
+    expect(dropped, hasLength(2));
+    requests.dispose();
+  });
+
+  test('a held drop is not said after the requests are disposed', () async {
+    for (var i = 0; i < 7; i++) {
+      terminal.write(osc('sek-ret', '/f$i'));
+    }
+    requests.dispose();
+    await Future<void>.delayed(
+      OpenRequests.droppedEvery + const Duration(milliseconds: 200),
+    );
+    expect(dropped, hasLength(1));
   });
 
   test('every secret of the newest four counts, an older one does not, and '
