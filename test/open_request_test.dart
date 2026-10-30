@@ -116,6 +116,16 @@ void main() {
     expect(opened, ['/srv/a.md', '/srv/b.md']);
   });
 
+  test('a host keeps its newest 512 nonces, forgetting the oldest', () {
+    final ring = OpenSecretRing();
+    for (var i = 0; i < 513; i++) {
+      expect(ring.firstUse('n$i'), isTrue);
+    }
+    expect(ring.firstUse('n512'), isFalse);
+    expect(ring.firstUse('n1'), isFalse);
+    expect(ring.firstUse('n0'), isTrue);
+  });
+
   test('a stale or future time opens nothing', () {
     terminal.write(
       osc('sek-ret', '/old', at: clock.subtract(const Duration(minutes: 3))),

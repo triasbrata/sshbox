@@ -53,6 +53,7 @@ class OpenSecretRing {
   /// Records [nonce]; false when this host has already honoured it.
   bool firstUse(String nonce) {
     if (!_seen.add(nonce)) return false;
+    if (_seen.length > _maxNonces) _seen.remove(_seen.first);
     return true;
   }
 
