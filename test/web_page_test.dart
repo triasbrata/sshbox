@@ -431,6 +431,103 @@ void main() {
       expect(platform.view.loaded, isEmpty);
     });
 
+    testWidgets('Reload while the site is starting starts no second one', (
+      tester,
+    ) async {
+      WebViewPlatform.instance = platform = FakeWebViewPlatform();
+      files = FakeFileBrowser();
+      final started = (await tester.runAsync(
+        () =>
+            HtmlSite.start(browser: files, htmlPath: '/home/me/site/page.html'),
+      ))!;
+      final ready = Completer<HtmlSite>();
+      var asked = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WebPage(
+              initialUrl: Uri.parse('about:blank'),
+              onChanged: (_, _) {},
+              site: () {
+                asked++;
+                return ready.future;
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.pump();
+      expect(asked, 1);
+      ready.complete(started);
+      await tester.pump();
+      await tester.pump();
+      expect(platform.view.loaded, [started.url]);
+      // Once it has started, Reload loads it again from the same site.
+      platform.view.page.finished('${started.url}');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.pump();
+      expect(asked, 1);
+      expect(platform.view.loaded, [started.url, started.url]);
+      final port = started.url.port;
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await expectLater(
+          Socket.connect('127.0.0.1', port),
+          throwsA(isA<SocketException>()),
+        );
+      });
+    });
+
+    testWidgets('a site that failed to start is tried again by Reload', (
+      tester,
+    ) async {
+      WebViewPlatform.instance = platform = FakeWebViewPlatform();
+      var asked = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WebPage(
+              initialUrl: Uri.parse('about:blank'),
+              onChanged: (_, _) {},
+              site: () async {
+                asked++;
+                throw StateError('gone');
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.pump();
+      expect(asked, 2);
+    });
+
+    testWidgets('Reload takes the reason a page did not load off the screen', (
+      tester,
+    ) async {
+      await pumpHtml(tester);
+      platform.view.page.failed(
+        const WebResourceError(
+          errorCode: -1004,
+          description: 'Could not connect to the server.',
+          isForMainFrame: true,
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('Could not connect'), findsOneWidget);
+      await tester.tap(find.byTooltip('Reload'));
+      await tester.pump();
+      expect(find.textContaining('Could not connect'), findsNothing);
+      expect(platform.view.loaded, [site!.url, site!.url]);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    });
+
     testWidgets('the view asking about the page it was just told to load is '
         'let through, as WKWebView asks', (tester) async {
       await pumpHtml(tester);
