@@ -43,6 +43,10 @@ class OutboxEntry {
   bool transient;
   String? why;
 
+  /// The chat handling it now, in this run only: another chat on the same
+  /// session leaves it to that one. Never saved.
+  Object? owner;
+
   /// The pictures, as copies this store holds.
   final List<OutboxPicture> pictures;
 
@@ -111,11 +115,16 @@ class OutboxPicture {
 }
 
 /// Everything kept for one session: its undelivered messages, oldest first,
-/// and the transcript turns already matched to a delivered message.
+/// and what is known of the transcript turns of the messages delivered.
 class OutboxBox {
-  OutboxBox({List<OutboxEntry>? entries, List<String>? consumed})
-    : entries = entries ?? [],
-      consumed = consumed ?? [];
+  OutboxBox({
+    List<OutboxEntry>? entries,
+    List<String>? consumed,
+    List<OutboxClaim>? claims,
+    this.provedAt,
+  }) : entries = entries ?? [],
+       consumed = consumed ?? [],
+       claims = claims ?? [];
 
   final List<OutboxEntry> entries;
 
@@ -123,7 +132,67 @@ class OutboxBox {
   /// same turn can never prove a second message. Capped.
   final List<String> consumed;
 
+  /// Messages delivered with no turn named for them: each takes the first
+  /// turn that matches it, before any message waiting does. Capped.
+  final List<OutboxClaim> claims;
+
+  /// UTC, when a proof or a claim was last added.
+  DateTime? provedAt;
+
   static const consumedCap = 200;
+  static const claimsCap = 50;
+
+  /// How long a proof can still matter once no message waits: a message
+  /// written after that is newer than any turn it could match by
+  /// [OutboxMatch.skew] on either clock.
+  static const proofLife = Duration(minutes: 5);
+
+  /// Drops what can no longer match anything: every proof and claim once no
+  /// message waits and none was added within [proofLife], and the claims
+  /// older than the oldest message waiting by as much. True when nothing is
+  /// left to keep.
+  bool prune(DateTime now) {
+    final proved = provedAt;
+    if (entries.isEmpty &&
+        (proved == null || now.difference(proved) > proofLife)) {
+      consumed.clear();
+      claims.clear();
+      provedAt = null;
+      return true;
+    }
+    final oldest = entries.isEmpty
+        ? now
+        : entries
+              .map((e) => e.createdAt)
+              .reduce((a, b) => a.isBefore(b) ? a : b);
+    final floor = (oldest.isBefore(now) ? oldest : now).subtract(proofLife);
+    claims.removeWhere((claim) => claim.at.isBefore(floor));
+    if (claims.length > claimsCap) {
+      claims.removeRange(0, claims.length - claimsCap);
+    }
+    return entries.isEmpty && consumed.isEmpty && claims.isEmpty;
+  }
+}
+
+/// A delivered message whose turn was not named: its text as it reached the
+/// session, normalised, and when it was written.
+class OutboxClaim {
+  const OutboxClaim(this.text, this.at);
+
+  final String text;
+
+  /// UTC.
+  final DateTime at;
+
+  Map<String, dynamic> toJson() => {'text': text, 'at': at.toIso8601String()};
+
+  static OutboxClaim? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final text = json['text'];
+    final at = json['at'] is String ? DateTime.tryParse(json['at']) : null;
+    if (text is! String || at == null) return null;
+    return OutboxClaim(text, at.toUtc());
+  }
 }
 
 /// A write to the store that did not happen. Said to the user, with what they
@@ -201,6 +270,24 @@ class OutboxStore {
   /// The session part used by a chat that has not started one yet.
   static const newChat = 'new';
 
+  /// The one copy of each file every chat of this store changes and saves,
+  /// read once: two chats on one session (two tabs to one host, or a chat
+  /// closed and opened again while a delivery finishes) each keeping its own
+  /// would write over each other's messages.
+  final Map<String, Future<OutboxBox>> _open = {};
+
+  /// What is kept under [key], shared by everyone who opens it; [onCorrupt]
+  /// as [load] says, for the first to open it.
+  Future<OutboxBox> open(String key, {void Function()? onCorrupt}) {
+    final opening = _open[key] ??= load(key, onCorrupt: onCorrupt);
+    // A read that failed is tried again by the next to open it.
+    opening.catchError((Object _) {
+      if (identical(_open[key], opening)) _open.remove(key);
+      return OutboxBox();
+    });
+    return opening;
+  }
+
   Future<File> _file(String key) async =>
       File('${(await _folder()).path}/$key.json');
 
@@ -210,7 +297,9 @@ class OutboxStore {
     final mem = _mem;
     if (mem != null) {
       final raw = mem[key];
-      return raw == null ? OutboxBox() : _parse(raw) ?? OutboxBox();
+      final box = raw == null ? OutboxBox() : _parse(raw) ?? OutboxBox();
+      if (raw != null && box.prune(DateTime.now().toUtc())) mem.remove(key);
+      return box;
     }
     final File file;
     try {
@@ -221,10 +310,11 @@ class OutboxStore {
       );
     }
     if (!file.existsSync()) return OutboxBox();
+    final OutboxBox box;
     try {
-      final box = _parse(await file.readAsString());
-      if (box == null) throw const FormatException('not an object');
-      return box;
+      final read = _parse(await file.readAsString());
+      if (read == null) throw const FormatException('not an object');
+      box = read;
     } catch (_) {
       try {
         file.renameSync('${file.path}.bad');
@@ -232,6 +322,9 @@ class OutboxStore {
       onCorrupt?.call();
       return OutboxBox();
     }
+    // Only old proofs left: the file is gone, as a save would have left it.
+    if (box.prune(DateTime.now().toUtc())) await save(key, box);
+    return box;
   }
 
   static OutboxBox? _parse(String raw) {
@@ -248,46 +341,58 @@ class OutboxStore {
             for (final c in json['consumed'] as List)
               if (c is String) c,
         ],
+        claims: [
+          if (json['claims'] is List)
+            for (final c in json['claims'] as List) ?OutboxClaim.fromJson(c),
+        ],
+        provedAt: json['provedAt'] is String
+            ? DateTime.tryParse(json['provedAt'] as String)?.toUtc()
+            : null,
       );
     } catch (_) {
       return null;
     }
   }
 
-  /// Saves [box] under [key], or deletes the file when there is nothing in
-  /// it. Throws [OutboxException] when it could not.
+  static String _encode(OutboxBox box) {
+    final consumed = box.consumed.length > OutboxBox.consumedCap
+        ? box.consumed.sublist(box.consumed.length - OutboxBox.consumedCap)
+        : box.consumed;
+    final proved = box.provedAt;
+    return jsonEncode({
+      'entries': [for (final e in box.entries) e.toJson()],
+      'consumed': consumed,
+      if (box.claims.isNotEmpty)
+        'claims': [for (final c in box.claims) c.toJson()],
+      if (proved != null) 'provedAt': proved.toIso8601String(),
+    });
+  }
+
+  /// Saves [box] under [key], or deletes the file when nothing in it can
+  /// matter any more (see [OutboxBox.prune]). Throws [OutboxException] when
+  /// it could not.
   Future<void> save(String key, OutboxBox box) {
+    final empty = box.prune(DateTime.now().toUtc());
     final mem = _mem;
     if (mem != null) {
-      if (box.entries.isEmpty && box.consumed.isEmpty) {
+      if (empty) {
         mem.remove(key);
       } else {
-        mem[key] = jsonEncode({
-          'entries': [for (final e in box.entries) e.toJson()],
-          'consumed': box.consumed,
-        });
+        mem[key] = _encode(box);
       }
       return Future<void>.value();
     }
+    final text = empty ? null : _encode(box);
     final previous = _tails[key] ?? Future<void>.value();
     final next = previous.catchError((Object _) {}).then((_) async {
       try {
         final file = await _file(key);
-        if (box.entries.isEmpty && box.consumed.isEmpty) {
+        if (text == null) {
           if (file.existsSync()) file.deleteSync();
           return;
         }
-        final consumed = box.consumed.length > OutboxBox.consumedCap
-            ? box.consumed.sublist(box.consumed.length - OutboxBox.consumedCap)
-            : box.consumed;
         final temp = File('${file.path}.tmp');
-        await temp.writeAsString(
-          jsonEncode({
-            'entries': [for (final e in box.entries) e.toJson()],
-            'consumed': consumed,
-          }),
-          flush: true,
-        );
+        await temp.writeAsString(text, flush: true);
         await _private(temp.path, '600');
         await temp.rename(file.path);
       } catch (error) {
@@ -345,6 +450,7 @@ class OutboxStore {
 
   /// Everything kept for [host], when the host is deleted.
   Future<void> deleteHost(String host) async {
+    _open.removeWhere((key, _) => key.startsWith('${_safe(host)}__'));
     final mem = _mem;
     if (mem != null) {
       mem.removeWhere((key, _) => key.startsWith('${_safe(host)}__'));
@@ -452,7 +558,8 @@ class OutboxMatch {
         if (attachment is Map &&
             attachment['type'] == 'queued_command' &&
             attachment['prompt'] is String) {
-          text = attachment['prompt'] as String;
+          // A long message goes in as a paste, and is queued tagged so.
+          text = (attachment['prompt'] as String).replaceAll(_pasteTag, '');
         }
       }
       final at = row['timestamp'] is String
@@ -466,10 +573,16 @@ class OutboxMatch {
     return turns;
   }
 
+  static final _pasteTag = RegExp(r'</?pasted_content id="[^"]*">');
+
   /// Which of [entries] (oldest first) the [turns] already hold, each turn
   /// proving at most one message: a turn in [consumed], or taken by an
   /// earlier entry here, proves nothing. Two identical messages need two
   /// turns. [textOf] is what reached the session for an entry's text.
+  ///
+  /// Each of [claims], a message delivered with no turn named, takes the
+  /// first turn matching it before any entry is looked at, so that turn
+  /// proves no later message of the same words.
   ///
   /// Returns the matched entries' ids mapped to the turn that proved each.
   static Map<String, String> matched(
@@ -477,12 +590,11 @@ class OutboxMatch {
     List<TranscriptTurn> turns,
     Iterable<String> consumed, {
     String Function(String text)? textOf,
+    Iterable<OutboxClaim> claims = const [],
   }) {
     final used = {...consumed};
-    final result = <String, String>{};
-    for (final entry in entries) {
-      final want = normal(textOf == null ? entry.text : textOf(entry.text));
-      final earliest = entry.createdAt.subtract(skew);
+    String? take(String want, DateTime createdAt) {
+      final earliest = createdAt.subtract(skew);
       for (final turn in turns) {
         if (used.contains(turn.key) ||
             turn.text != want ||
@@ -490,9 +602,19 @@ class OutboxMatch {
           continue;
         }
         used.add(turn.key);
-        result[entry.id] = turn.key;
-        break;
+        return turn.key;
       }
+      return null;
+    }
+
+    for (final claim in claims) {
+      take(claim.text, claim.at);
+    }
+    final result = <String, String>{};
+    for (final entry in entries) {
+      final want = normal(textOf == null ? entry.text : textOf(entry.text));
+      final turn = take(want, entry.createdAt);
+      if (turn != null) result[entry.id] = turn;
     }
     return result;
   }
