@@ -871,7 +871,9 @@ void main() {
         installOpenCommand('${home.path}/.local/bin');
         File('${bin.path}/curl').writeAsStringSync(
           '#!/bin/sh\nprintf "curl" >> "${log.path}"\n'
-          'for a in "\$@"; do printf "\\n  %s" "\$a" >> "${log.path}"; done\n'
+          'p=\nfor a in "\$@"; do printf "\\n  %s" "\$a" >> "${log.path}"; '
+          'if [ "\$p" = -K ] && [ "\$a" = - ]; then '
+          'cat >> "${log.path}.config"; fi; p=\$a; done\n'
           'printf "\\n" >> "${log.path}"\n',
         );
         // The three things the script asks of openssl: random hex, a hash
@@ -963,6 +965,43 @@ esac
         final sent = log.readAsStringSync();
         expect(sent, contains('http://127.0.0.1:9/v1/send'));
         expect(sent, isNot(contains('relay.invalid')));
+      });
+
+      test('passes the connection secret to curl on its standard input, '
+          'never among its arguments', () {
+        install('-', key);
+        final direct = notify(
+          ['only a body'],
+          env: {
+            'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:9/v1/send',
+            'LC_SSHBOX_NOTIFY_SECRET': 'conn-secret',
+          },
+        );
+        expect(direct.exitCode, 0);
+        final argv = log.readAsStringSync();
+        expect(argv, contains('http://127.0.0.1:9/v1/send'));
+        expect(argv, isNot(contains('conn-secret')));
+        expect(
+          File('${log.path}.config').readAsStringSync(),
+          'header = "Authorization: Bearer conn-secret"\n',
+        );
+      });
+
+      test('a connection secret that is not base64url is not sent down the '
+          'connection, and the relay is used', () {
+        install('-', key);
+        final result = notify(
+          ['only a body'],
+          env: {
+            'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:9/v1/send',
+            'LC_SSHBOX_NOTIFY_SECRET': 'a"b\nheader = x',
+          },
+        );
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        final argv = log.readAsStringSync();
+        expect(argv, isNot(contains('127.0.0.1:9')));
+        expect(argv, contains('relay.invalid'));
+        expect(File('${log.path}.config').existsSync(), isFalse);
       });
     });
   });

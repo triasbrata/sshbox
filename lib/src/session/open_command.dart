@@ -35,10 +35,14 @@ fi
 if [ "$1" = notify ] && [ $# -ge 2 ] && [ $# -le 3 ]; then
   shift
   if [ $# -eq 1 ]; then title=; body=$1; else title=$1; body=$2; fi
-  # The direct way first, down this connection, while it is open.
-  if [ -n "$LC_SSHBOX_NOTIFY_URL" ] && [ -n "$LC_SSHBOX_NOTIFY_SECRET" ] &&
-    curl -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
-      -H "Authorization: Bearer $LC_SSHBOX_NOTIFY_SECRET" \
+  # The direct way first, down this connection, while it is open. The
+  # secret reaches curl as a config on its standard input, never among its
+  # arguments, and only when it is base64url, as the app makes it.
+  ns=$LC_SSHBOX_NOTIFY_SECRET
+  case $ns in *[!A-Za-z0-9_-]*) ns= ;; esac
+  if [ -n "$LC_SSHBOX_NOTIFY_URL" ] && [ -n "$ns" ] &&
+    printf 'header = "Authorization: Bearer %s"\n' "$ns" |
+    curl -K - -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
       --data-urlencode "title=$title" --data-urlencode "body=$body" \
       >/dev/null 2>&1; then
     exit 0
