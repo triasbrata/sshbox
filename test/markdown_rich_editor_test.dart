@@ -235,6 +235,38 @@ void main() {
     expect(after, contains('**Second'));
   });
 
+  testWidgets(
+    'a copy across a section shaped as blanks copies its words',
+    semanticsEnabled: false,
+    (tester) async {
+      _mockClipboard(tester);
+      final text = [
+        for (var k = 0; k < 6; k++) 'First para $k.',
+        for (var k = 0; k < 6; k++) 'Middle words $k.',
+        for (var k = 0; k < 6; k++) 'Last para $k.',
+      ].join('\n\n');
+      await _pump(tester, text);
+      await _caret(tester, 2);
+      // Select all: its ends touch the first and last sections, so the one
+      // between them stays drawn apart, shaped as blanks.
+      _controller(tester).selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: text.length,
+      );
+      await tester.pump();
+      final drawn = tester.allRenderObjects
+          .whereType<RenderEditable>()
+          .first
+          .text!
+          .toPlainText(includePlaceholders: true);
+      expect(drawn, isNot(contains('Middle')));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.control);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.control);
+      expect(_clipboard, text);
+    },
+  );
+
   testWidgets('# typed at a line start makes a heading', (tester) async {
     final host = await _pump(tester, 'Intro\n\n\n\nEnd');
     await _caret(tester, 7);
@@ -592,7 +624,7 @@ void main() {
   ) async {
     final host = await _pump(tester, 'see here now');
     await tester.showKeyboard(find.byType(EditableText));
-    _controller(tester).selection = const TextSelection(
+    _controller(tester).selection = TextSelection(
       baseOffset: 4,
       extentOffset: 8,
     );
@@ -862,7 +894,7 @@ void main() {
       await tester.showKeyboard(find.byType(EditableText));
       await tester.pump();
       host.linkAnswer = 'https://e.x';
-      _controller(tester).selection = const TextSelection(
+      _controller(tester).selection = TextSelection(
         baseOffset: 4,
         extentOffset: 8,
       );
@@ -876,7 +908,7 @@ void main() {
       final host = await _pump(tester, 'one word here');
       await tester.showKeyboard(find.byType(EditableText));
       await tester.pump();
-      _controller(tester).selection = const TextSelection(
+      _controller(tester).selection = TextSelection(
         baseOffset: 4,
         extentOffset: 8,
       );
