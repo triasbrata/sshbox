@@ -555,6 +555,172 @@ void main() {
       await tester.pumpAndSettle(const Duration(seconds: 5));
     }, variant: desktop);
 
+    testWidgets('a folder the host will not list keeps the one already here, '
+        'and is said', (tester) async {
+      final target = dest();
+      Directory('${target.path}/dev').createSync();
+      File('${target.path}/dev/keep.txt').writeAsStringSync('mine');
+      useFakeSaveDialog(null).directory = target.path;
+      await _pump(
+        tester,
+        _Refuses(
+          const FileBrowserException(
+            'Permission denied.',
+            fault: FileBrowserFault.permissionDenied,
+          ),
+          listing: true,
+        ),
+      );
+      await run(tester);
+      // Nothing to replace it with, so nothing is asked.
+      expect(find.text('Replace dev?'), findsNothing);
+      await settle(tester);
+
+      expect(File('${target.path}/dev/keep.txt').readAsStringSync(), 'mine');
+      expect(target.listSync(), hasLength(1), reason: 'no part folder');
+      expect(transfers.items.first.state, TransferState.failed);
+      expect(toast('Could not read dev: Permission denied.'), findsOneWidget);
+      expect(find.text('Saved dev'), findsNothing);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a tree that came down in part never replaces the one here: '
+        'it goes beside it, and says so', (tester) async {
+      final target = dest();
+      Directory('${target.path}/dev').createSync();
+      File('${target.path}/dev/keep.txt').writeAsStringSync('mine');
+      // A "dev (1)" already there is not touched either.
+      Directory('${target.path}/dev (1)').createSync();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = _Refuses(
+        const FileBrowserException('Permission denied.'),
+        listing: true,
+        listPath: '/home/me/dev/sub',
+      );
+      await browser.makeDirectory('/home/me/dev/sub');
+      await _pump(tester, browser);
+      await run(tester);
+
+      await tester.tap(find.bySemanticsLabel('Replace'));
+      await settle(tester);
+
+      expect(File('${target.path}/dev/keep.txt').readAsStringSync(), 'mine');
+      expect(File('${target.path}/dev/main.dart').existsSync(), isFalse);
+      expect(Directory('${target.path}/dev (1)').listSync(), isEmpty);
+      expect(
+        File('${target.path}/dev (2)/main.dart').readAsStringSync(),
+        'void main() {}\n',
+      );
+      expect(target.listSync(), hasLength(3), reason: 'no part folder');
+      final row = transfers.items.first;
+      expect(row.state, TransferState.done);
+      expect(row.note, '1 files, 1 failed, 0 skipped');
+      expect(row.saved, Uri.directory('${target.path}/dev (2)').toString());
+      expect(find.textContaining('sub: Permission denied.'), findsOneWidget);
+      expect(find.textContaining('dev (2)'), findsWidgets);
+      await tester.tap(find.bySemanticsLabel('OK'));
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a file named as the folder is replaced too, when asked', (
+      tester,
+    ) async {
+      final target = dest();
+      File('${target.path}/dev').writeAsStringSync('a file');
+      useFakeSaveDialog(null).directory = target.path;
+      await _pump(tester, FakeFileBrowser());
+      await run(tester);
+
+      await tester.tap(find.bySemanticsLabel('Replace'));
+      await settle(tester);
+
+      expect(File('${target.path}/dev/main.dart').existsSync(), isTrue);
+      expect(target.listSync(), hasLength(1));
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('a whole tree still replaces the one here', (tester) async {
+      final target = dest();
+      Directory('${target.path}/dev').createSync();
+      File('${target.path}/dev/keep.txt').writeAsStringSync('mine');
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser();
+      await browser.makeDirectory('/home/me/dev/sub');
+      browser.putBinary('/home/me/dev/sub/b.bin', [7]);
+      await _pump(tester, browser);
+      await run(tester);
+
+      await tester.tap(find.bySemanticsLabel('Replace'));
+      await settle(tester);
+
+      expect(File('${target.path}/dev/keep.txt').existsSync(), isFalse);
+      expect(File('${target.path}/dev/sub/b.bin').readAsBytesSync(), [7]);
+      expect(Directory('${target.path}/dev (1)').existsSync(), isFalse);
+      expect(transfers.items.first.note, '2 files');
+      expect(find.text('Saved dev'), findsOneWidget);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
+    testWidgets('on a Mac, two names that differ only in case: the second is '
+        'skipped and named, never written over the first', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser()
+        ..putBinary('/home/me/dev/README', [1])
+        ..putBinary('/home/me/dev/readme', [2]);
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(File('${target.path}/dev/README').readAsBytesSync(), [1]);
+      expect(File('${target.path}/dev/readme').existsSync(), isFalse);
+      expect(
+        find.textContaining('readme (would overwrite README on this computer)'),
+        findsOneWidget,
+      );
+      expect(find.text('Saved dev'), findsNothing);
+      expect(transfers.items.first.note, '2 files, 0 failed, 1 skipped');
+      await tester.tap(find.bySemanticsLabel('OK'));
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: TargetPlatformVariant({TargetPlatform.macOS}));
+
+    testWidgets('on Windows, a name with a colon is skipped and named, never '
+        'written into a hidden stream', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser()
+        ..putBinary('/home/me/dev/notes:v2', [3]);
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(File('${target.path}/dev/notes:v2').existsSync(), isFalse);
+      expect(File('${target.path}/dev/main.dart').existsSync(), isTrue);
+      expect(
+        find.textContaining('notes:v2 (a character Windows does not allow)'),
+        findsOneWidget,
+      );
+      expect(find.text('Saved dev'), findsNothing);
+      await tester.tap(find.bySemanticsLabel('OK'));
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+
+    testWidgets('on Linux, the same names all come down', (tester) async {
+      final target = dest();
+      useFakeSaveDialog(null).directory = target.path;
+      final browser = FakeFileBrowser()
+        ..putBinary('/home/me/dev/README', [1])
+        ..putBinary('/home/me/dev/readme', [2])
+        ..putBinary('/home/me/dev/notes:v2', [3]);
+      await _pump(tester, browser);
+      await run(tester);
+
+      expect(File('${target.path}/dev/README').readAsBytesSync(), [1]);
+      expect(File('${target.path}/dev/readme').readAsBytesSync(), [2]);
+      expect(File('${target.path}/dev/notes:v2').readAsBytesSync(), [3]);
+      expect(find.text('Saved dev'), findsOneWidget);
+      expect(find.textContaining('would overwrite'), findsNothing);
+      await tester.pumpAndSettle(const Duration(seconds: 5));
+    }, variant: desktop);
+
     testWidgets('an empty folder inside comes down empty', (tester) async {
       final target = dest();
       useFakeSaveDialog(null).directory = target.path;
@@ -771,17 +937,23 @@ class _FailsOne extends FakeFileBrowser {
 }
 
 /// Fails what it is asked to with [error]: a download of [only] (or of any
-/// file), or the listing itself when [listing].
+/// file), or, when [listing], only the listing of [listPath].
 class _Refuses extends FakeFileBrowser {
-  _Refuses(this.error, {this.only, this.listing = false});
+  _Refuses(
+    this.error, {
+    this.only,
+    this.listing = false,
+    this.listPath = '/home/me/dev',
+  });
 
   final Object error;
   final String? only;
   final bool listing;
+  final String listPath;
 
   @override
   Future<List<RemoteEntry>> list(String path) async {
-    if (listing && path == '/home/me/dev') throw error;
+    if (listing && path == listPath) throw error;
     return super.list(path);
   }
 
@@ -794,7 +966,7 @@ class _Refuses extends FakeFileBrowser {
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
   }) {
-    if (only == null || path.endsWith(only!)) throw error;
+    if (!listing && (only == null || path.endsWith(only!))) throw error;
     return super.download(
       path,
       localPath,

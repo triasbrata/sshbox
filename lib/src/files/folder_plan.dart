@@ -47,7 +47,14 @@ Future<FolderPlan> planFolder(
       entries = await browser.list(remote);
     } on FileBrowserException catch (error) {
       if (error.fault == FileBrowserFault.cancelled) rethrow;
-      plan.unreadable.add('${rel.isEmpty ? '.' : rel}: ${error.message}');
+      // The folder itself unread is nothing to download, not a part of it.
+      if (rel.isEmpty) {
+        throw FileBrowserException(
+          'Could not read ${RemotePath.basename(folder)}: ${error.message}',
+          fault: error.fault,
+        );
+      }
+      plan.unreadable.add('$rel: ${error.message}');
       continue;
     }
     if (entries.isEmpty && rel.isNotEmpty) plan.folders.add(rel);
@@ -79,4 +86,76 @@ Future<FolderPlan> planFolder(
     }
   }
   return plan;
+}
+
+/// Reserved device names on Windows, whatever extension follows them.
+final _windowsDevice = RegExp(
+  r'^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$',
+  caseSensitive: false,
+);
+
+/// Why [name] cannot be a file or folder on Windows as it is, or null.
+String? _windowsRefuses(String name) {
+  if (RegExp(r'[<>:"|?*\x00-\x1f]').hasMatch(name)) {
+    return 'a character Windows does not allow';
+  }
+  if (name.endsWith('.') || name.endsWith(' ')) {
+    return 'Windows drops its last dot or space';
+  }
+  if (_windowsDevice.hasMatch(name)) return 'a name Windows keeps for a device';
+  return null;
+}
+
+/// Moves to [FolderPlan.skipped] every file and folder in [plan] that this
+/// computer cannot hold as named, each with why, so nothing is lost without a
+/// word. Where names are compared without case ([foldCase], as macOS and
+/// Windows compare them by default) the second of two names that differ only
+/// in case would overwrite the first. On [windows], a name holding `:` would
+/// go into a hidden stream of another file, and one ending in a dot or a
+/// space, or naming a device, is not the file it says.
+void fitLocalNames(
+  FolderPlan plan, {
+  required bool foldCase,
+  required bool windows,
+}) {
+  if (!foldCase && !windows) return;
+  // A name is refused by any of its parts, so a file under a folder Windows
+  // cannot make goes with it.
+  String? refuses(String rel) {
+    if (!windows) return null;
+    for (final part in rel.split('/')) {
+      final why = _windowsRefuses(part);
+      if (why != null) return why;
+    }
+    return null;
+  }
+
+  final folders = [...plan.folders];
+  plan.folders.clear();
+  for (final folder in folders) {
+    final why = refuses(folder);
+    if (why == null) {
+      plan.folders.add(folder);
+    } else {
+      plan.skipped.add('$folder ($why)');
+    }
+  }
+  final taken = <String, String>{};
+  final files = [...plan.files];
+  plan.files.clear();
+  for (final file in files) {
+    final why = refuses(file.rel);
+    if (why != null) {
+      plan.skipped.add('${file.rel} ($why)');
+      continue;
+    }
+    final key = foldCase ? file.rel.toLowerCase() : file.rel;
+    final first = taken[key];
+    if (first != null) {
+      plan.skipped.add('${file.rel} (would overwrite $first on this computer)');
+      continue;
+    }
+    taken[key] = file.rel;
+    plan.files.add(file);
+  }
 }

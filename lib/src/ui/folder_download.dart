@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../files/file_browser.dart';
@@ -151,6 +152,7 @@ Future<void> downloadFolderPlain(
   FolderPlan? plan;
   final failed = <String>[];
   var saved = 0;
+  var name = base;
   try {
     await transfers.run(
       name: base,
@@ -164,6 +166,14 @@ Future<void> downloadFolderPlain(
             browser,
             folder,
             cancel: transfer.cancelled,
+          );
+          final platform = defaultTargetPlatform;
+          fitLocalNames(
+            found,
+            foldCase:
+                platform == TargetPlatform.macOS ||
+                platform == TargetPlatform.windows,
+            windows: platform == TargetPlatform.windows,
           );
           transfer.setPhase(null);
           if (found.large) {
@@ -186,7 +196,7 @@ Future<void> downloadFolderPlain(
             if (!go) throw FileBrowserException.cancelled;
           }
           if (!app.mounted) throw FileBrowserException.cancelled;
-          saved = await _fetchTree(
+          (:saved, :name) = await _fetchTree(
             browser,
             found,
             destination!,
@@ -220,9 +230,11 @@ Future<void> downloadFolderPlain(
     say('Saved $base', TuiToastType.success);
     return;
   }
+  // A tree that came down in part is never put over one already here.
+  final beside = name == base ? '' : ' as $name, beside the one there';
   say(
-    'Saved $saved files of $base: ${failed.length + unreadable.length} '
-    'failed, ${skipped.length} skipped',
+    'Saved $saved files of $base$beside: '
+    '${failed.length + unreadable.length} failed, ${skipped.length} skipped',
     TuiToastType.warning,
   );
   if (app.mounted) {
@@ -230,7 +242,7 @@ Future<void> downloadFolderPlain(
       context: app,
       builder: (context) => TuiDialog(
         title: 'download folder',
-        message: 'Saved $saved files; some were not',
+        message: 'Saved $saved files$beside; some were not',
         detail: _list(failed: [...failed, ...unreadable], skipped: skipped),
         actions: [
           TuiButton(
@@ -262,8 +274,10 @@ String _list({required List<String> failed, required List<String> skipped}) {
 }
 
 /// Fetches [plan] into a part folder under [destination] and renames it to
-/// [base]. Returns how many files are in.
-Future<int> _fetchTree(
+/// [base]. Returns how many files are in, and the name they went in under:
+/// [base], or `base (N)` beside a folder already there when not all of the
+/// tree came down, since a part of a tree never replaces a whole one.
+Future<({int saved, String name})> _fetchTree(
   FileBrowser browser,
   FolderPlan plan,
   String destination,
@@ -335,14 +349,31 @@ Future<int> _fetchTree(
         }
       }
     }
-    final old = Directory(target);
-    if (old.existsSync()) old.deleteSync(recursive: true);
-    Directory(root).renameSync(target);
-    transfer.saved = Uri.directory(target).toString();
-    transfer.note = failed.isEmpty && plan.skipped.isEmpty
+    final whole = failed.isEmpty && plan.unreadable.isEmpty;
+    var name = base;
+    var into = target;
+    bool taken(String path) =>
+        FileSystemEntity.typeSync(path, followLinks: false) !=
+        FileSystemEntityType.notFound;
+    if (taken(target)) {
+      if (whole) {
+        FileSystemEntity.isDirectorySync(target)
+            ? Directory(target).deleteSync(recursive: true)
+            : File(target).deleteSync();
+      } else {
+        for (var n = 1; taken(into); n++) {
+          name = '$base ($n)';
+          into = '$destination$sep$name';
+        }
+      }
+    }
+    Directory(root).renameSync(into);
+    transfer.saved = Uri.directory(into).toString();
+    final missed = failed.length + plan.unreadable.length;
+    transfer.note = missed == 0 && plan.skipped.isEmpty
         ? '$saved files'
-        : '$saved files, ${failed.length} failed, ${plan.skipped.length} skipped';
-    return saved;
+        : '$saved files, $missed failed, ${plan.skipped.length} skipped';
+    return (saved: saved, name: name);
   } finally {
     try {
       deletePartFolder(part);
