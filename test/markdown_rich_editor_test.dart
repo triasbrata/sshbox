@@ -1097,5 +1097,58 @@ void main() {
         'one two three\n',
       );
     }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    for (final scale in [1.0, 1.3]) {
+      testWidgets('on a 320 dp phone, at text scale $scale, the row fits: '
+          'nothing overflows and every word shows whole', (tester) async {
+        _clipboard = 'x';
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async => switch (call.method) {
+            'Clipboard.hasStrings' => {'value': true},
+            'Clipboard.getData' => {'text': _clipboard},
+            _ => null,
+          },
+        );
+        tester.platformDispatcher.textScaleFactorTestValue = scale;
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        await _pump(tester, 'one two three\n', size: const Size(320, 640));
+        await tester.longPressAt(
+          tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final words = find.descendant(
+          of: find.byType(TuiTextMenu),
+          matching: find.byType(Text),
+        );
+        final labels = [
+          for (final e in words.evaluate()) (e.widget as Text).data!,
+        ];
+        expect(labels, containsAll(['Cut', 'Copy', 'Paste', 'Select all']));
+        for (final e in words.evaluate()) {
+          final box = e.renderObject! as RenderBox;
+          final rect = box.localToGlobal(Offset.zero) & box.size;
+          final label = (e.widget as Text).data;
+          expect(rect.left, greaterThanOrEqualTo(0), reason: label);
+          expect(rect.right, lessThanOrEqualTo(320), reason: label);
+          final paragraph = box as RenderParagraph;
+          expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+          expect(
+            paragraph.size.width,
+            greaterThanOrEqualTo(
+              paragraph.getMaxIntrinsicWidth(double.infinity) - 0.5,
+            ),
+            reason: '$label is cut',
+          );
+        }
+        await tester.tap(find.text('Select all'));
+        await tester.pumpAndSettle();
+        expect(
+          _controller(tester).selection.textInside('one two three\n'),
+          'one two three\n',
+        );
+      }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+    }
   });
 }

@@ -381,8 +381,9 @@ class TuiTextMenuItem {
 
 /// A text field's selection menu in termul's face, for a field's
 /// `contextMenuBuilder`: on a desktop a [showTuiMenu]-like panel at the
-/// pointer, rows with their shortcuts; on touch a single row of words above
-/// the selection, as the platform's own toolbar sits. A null in [items] is a
+/// pointer, rows with their shortcuts; on touch a row of words above
+/// the selection, as the platform's own toolbar sits, going on to a second
+/// row where the screen is too narrow for one. A null in [items] is a
 /// divider, drawn only in the panel.
 class TuiTextMenu extends StatelessWidget {
   const TuiTextMenu({
@@ -453,8 +454,9 @@ class TuiTextMenu extends StatelessWidget {
               ),
             ),
           )
-        : Row(
-            mainAxisSize: MainAxisSize.min,
+        // On a narrow phone, or at a large text size, the words go on to a
+        // second row of the same panel rather than past its edge.
+        : Wrap(
             children: [
               for (final item in shown.whereType<TuiTextMenuItem>())
                 tap(
