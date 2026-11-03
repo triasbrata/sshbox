@@ -235,79 +235,6 @@ void main() {
     expect(after, contains('**Second'));
   });
 
-  testWidgets('a tap below a block drawn as its source stays under the '
-      'finger as that block is drawn rendered again', (tester) async {
-    final text = [
-      for (var k = 0; k < 30; k++) 'Before $k.',
-      '```\n${[for (var k = 0; k < 20; k++) 'line $k'].join('\n')}\n```',
-      for (var k = 0; k < 30; k++) 'After $k.',
-    ].join('\n\n');
-    await _pump(tester, text, size: const Size(800, 500));
-    // The caret in the fence: drawn as its 22 lines of source.
-    await _caret(tester, text.indexOf('line 5'));
-    await tester.pumpAndSettle();
-    final editable = tester.allRenderObjects.whereType<RenderEditable>().first;
-    final target = text.indexOf('After 0.');
-
-    final scroll = tester
-        .state<ScrollableState>(
-          find.descendant(
-            of: find.byType(EditableText),
-            matching: find.byType(Scrollable),
-          ),
-        )
-        .position;
-
-    // Where "After 0." is drawn: in a section drawn apart, or in the field.
-    // A field's inline widget is placed as if the field were not scrolled.
-    double? drawnApart() {
-      for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
-        final i = p.text.toPlainText().indexOf('After 0.');
-        if (i < 0) continue;
-        final boxes = p.getBoxesForSelection(
-          TextSelection(baseOffset: i, extentOffset: i + 1),
-        );
-        if (boxes.isNotEmpty) {
-          return p.localToGlobal(boxes.first.toRect().topLeft).dy -
-              scroll.pixels;
-        }
-      }
-      return null;
-    }
-
-    double inField() {
-      final boxes = editable.getBoxesForSelection(
-        TextSelection(baseOffset: target, extentOffset: target + 1),
-      );
-      return editable.localToGlobal(boxes.first.toRect().topLeft).dy;
-    }
-
-    double where() => drawnApart() ?? inField();
-
-    // The line halfway down the page; sections coming into view lay out at
-    // their own heights, so again until it holds.
-    for (var k = 0; k < 4; k++) {
-      scroll.jumpTo(scroll.pixels + where() - 250);
-      await tester.pump();
-    }
-    final before = where();
-    expect(before, closeTo(250, 2));
-    expect(find.text('RENDERED ```'), findsNothing);
-
-    await tester.tapAt(Offset(60, before + 8));
-    await tester.pumpAndSettle();
-    // The fence above went back to one rendered line, many lines shorter,
-    // and the line tapped did not move with it.
-    expect(find.text('RENDERED ```'), findsOneWidget);
-    expect(
-      _controller(tester).selection.extentOffset,
-      inInclusiveRange(target - 2, target + 8),
-    );
-    // Within a few pixels: a section drawn apart lays its lines out a
-    // little differently from the field.
-    expect(inField(), closeTo(before, 5));
-  });
-
   testWidgets('# typed at a line start makes a heading', (tester) async {
     final host = await _pump(tester, 'Intro\n\n\n\nEnd');
     await _caret(tester, 7);
@@ -454,6 +381,79 @@ void main() {
     await tester.pump();
     expect(host.opened.single.href, 'https://e.x/a');
     expect(host.changes, isEmpty);
+  });
+
+  testWidgets('a tap below a block drawn as its source stays under the '
+      'finger as that block is drawn rendered again', (tester) async {
+    final text = [
+      for (var k = 0; k < 30; k++) 'Before $k.',
+      '```\n${[for (var k = 0; k < 20; k++) 'line $k'].join('\n')}\n```',
+      for (var k = 0; k < 30; k++) 'After $k.',
+    ].join('\n\n');
+    await _pump(tester, text, size: const Size(800, 500));
+    // The caret in the fence: drawn as its 22 lines of source.
+    await _caret(tester, text.indexOf('line 5'));
+    await tester.pumpAndSettle();
+    final editable = tester.allRenderObjects.whereType<RenderEditable>().first;
+    final target = text.indexOf('After 0.');
+
+    final scroll = tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byType(EditableText),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+
+    // Where "After 0." is drawn: in a section drawn apart, or in the field.
+    // A field's inline widget is placed as if the field were not scrolled.
+    double? drawnApart() {
+      for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
+        final i = p.text.toPlainText().indexOf('After 0.');
+        if (i < 0) continue;
+        final boxes = p.getBoxesForSelection(
+          TextSelection(baseOffset: i, extentOffset: i + 1),
+        );
+        if (boxes.isNotEmpty) {
+          return p.localToGlobal(boxes.first.toRect().topLeft).dy -
+              scroll.pixels;
+        }
+      }
+      return null;
+    }
+
+    double inField() {
+      final boxes = editable.getBoxesForSelection(
+        TextSelection(baseOffset: target, extentOffset: target + 1),
+      );
+      return editable.localToGlobal(boxes.first.toRect().topLeft).dy;
+    }
+
+    double where() => drawnApart() ?? inField();
+
+    // The line halfway down the page; sections coming into view lay out at
+    // their own heights, so again until it holds.
+    for (var k = 0; k < 4; k++) {
+      scroll.jumpTo(scroll.pixels + where() - 250);
+      await tester.pump();
+    }
+    final before = where();
+    expect(before, closeTo(250, 2));
+    expect(find.text('RENDERED ```'), findsNothing);
+
+    await tester.tapAt(Offset(60, before + 8));
+    await tester.pumpAndSettle();
+    // The fence above went back to one rendered line, many lines shorter,
+    // and the line tapped did not move with it.
+    expect(find.text('RENDERED ```'), findsOneWidget);
+    expect(
+      _controller(tester).selection.extentOffset,
+      inInclusiveRange(target - 2, target + 8),
+    );
+    // Within a few pixels: a section drawn apart lays its lines out a
+    // little differently from the field.
+    expect(inField(), closeTo(before, 5));
   });
 
   testWidgets('a tap on a section drawn apart puts the caret where it landed', (
