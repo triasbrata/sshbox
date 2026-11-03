@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -89,11 +90,19 @@ class _Shell
   /// Every command the panel ran, in order.
   final ran = <String>[];
 
+  /// While set, the worktree's commands wait on it: a host slow to answer
+  /// for the repository just picked.
+  Completer<void>? holdAgent;
+
   @override
   Stream<String> run(String command, {bool pty = false}) {
     ran.add(command);
-    Stream<String> said(List<String> lines) =>
-        Stream.fromIterable([...lines, '', '__jeansh_git_status:0']);
+    final hold = command.contains("-C '$_agent'") ? holdAgent : null;
+    Stream<String> said(List<String> lines) async* {
+      if (hold != null) await hold.future;
+      yield* Stream.fromIterable([...lines, '', '__jeansh_git_status:0']);
+    }
+
     if (command.contains('--show-toplevel')) {
       // What the search prints: the repository it found, then git's own
       // listing of that repository's worktrees.
@@ -211,6 +220,32 @@ void main() {
     expect(find.text('lib/agent.dart'), findsOneWidget);
     expect(find.text('lib/main.dart'), findsNothing);
     expect(shell.ran.last, contains("-C '$_agent'"));
+  });
+
+  testWidgets('a repository picked shows none of the last one\'s branch or '
+      'changes while its own are read', (tester) async {
+    await pumpPanel(tester);
+    expect(find.text('main'), findsOneWidget);
+    expect(find.byTooltip('Switch branch'), findsOneWidget);
+    expect(find.text('lib/main.dart'), findsOneWidget);
+
+    shell.holdAgent = Completer<void>();
+    await tester.tap(find.text('dev'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('agent-x').last);
+    await _settle(tester);
+
+    // Still reading: the header names no branch, so there is none to switch
+    // from, and the list is not the last repository's.
+    expect(find.text('main'), findsNothing);
+    expect(find.byTooltip('Switch branch'), findsNothing);
+    expect(find.text('lib/main.dart'), findsNothing);
+
+    shell.holdAgent!.complete();
+    await _settle(tester);
+    expect(find.text('agent'), findsOneWidget);
+    expect(find.byTooltip('Switch branch'), findsOneWidget);
+    expect(find.text('lib/agent.dart'), findsOneWidget);
   });
 
   testWidgets('History shows another branch\'s commits without checking it '
