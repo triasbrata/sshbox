@@ -773,8 +773,9 @@ class LiveSession extends ChangeNotifier {
     _held.clear();
     _heldSize = 0;
     _heldOverflow = false;
-    if (any)
+    if (any) {
       _inputProblem = 'What you typed was not sent: the shell did not start.';
+    }
   }
 
   /// Bumped by every connect and by [abandon], so a connect that comes
