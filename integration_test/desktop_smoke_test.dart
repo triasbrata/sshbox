@@ -9591,6 +9591,41 @@ pie title E2E pets
         '${hasWebView ? 'with' : 'and no'} Open in Mermaid',
       );
       await _grab(tester, 'desktop-md-mermaid');
+
+      // Where it is offered, a real click on it opens Mermaid's own dialog,
+      // and does not put the caret in the block instead.
+      if (hasWebView) {
+        final button = _label('Open in Mermaid');
+        await tester.ensureVisible(button);
+        await tester.pump(const Duration(milliseconds: 300));
+        await _realPointer(() async {
+          final at = tester.getCenter(button);
+          await _osMouse(tester, [
+            'move ${at.dx} ${at.dy}',
+            'down',
+            'sleep 40',
+            'up',
+          ]);
+        });
+        await _until(
+          tester,
+          () => find.byType(MermaidView).evaluate().isNotEmpty,
+          'Open in Mermaid to open its dialog',
+        );
+        expect(find.text('COPY SOURCE'), findsOneWidget);
+        expect(
+          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          startsWith('pie title E2E pets'),
+        );
+        debugPrint('✅ rich text: a click on Open in Mermaid opens its dialog');
+        await _grab(tester, 'desktop-md-mermaid-web-dialog');
+        await tester.tap(find.text('CLOSE'));
+        await _until(
+          tester,
+          () => find.byType(MermaidView).evaluate().isEmpty,
+          'the dialog to close',
+        );
+      }
       expect(k.file.readAsStringSync(), original, reason: 'looking wrote it');
       await _closeTabs(tester);
     },
