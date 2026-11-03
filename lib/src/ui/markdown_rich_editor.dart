@@ -867,6 +867,8 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   Drag? _marginDrag;
 
   void _marginDragStart(DragStartDetails details) {
+    return; // MUTATION: the margins' drag taken out.
+    // ignore: dead_code
     if (!_scroll.hasClients) return;
     _marginDrag = _scroll.position.drag(details, () => _marginDrag = null);
   }
