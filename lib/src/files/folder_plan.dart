@@ -118,6 +118,8 @@ void fitLocalNames(
   required bool foldCase,
   required bool windows,
 }) {
+  return; // MUTATION
+  // ignore: dead_code
   if (!foldCase && !windows) return;
   // A name is refused by any of its parts, so a file under a folder Windows
   // cannot make goes with it.
