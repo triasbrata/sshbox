@@ -3602,174 +3602,185 @@ touch '${done.path}'
   // held in memory, since such a pair cannot be made on this machine; the
   // download writes to the real disk through the real page, a right-click
   // and the menu.
-  _test(
-    'Download folder skips a name this computer would fold onto another, '
-    'and saves the rest',
-    skip: !Platform.isMacOS && !Platform.isWindows
-        ? 'names fold onto each other on macOS and Windows only'
-        : null,
-    (tester) async {
-      final picker = _PickFolder.install();
-      await _launch(tester);
-      final navigator = Navigator.of(
-        tester.element(find.byTooltip('Settings')),
-        rootNavigator: true,
-      );
-      Future<void> run(_MemoryHost host, String out) async {
-        picker.directory = out;
-        unawaited(
-          navigator.push(
-            PageRouteBuilder<void>(
-              pageBuilder: (_, _, _) => FileBrowserPage(
-                browser: host,
-                title: 'memory host',
-                initialRoot: '/home/me',
+  // Each case a test of its own, from a fresh launch, so the first
+  // case's page, toast and dialog are gone before the second.
+  for (final pair in [true, false]) {
+    _test(
+      pair
+          ? 'Download folder skips a name this computer would fold onto '
+                'another, and saves the rest'
+          : 'Download folder with no name to fold saves every file',
+      skip: !Platform.isMacOS && !Platform.isWindows
+          ? 'names fold onto each other on macOS and Windows only'
+          : null,
+      (tester) async {
+        final picker = _PickFolder.install();
+        await _launch(tester);
+        final navigator = Navigator.of(
+          tester.element(find.byTooltip('Settings')),
+          rootNavigator: true,
+        );
+        Future<void> run(_MemoryHost host, String out) async {
+          picker.directory = out;
+          unawaited(
+            navigator.push(
+              PageRouteBuilder<void>(
+                pageBuilder: (_, _, _) => FileBrowserPage(
+                  browser: host,
+                  title: 'memory host',
+                  initialRoot: '/home/me',
+                ),
               ),
             ),
-          ),
-        );
-        final dev = find.text('dev');
-        await _until(
-          tester,
-          () => dev.evaluate().isNotEmpty,
-          'the page to list dev',
-        );
-        // A toast from the run before lies over the top rows, and the page
-        // slides in: both gone before the right-click.
-        await _until(
-          tester,
-          () => find.byType(TuiToastCard).evaluate().isEmpty,
-          'the last toast to go',
-          timeout: const Duration(seconds: 30),
-        );
-        await tester.pump(const Duration(milliseconds: 600));
-        final before = transfers.items.toSet();
-        await tester.tapAt(
-          tester.getCenter(dev.last),
-          kind: PointerDeviceKind.mouse,
-          buttons: kSecondaryMouseButton,
-        );
-        await _pick(tester, 'Download folder');
-        await _until(
-          tester,
-          () => transfers.items.any(
-            (t) =>
-                !before.contains(t) &&
-                t.name == 'dev' &&
-                t.state != TransferState.running,
-          ),
-          'the folder download to end',
-          timeout: const Duration(seconds: 60),
-        );
+          );
+          final dev = find.text('dev');
+          await _until(
+            tester,
+            () => dev.evaluate().isNotEmpty,
+            'the page to list dev',
+          );
+          // A toast from the run before lies over the top rows, and the page
+          // slides in: both gone before the right-click.
+          await _until(
+            tester,
+            () => find.byType(TuiToastCard).evaluate().isEmpty,
+            'the last toast to go',
+            timeout: const Duration(seconds: 30),
+          );
+          await tester.pump(const Duration(milliseconds: 600));
+          final before = transfers.items.toSet();
+          await tester.tapAt(
+            tester.getCenter(dev.last),
+            kind: PointerDeviceKind.mouse,
+            buttons: kSecondaryMouseButton,
+          );
+          await _pick(tester, 'Download folder');
+          await _until(
+            tester,
+            () => transfers.items.any(
+              (t) =>
+                  !before.contains(t) &&
+                  t.name == 'dev' &&
+                  t.state != TransferState.running,
+            ),
+            'the folder download to end',
+            timeout: const Duration(seconds: 60),
+          );
+          await tester.pump(const Duration(seconds: 1));
+        }
+
+        final sep = Platform.pathSeparator;
+        List<String> names(String dir) =>
+            Directory(dir)
+                .listSync()
+                .map((e) => e.path.split(sep).last)
+                .toList()
+              ..sort();
+        if (pair) {
+          // (+) README and readme, and on Windows notes:v2.
+          final out = _scratch();
+          await run(
+            _MemoryHost({
+              'README': [1, 1],
+              'readme': [2, 2, 2],
+              if (Platform.isWindows) 'notes:v2': [3],
+            }),
+            out.path,
+          );
+          final dev = '${out.path}${sep}dev';
+          if (Platform.isWindows) {
+            // Every stream of everything in the folder, as NTFS has them: a
+            // notes:v2 written as named would be stream v2 of a file notes.
+            final streams = await Process.run(
+              'powershell',
+              [
+                '-NoProfile',
+                '-Command',
+                r'Get-ChildItem -LiteralPath $env:JEANSH_DIR -Force | '
+                    r'ForEach-Object { Get-Item -LiteralPath $_.FullName -Stream * } '
+                    r'| ForEach-Object { "$($_.FileName)|$($_.Stream)" }',
+              ],
+              environment: {'JEANSH_DIR': dev},
+            );
+            final lines = '${streams.stdout}'
+                .split('\n')
+                .map((l) => l.trim())
+                .where((l) => l.isNotEmpty)
+                .map((l) => l.split(sep).last)
+                .toList();
+            debugPrint('streams in dev: $lines');
+            expect(streams.exitCode, 0, reason: '${streams.stderr}');
+            expect(
+              // The file itself, and the mark every download gets on Windows.
+              lines.where(
+                (l) =>
+                    !l.endsWith(r'|:$DATA') && !l.endsWith('|Zone.Identifier'),
+              ),
+              isEmpty,
+              reason: '❌ notes:v2 was written into a stream: $lines',
+            );
+            expect(
+              File('$dev${sep}notes').existsSync(),
+              isFalse,
+              reason: '❌ notes:v2 made a file notes: $lines',
+            );
+            debugPrint('✅ notes:v2 skipped: no file notes and no stream v2');
+          }
+          expect(File('$dev${sep}README').readAsBytesSync(), [
+            1,
+            1,
+          ], reason: '❌ readme was written over README');
+          expect(names(dev), [
+            'README',
+          ], reason: '❌ the folder holds ${names(dev)}');
+          await _until(
+            tester,
+            () => find
+                .textContaining(
+                  'readme (would overwrite README on this computer)',
+                )
+                .evaluate()
+                .isNotEmpty,
+            'the end dialog to name the skipped readme',
+          );
+          if (Platform.isWindows) {
+            expect(
+              find.textContaining(
+                'notes:v2 (a character Windows does not allow)',
+              ),
+              findsOneWidget,
+            );
+          }
+          expect(find.text('Saved dev'), findsNothing);
+          debugPrint('✅ a folded pair: README kept, readme skipped and named');
+          await tester.tap(_label('OK'));
+          await tester.pump(const Duration(seconds: 1));
+        } else {
+          // (−) No pair: every file comes down and nothing is skipped.
+          final plain = _scratch();
+          await run(
+            _MemoryHost({
+              'README': [1, 1],
+              'other.txt': [4],
+            }),
+            plain.path,
+          );
+          expect(names('${plain.path}${sep}dev'), ['README', 'other.txt']);
+          expect(find.textContaining('would overwrite'), findsNothing);
+          expect(find.textContaining('Windows does not allow'), findsNothing);
+          await _until(
+            tester,
+            () => find.text('Saved dev').evaluate().isNotEmpty,
+            'Saved dev',
+          );
+          debugPrint('✅ no pair: every file saved, nothing skipped');
+        }
+        navigator.popUntil((route) => route.isFirst);
         await tester.pump(const Duration(seconds: 1));
-      }
-
-      final sep = Platform.pathSeparator;
-      List<String> names(String dir) =>
-          Directory(dir).listSync().map((e) => e.path.split(sep).last).toList()
-            ..sort();
-
-      // (+) README and readme, and on Windows notes:v2.
-      final out = _scratch();
-      await run(
-        _MemoryHost({
-          'README': [1, 1],
-          'readme': [2, 2, 2],
-          if (Platform.isWindows) 'notes:v2': [3],
-        }),
-        out.path,
-      );
-      final dev = '${out.path}${sep}dev';
-      if (Platform.isWindows) {
-        // Every stream of everything in the folder, as NTFS has them: a
-        // notes:v2 written as named would be stream v2 of a file notes.
-        final streams = await Process.run(
-          'powershell',
-          [
-            '-NoProfile',
-            '-Command',
-            r'Get-ChildItem -LiteralPath $env:JEANSH_DIR -Force | '
-                r'ForEach-Object { Get-Item -LiteralPath $_.FullName -Stream * } '
-                r'| ForEach-Object { "$($_.FileName)|$($_.Stream)" }',
-          ],
-          environment: {'JEANSH_DIR': dev},
-        );
-        final lines = '${streams.stdout}'
-            .split('\n')
-            .map((l) => l.trim())
-            .where((l) => l.isNotEmpty)
-            .map((l) => l.split(sep).last)
-            .toList();
-        debugPrint('streams in dev: $lines');
-        expect(streams.exitCode, 0, reason: '${streams.stderr}');
-        expect(
-          // The file itself, and the mark every download gets on Windows.
-          lines.where(
-            (l) => !l.endsWith(r'|:$DATA') && !l.endsWith('|Zone.Identifier'),
-          ),
-          isEmpty,
-          reason: '❌ notes:v2 was written into a stream: $lines',
-        );
-        expect(
-          File('$dev${sep}notes').existsSync(),
-          isFalse,
-          reason: '❌ notes:v2 made a file notes: $lines',
-        );
-        debugPrint('✅ notes:v2 skipped: no file notes and no stream v2');
-      }
-      expect(File('$dev${sep}README').readAsBytesSync(), [
-        1,
-        1,
-      ], reason: '❌ readme was written over README');
-      expect(names(dev), [
-        'README',
-      ], reason: '❌ the folder holds ${names(dev)}');
-      await _until(
-        tester,
-        () => find
-            .textContaining('readme (would overwrite README on this computer)')
-            .evaluate()
-            .isNotEmpty,
-        'the end dialog to name the skipped readme',
-      );
-      if (Platform.isWindows) {
-        expect(
-          find.textContaining('notes:v2 (a character Windows does not allow)'),
-          findsOneWidget,
-        );
-      }
-      expect(find.text('Saved dev'), findsNothing);
-      debugPrint('✅ a folded pair: README kept, readme skipped and named');
-      await tester.tap(_label('OK'));
-      await tester.pump(const Duration(seconds: 1));
-      // Back to Home: the dialog, then the page, so the next page's dev is
-      // the only one on screen.
-      navigator.popUntil((route) => route.isFirst);
-      await tester.pump(const Duration(seconds: 1));
-
-      // (−) No pair: every file comes down and nothing is skipped.
-      final plain = _scratch();
-      await run(
-        _MemoryHost({
-          'README': [1, 1],
-          'other.txt': [4],
-        }),
-        plain.path,
-      );
-      expect(names('${plain.path}${sep}dev'), ['README', 'other.txt']);
-      expect(find.textContaining('would overwrite'), findsNothing);
-      expect(find.textContaining('Windows does not allow'), findsNothing);
-      await _until(
-        tester,
-        () => find.text('Saved dev').evaluate().isNotEmpty,
-        'Saved dev',
-      );
-      debugPrint('✅ no pair: every file saved, nothing skipped');
-      navigator.popUntil((route) => route.isFirst);
-      await tester.pump(const Duration(seconds: 1));
-      await _closeTabs(tester);
-    },
-  );
+        await _closeTabs(tester);
+      },
+    );
+  }
 
   // #272, every desktop: the site an HTML file is served from. Over real
   // sockets: its folder's files to a request that is right, and a refusal to
