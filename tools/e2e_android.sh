@@ -892,6 +892,7 @@ md_chrome() {
   put jeansh-e2e-fence "$fence"
 
   app_fresh
+  adb logcat -c 2>/dev/null
   # The menu: Copy, then Paste from Source's own menu on the empty last line.
   check 'the zebra file opens in Rich text' \
     flow md_chrome -e STEP=open -e FIRST=yes -e FILE=jeansh-e2e-zebra
@@ -930,6 +931,11 @@ md_chrome() {
     [ "$(read_back jeansh-e2e-fence)" = "${fence}x" ]
   flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
 
+  # The touch row fits a 320 dp phone: Flutter said nothing overflowed.
+  local overflow
+  overflow=$(adb logcat -d 2>/dev/null | grep -i 'overflowed' | head -3)
+  echo "overflow in the log: ${overflow:-(none)}"
+  check 'nothing overflowed on the 320 dp phone' [ -z "$overflow" ]
   keep_shots 'md-chrome-*.png'
   sudo rm -f "$home"/jeansh-e2e-{zebra,m13,fence}.md
   return "$status"
