@@ -1,0 +1,185 @@
+# A long Markdown file in Rich text, where sections away from the caret are
+# shaped as blanks while no screen reader is on: tools/e2e_android.sh's
+# md_rich_speed puts an 83 KB README-like jeansh-e2e-speed.md and a small
+# jeansh-e2e-paste.txt in the login home, types and reads the files on the
+# host between this flow's steps.
+#
+# Maestro reads the app through Android's accessibility, which turns Flutter's
+# semantics on, so on the emulator the field is drawn as a screen reader
+# needs it: its text, a far section's words included, in the tree. Blanking
+# forced on whatever a screen reader says puts spaces there instead, and
+# `far` goes red.
+#
+# STEP comes from -e alone (see chat_images.yaml):
+#   open    the file opened from the drawer, in Rich text, nothing to save
+#   far     the far section's own words in the field's accessibility text
+#   mid     scrolled to the middle and the text tapped, for the caret
+#   save    Unsaved changes, then Save to host and nothing unsaved
+#   bottom  scrolled to the end and the far section tapped: its words shown
+#   copy    the whole document selected and copied with the toolbar
+#   paste   jeansh-e2e-paste.txt opened, its one word long-pressed, Paste
+#   close   both file tabs closed
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+  FILE: "jeansh-e2e-speed.md"
+  FAR: "(?s).*quokkafar marmalade zephyr lantern.*"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - inputText: "jeansh-e2e-speed"
+      - tapOn: "(?s)\\W*${FILE}"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 30000
+      # In Rich text, not refused to Source as too large.
+      - extendedWaitUntil:
+          visible: "(?s).*A README-like file for Rich text\\..*"
+          timeout: 15000
+      - assertNotVisible: "(?s).*Too large for Rich text.*"
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      - takeScreenshot: md-rich-speed-opened
+
+- runFlow:
+    when:
+      true: ${STEP == 'far'}
+    commands:
+      # The field's text, as a screen reader reads it: the last section's
+      # own words, not the spaces it is shaped as with no reader on.
+      - assertVisible: "${FAR}"
+
+- runFlow:
+    when:
+      true: ${STEP == 'mid'}
+    commands:
+      - repeat:
+          times: 12
+          commands:
+            - swipe:
+                start: "50%,80%"
+                end: "50%,15%"
+                duration: 300
+      - waitForAnimationToEnd
+      - tapOn:
+          point: "50%,50%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'save'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s).*Unsaved changes.*"
+          timeout: 10000
+      - hideKeyboard
+      - takeScreenshot: md-rich-speed-edited
+      - tapOn: "Save to host"
+      - extendedWaitUntil:
+          notVisible: "(?s).*Unsaved changes.*"
+          timeout: 20000
+
+- runFlow:
+    when:
+      true: ${STEP == 'bottom'}
+    commands:
+      - repeat:
+          times: 60
+          commands:
+            - swipe:
+                start: "50%,85%"
+                end: "50%,10%"
+                duration: 200
+      - waitForAnimationToEnd
+      # The last line on the page, the far section's paragraph.
+      - takeScreenshot: md-rich-speed-bottom
+      - tapOn:
+          point: "50%,60%"
+      - waitForAnimationToEnd
+      - hideKeyboard
+      - waitForAnimationToEnd
+      - assertVisible: "${FAR}"
+      - takeScreenshot: md-rich-speed-far-tapped
+
+- runFlow:
+    when:
+      true: ${STEP == 'copy'}
+    commands:
+      - longPressOn:
+          point: "50%,50%"
+      - extendedWaitUntil:
+          visible: "Select all"
+          timeout: 5000
+      - tapOn: "Select all"
+      - extendedWaitUntil:
+          visible: "Copy"
+          timeout: 5000
+      - assertNotVisible: "Select all"
+      - tapOn: "Copy"
+      - assertNotVisible: "Copy"
+
+- runFlow:
+    when:
+      true: ${STEP == 'paste'}
+    commands:
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - eraseText
+      - inputText: "jeansh-e2e-paste"
+      - tapOn: "(?s)\\W*jeansh-e2e-paste.txt"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      # The file's one word, pastehere, where file_editor.yaml finds the
+      # first word on this emulator; selected, so the paste replaces it.
+      - longPressOn:
+          point: "25%,22%"
+      - runFlow:
+          when:
+            notVisible: "Paste"
+          commands:
+            - longPressOn:
+                point: "25%,29%"
+      - extendedWaitUntil:
+          visible: "Paste"
+          timeout: 5000
+      - tapOn: "Paste"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'close'}
+    commands:
+      - tapOn: "Close file"
+      - waitForAnimationToEnd
+      - tapOn:
+          text: "Close file"
+          optional: true
+      - waitForAnimationToEnd
