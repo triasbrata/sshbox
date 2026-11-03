@@ -286,18 +286,17 @@ class OutboxStore {
   /// read once: two chats on one session (two tabs to one host, or a chat
   /// closed and opened again while a delivery finishes) each keeping its own
   /// would write over each other's messages.
-  final Map<String, Future<OutboxBox>> _open = {};
+  final Map<String, OutboxBox> _open = {};
 
   /// What is kept under [key], shared by everyone who opens it; [onCorrupt]
-  /// as [load] says, for the first to open it.
-  Future<OutboxBox> open(String key, {void Function()? onCorrupt}) {
-    final opening = _open[key] ??= load(key, onCorrupt: onCorrupt);
-    // A read that failed is tried again by the next to open it.
-    opening.catchError((Object _) {
-      if (identical(_open[key], opening)) _open.remove(key);
-      return OutboxBox();
-    });
-    return opening;
+  /// as [load] says. Two first opens at once each read the file, and the
+  /// first to finish is the copy both get. The copy is kept, never the read:
+  /// a read made in one zone and awaited from another waits on the first.
+  Future<OutboxBox> open(String key, {void Function()? onCorrupt}) async {
+    final have = _open[key];
+    if (have != null) return have;
+    final read = await load(key, onCorrupt: onCorrupt);
+    return _open.putIfAbsent(key, () => read);
   }
 
   Future<File> _file(String key) async =>
