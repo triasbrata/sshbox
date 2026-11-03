@@ -827,7 +827,7 @@ PY
   moved() {
     local got
     got=$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-$1.raw" \
-      "$EVIDENCE/md-rich-caret-$2.raw" "$3")
+      "$EVIDENCE/md-rich-caret-$2.raw" "$3" 35)
     echo "the band at y=$3, $1 to $2: shift, its diff, the diff unshifted: $got" >&2
     echo "${got%% *}"
   }
@@ -836,14 +836,17 @@ PY
   # The fence, drawn rendered under the heading: tapped, its source shows.
   adb shell input tap $((w / 2)) $((h * 40 / 100))
   shot fence-tapped
-  # Scrolled slowly, no fling, until the fence is off the top: above the
-  # keyboard, up since the tap, as a swipe across Gboard glide-types words.
-  for _ in 1 2 3 4; do
-    adb shell input swipe $((w / 2)) $((h * 50 / 100)) $((w / 2)) $((h * 8 / 100)) 1500
+  # The editor is the band between the file's header and Gboard, up since
+  # the tap: about 28% to 55% down. Every swipe and tap stays in it, as a
+  # swipe across Gboard glide-types words, and the swipes are quick flings,
+  # as a slow one is a long press that drags the caret. Flung until the
+  # fence is well off the top.
+  for _ in 1 2 3; do
+    adb shell input swipe $((w / 2)) $((h * 53 / 100)) $((w / 2)) $((h * 30 / 100)) 250
   done
   shot before
-  # A paragraph below the fence, high on the page, above the keyboard.
-  local y1=$((h * 25 / 100)) y2=$((h * 40 / 100))
+  # A paragraph below the fence, then another, both in the band.
+  local y1=$((h * 34 / 100)) y2=$((h * 48 / 100))
   adb shell input tap $((w / 2)) "$y1"
   shot after
   by=$(moved before after "$y1")
