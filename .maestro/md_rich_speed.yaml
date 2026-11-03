@@ -23,7 +23,8 @@
 #   far     the far section's own words in the field's accessibility text
 #   mid    scrolled to the middle and the text tapped, for the caret
 #   save    Unsaved changes, then Save to host and nothing unsaved
-#   bottom  scrolled to the end and the far section tapped: its words shown
+#   focus   the text tapped, for the caret and the keyboard
+#   bottom  at the end, the far section tapped: its words shown
 #   copy    the whole document selected and copied with the toolbar
 #   paste   jeansh-e2e-paste.txt opened, its one word long-pressed, Paste
 #   close   both file tabs closed
@@ -80,8 +81,19 @@ env:
 
 - runFlow:
     when:
+      true: ${STEP == 'focus'}
+    commands:
+      - tapOn:
+          point: "50%,42%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
       true: ${STEP == 'mid'}
     commands:
+      # Flung up eight times, as a reader scrolls, and looked at: on CI the
+      # page stayed at its top (run 41658674844), so the caret is moved
+      # with the arrow keys after this, by tools/e2e_android.sh.
       - repeat:
           times: 8
           commands:
@@ -90,6 +102,7 @@ env:
                 end: "50%,30%"
                 duration: 250
       - waitForAnimationToEnd
+      - takeScreenshot: md-rich-speed-flung
       - tapOn:
           point: "50%,42%"
       - waitForAnimationToEnd
@@ -111,20 +124,9 @@ env:
     when:
       true: ${STEP == 'bottom'}
     commands:
-      # The keyboard up again (Save took the focus), then to the end.
-      - tapOn:
-          point: "50%,42%"
-      - waitForAnimationToEnd
-      - repeat:
-          times: 80
-          commands:
-            - swipe:
-                start: "50%,53%"
-                end: "50%,30%"
-                duration: 150
-      - waitForAnimationToEnd
+      # tools/e2e_android.sh has put the caret at the end with Ctrl+End:
+      # the end of the document, the far section, at the band's foot.
       - takeScreenshot: md-rich-speed-bottom
-      # The end of the document, the far section, at the band's foot.
       - tapOn:
           point: "50%,52%"
       - waitForAnimationToEnd
