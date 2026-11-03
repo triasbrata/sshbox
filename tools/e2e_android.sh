@@ -960,17 +960,80 @@ ln -s /etc/hostname leak.png
 printf '%s' '<!doctype html><meta charset=utf-8><p id=x>link</p><img src=leak.png><script>fetch("leak.png").then(function(r){return r.ok?r.text():""}).then(function(t){document.getElementById("x").textContent+=" "+t}).catch(function(){})</script>' >link.html
 printf 'plain text\n' >plain.txt
 printf '%s' '<!doctype html><meta charset=utf-8><meta http-equiv=refresh content="0;url=mailto:a@b.c"><p>gate page</p>' >gate.html
+printf '%s' '<!doctype html><meta charset=utf-8><p>csp page</p><script>location.href="x.svg"</script>' >csp.html
+printf '%s' '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="40"><text x="4" y="20">svg doc</text><image href="http://127.0.0.1:18080/svg-image-get" xlink:href="http://127.0.0.1:18080/svg-image-get" width="2" height="2"/><script><![CDATA[fetch("http://127.0.0.1:18080/svg-post",{method:"POST",mode:"no-cors",body:"x"}).catch(function(){});fetch("svg-self-marker.css").catch(function(){});]]></script></svg>' >x.svg
+printf '%s' '<!doctype html><meta charset=utf-8><p id=s>swap waiting</p><p id=k>stay waiting</p><script>var told=false;function rd(n,id){return fetch(n,{cache:"no-store"}).then(function(r){return r.ok?r.text().then(function(t){return "read "+t}):"refused "+r.status}).then(function(t){document.getElementById(id).textContent=n.split(".")[0]+" "+t})}function go(){Promise.all([rd("swap.css","s"),rd("stay.css","k")]).then(function(){if(!told){told=true;new Image().src="http://127.0.0.1:18080/first-read"}}).catch(function(){})}go();setInterval(go,1500)</script>' >swap.html
+printf 'ORIGINAL-CSS' >swap.css
+printf 'STAY-CSS' >stay.css
 EOS
+  # A listener on the device's own 127.0.0.1:18080, reached through adb
+  # reverse: it stands for a plain-http service on the phone, and records
+  # every request. /first-read, which swap.html asks for once it has read its
+  # files, turns swap.css into a link to the secret file beside the folder.
+  local listen_log listener
+  listen_log=$(mktemp)
+  python3 - "$listen_log" "$SSH_USER" <<'PY' &
+import http.server, subprocess, sys
+log, user = sys.argv[1], sys.argv[2]
+home = '/home/' + user
+class Listener(http.server.BaseHTTPRequestHandler):
+    def answer(self):
+        length = int(self.headers.get('Content-Length') or 0)
+        if length:
+            self.rfile.read(length)
+        with open(log, 'a') as f:
+            f.write(f'{self.command} {self.path}\n')
+        if self.path.startswith('/first-read'):
+            subprocess.run(['sudo', '-u', user, 'ln', '-sfn',
+                            home + '/jeansh-e2e-secret.txt',
+                            home + '/jeansh-e2e-site/swap.css'])
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+    do_GET = do_POST = do_HEAD = answer
+    def log_message(self, *args):
+        pass
+http.server.ThreadingHTTPServer(('127.0.0.1', 18080), Listener).serve_forever()
+PY
+  listener=$!
+  adb reverse tcp:18080 tcp:18080 >/dev/null
   leak=$(tr -d '\n' </etc/hostname)
   [ -n "$leak" ] || leak=hostname-unknown-e2e
   echo "the link's target holds: $leak"
   local step
-  for step in page plaintext evil big link gate; do
+  for step in page plaintext evil big link gate svgcsp swap; do
     echo "::group::html_site: $step"
-    flow html_site -e "STEP=$step" -e "LEAK=$leak" || {
+    : >"$listen_log"
+    if flow html_site -e "STEP=$step" -e "LEAK=$leak"; then
+      echo "✅ html_site $step"
+    else
       status=1
-      echo "::error::html_site $step failed"
-    }
+      echo "::error::❌ html_site $step failed"
+    fi
+    if [ "$step" = svgcsp ]; then
+      sleep 3
+      echo "the listener saw: $(tr '\n' ' ' <"$listen_log")"
+      if grep -q '^GET /svg-image-get' "$listen_log"; then
+        echo "✅ html_site svgcsp: the svg's picture reached the listener"
+      else
+        echo "::error::html_site svgcsp: the svg's picture never reached the listener"
+        status=1
+      fi
+      if grep -q '^POST /svg-post' "$listen_log"; then
+        echo "::error::html_site svgcsp: ❌ the svg's script reached the listener with a POST"
+        status=1
+      else
+        echo "✅ html_site svgcsp: no POST from the svg reached the listener"
+      fi
+    fi
+    if [ "$step" = swap ]; then
+      if grep -q '^GET /first-read' "$listen_log"; then
+        echo "✅ html_site swap: swap.css was made a link after the first read"
+      else
+        echo "::error::html_site swap: the page never said it had read its files"
+        status=1
+      fi
+    fi
     if [ "$step" = gate ]; then
       # No page navigation reached another app: Jeansh is still the one in front.
       local front
@@ -983,6 +1046,9 @@ EOS
     fi
     echo "::endgroup::"
   done
+  adb reverse --remove tcp:18080 >/dev/null 2>&1
+  kill "$listener" 2>/dev/null
+  rm -f "$listen_log"
   keep_shots 'html-site-*.png'
   sudo -u "$SSH_USER" -H sh -c 'cd "$HOME" && rm -rf jeansh-e2e-site jeansh-e2e-secret.txt'
   return "$status"
