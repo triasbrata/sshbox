@@ -290,6 +290,37 @@ void main() {
     expect(_controller(tester).selection.baseOffset, 8);
   });
 
+  testWidgets(
+    'sections away from the caret are shaped as blanks, line '
+    'breaks kept, unless a screen reader reads the text',
+    semanticsEnabled: false,
+    (tester) async {
+      const text =
+          '# Title\n\nFirst **para**.\n\nSecond one\nwith two lines.\n';
+      await _pump(tester, text);
+      String drawn() => tester.allRenderObjects
+          .whereType<RenderEditable>()
+          .first
+          .text!
+          .toPlainText(includePlaceholders: true);
+
+      final blank = drawn();
+      expect(blank.length, text.length);
+      expect(blank, isNot(contains('Second')));
+      expect(blank, isNot(contains('First')));
+      for (var k = 0; k < text.length; k++) {
+        if (text[k] == '\n') expect(blank[k], '\n', reason: 'at $k');
+      }
+
+      final reader = tester.ensureSemantics();
+      await tester.pump();
+      expect(drawn(), contains('Second one\nwith two lines.'));
+      reader.dispose();
+      await tester.pump();
+      expect(drawn(), isNot(contains('Second')));
+    },
+  );
+
   testWidgets('markers show where the caret is and hide as it leaves', (
     tester,
   ) async {
@@ -646,37 +677,6 @@ void main() {
     await host.controller.editLink();
     expect(host.refused, ['Select the text to link first.']);
   });
-
-  testWidgets(
-    'sections away from the caret are shaped as blanks, line '
-    'breaks kept, unless a screen reader reads the text',
-    semanticsEnabled: false,
-    (tester) async {
-      const text =
-          '# Title\n\nFirst **para**.\n\nSecond one\nwith two lines.\n';
-      await _pump(tester, text);
-      String drawn() => tester.allRenderObjects
-          .whereType<RenderEditable>()
-          .first
-          .text!
-          .toPlainText(includePlaceholders: true);
-
-      final blank = drawn();
-      expect(blank.length, text.length);
-      expect(blank, isNot(contains('Second')));
-      expect(blank, isNot(contains('First')));
-      for (var k = 0; k < text.length; k++) {
-        if (text[k] == '\n') expect(blank[k], '\n', reason: 'at $k');
-      }
-
-      final reader = tester.ensureSemantics();
-      await tester.pump();
-      expect(drawn(), contains('Second one\nwith two lines.'));
-      reader.dispose();
-      await tester.pump();
-      expect(drawn(), isNot(contains('Second')));
-    },
-  );
 
   testWidgets('front matter draws as keys and values, <details> as its '
       'summary and <img> as its picture; the caret shows the source, and '
