@@ -88,7 +88,7 @@ class MarkdownRichEditor extends StatefulWidget {
   /// a debug widget test, and 240 KB about 45 ms, what 160 KB cost before
   /// (test/markdown_rich_speed_test.dart, RICH_BENCH=1). Past this a file
   /// opens in Source, which lays out only the lines on screen.
-  static const limit = 240 * 1024;
+  static const limit = 160 * 1024;
 
   /// Whether the formatting goes in a bar floating over a selection, as on
   /// Medium, rather than in the bar over the keyboard.
@@ -320,7 +320,7 @@ class _LiveController extends TextEditingController {
       swapBuilder,
       sectionBuilder: sectionBuilder,
       active: pinned,
-      blankSections: !SemanticsBinding.instance.semanticsEnabled,
+      blankSections: true,
     );
   }
 }
