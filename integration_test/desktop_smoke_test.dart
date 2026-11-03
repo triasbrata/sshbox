@@ -622,8 +622,8 @@ Future<void> _drag(
 
 /// Opens the Git panel from a Local shell and picks [repo] in it.
 ///
-/// On a runner the home holds this repository alone and it is picked
-/// already; on a machine with others it is picked from the list.
+/// Where the home holds this repository alone it is picked already; where it
+/// holds others, as a runner's home can, it is picked from the list.
 Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
   await tester.tap(find.byTooltip('Git'));
   final name = repo.path.split('/').last;
@@ -645,6 +645,20 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
     "the Git panel to find this test's repository",
   );
   if (!ours(shown().value as String?)) {
+    debugPrint(
+      'Git panel picked ${shown().value} first, of ${choices().join(', ')}',
+    );
+    // The repository picked first has its branch read before ours is
+    // picked, every time: picking ours while that read was still out hid
+    // the panel's fault, a header naming the last repository's branch until
+    // its own was read, and made the switch-branch test fail only now and
+    // then. A repository whose branch cannot be read names none, so this
+    // waits a while and goes on either way.
+    final end = DateTime.now().add(const Duration(seconds: 10));
+    while (find.byTooltip('Switch branch').evaluate().isEmpty &&
+        DateTime.now().isBefore(end)) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     // Picked through the picker's own onChanged, which is what choosing it
     // from the list calls: a long list in a small menu is its own fight.
     final root = choices().firstWhere(ours);
