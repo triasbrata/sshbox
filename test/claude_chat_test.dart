@@ -8268,6 +8268,19 @@ void main() {
     OutboxStore store() => OutboxStore(() async => Directory(root));
     Future<OutboxBox> onDisk([String? k]) => store().load(k ?? key);
 
+    /// [onDisk] once it holds what [ok] wants, looked at every 20 ms for up
+    /// to 10 s: a save goes to the disk in the background, after the chat has
+    /// moved on.
+    Future<OutboxBox> onDiskOnce(bool Function(OutboxBox box) ok) async {
+      final end = DateTime.now().add(const Duration(seconds: 10));
+      var box = await onDisk();
+      while (!ok(box) && DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        box = await onDisk();
+      }
+      return box;
+    }
+
     ClaudeChat make(
       _LiveHost host, {
       Duration? Function(int)? backoff,
@@ -8663,7 +8676,9 @@ void main() {
       final said = chat.entries.whereType<ChatSaid>().single;
       expect(said.delivery, Delivery.failed);
       expect(said.why, contains('started a turn'));
-      final entry = (await onDisk()).entries.single;
+      final entry = (await onDiskOnce(
+        (box) => box.entries.singleOrNull?.attempts == 2,
+      )).entries.single;
       expect(entry.failed, isTrue);
       expect(entry.attempts, 2);
     });
@@ -8920,7 +8935,11 @@ void main() {
       final chat = make(host, backoff: (_) => const Duration(milliseconds: 20));
       await chat.continueFrom(_interactive);
       chat.send('manual only');
-      await wait(400);
+      // Until it has failed, however long the outbox's save on disk takes;
+      // then ten of its retry steps, in which a retry would have typed it.
+      ChatSaid? said() => chat.entries.whereType<ChatSaid>().firstOrNull;
+      await until(() => said()?.delivery == Delivery.failed);
+      await wait(200);
       expect(host.paneTyping, hasLength(1));
       expect(chat.entries.whereType<ChatSaid>().single.delivery,
           Delivery.failed);
