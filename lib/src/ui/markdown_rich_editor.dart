@@ -1195,7 +1195,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           smartQuotesType: SmartQuotesType.disabled,
           cursorColor: p.accent,
           inputFormatters: [_Edits(_onEdit)],
-          contextMenuBuilder: _contextMenu,
+          // MUTATION: contextMenuBuilder removed
           scrollPadding: const EdgeInsets.all(48),
           // A page, not a field: none of the app's field box, its fill or
           // the accent line it draws round a focused field.
