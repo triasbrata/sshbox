@@ -3768,11 +3768,10 @@ touch '${done.path}'
           expect(names('${plain.path}${sep}dev'), ['README', 'other.txt']);
           expect(find.textContaining('would overwrite'), findsNothing);
           expect(find.textContaining('Windows does not allow'), findsNothing);
-          await _until(
-            tester,
-            () => find.text('Saved dev').evaluate().isNotEmpty,
-            'Saved dev',
-          );
+          // The toast is gone within a second; the row says the same.
+          final row = transfers.items.firstWhere((t) => t.name == 'dev');
+          expect(row.state, TransferState.done, reason: '${row.error}');
+          expect(row.note, '2 files', reason: '❌ not every file came down');
           debugPrint('✅ no pair: every file saved, nothing skipped');
         }
         navigator.popUntil((route) => route.isFirst);
