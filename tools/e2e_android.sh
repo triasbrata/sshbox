@@ -836,9 +836,10 @@ PY
   # The fence, drawn rendered under the heading: tapped, its source shows.
   adb shell input tap $((w / 2)) $((h * 40 / 100))
   shot fence-tapped
-  # Scrolled slowly, no fling, until the fence is off the top.
-  for _ in 1 2; do
-    adb shell input swipe $((w / 2)) $((h * 75 / 100)) $((w / 2)) $((h * 15 / 100)) 1500
+  # Scrolled slowly, no fling, until the fence is off the top: above the
+  # keyboard, up since the tap, as a swipe across Gboard glide-types words.
+  for _ in 1 2 3 4; do
+    adb shell input swipe $((w / 2)) $((h * 50 / 100)) $((w / 2)) $((h * 8 / 100)) 1500
   done
   shot before
   # A paragraph below the fence, high on the page, above the keyboard.
