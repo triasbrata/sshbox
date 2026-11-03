@@ -837,16 +837,19 @@ PY
   adb shell input tap $((w / 2)) $((h * 40 / 100))
   shot fence-tapped
   # The editor is the band between the file's header and Gboard, up since
-  # the tap: about 28% to 55% down. Every swipe and tap stays in it, as a
-  # swipe across Gboard glide-types words, and the swipes are quick flings,
-  # as a slow one is a long press that drags the caret. Flung until the
-  # fence is well off the top.
-  for _ in 1 2 3; do
-    adb shell input swipe $((w / 2)) $((h * 53 / 100)) $((w / 2)) $((h * 30 / 100)) 250
+  # the tap: about 28% to 55% down, and every tap stays in it. Scrolled by a
+  # mouse wheel, which Rich text takes itself: a touch swipe there dragged
+  # the caret down the fence (run 41661288629) or left the page where it
+  # was (41658674844). Until the fence is well off the top.
+  for _ in 1 2 3 4 5 6; do
+    adb shell input mouse scroll $((w / 2)) $((h * 42 / 100)) --axis VSCROLL,-5
   done
   shot before
-  # A paragraph below the fence, then another, both in the band.
   local y1=$((h * 34 / 100)) y2=$((h * 48 / 100))
+  check 'the wheel scrolled the page' \
+    [ "$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-fence-tapped.raw" \
+      "$EVIDENCE/md-rich-caret-before.raw" "$y1" 35 | cut -d' ' -f3)" != 0.00 ]
+  # A paragraph below the fence, then another, both in the band.
   adb shell input tap $((w / 2)) "$y1"
   shot after
   by=$(moved before after "$y1")
