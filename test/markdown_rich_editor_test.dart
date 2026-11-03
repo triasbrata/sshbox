@@ -507,6 +507,109 @@ void main() {
     expect(scroll.offset, 400);
   });
 
+  group('a finger scrolls the page from anywhere on it', () {
+    final text = [
+      for (var i = 0; i < 60; i++) ...[
+        'Paragraph $i of a long note.',
+        if (i % 10 == 4) '```dart\nvoid f$i() {}\n```',
+      ],
+    ].join('\n\n');
+
+    ScrollController scroll(WidgetTester tester) => tester
+        .widget<EditableText>(find.byType(EditableText))
+        .scrollController!;
+
+    /// Ten 20 px steps up from [at], by [kind].
+    Future<TestGesture> drag(
+      WidgetTester tester,
+      Offset at, {
+      PointerDeviceKind kind = PointerDeviceKind.touch,
+    }) async {
+      final g = await tester.startGesture(at, kind: kind);
+      for (var i = 0; i < 10; i++) {
+        await g.moveBy(const Offset(0, -20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      return g;
+    }
+
+    for (final (name, size, inset, at) in [
+      // The keyboard up on a small phone: the middle of the screen is the
+      // space under the text, above the keyboard.
+      ('under the text, keyboard up', const Size(320, 640), 280.0, 340.0),
+      ('the phone gutter', const Size(320, 640), 0.0, 8.0),
+      ('above the text', const Size(320, 640), 0.0, 10.0),
+      ('a tablet margin', const Size(1280, 800), 0.0, 100.0),
+    ]) {
+      testWidgets('a drag over $name scrolls', (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        try {
+          tester.view.viewInsets = FakeViewPadding(bottom: inset);
+          await _pump(tester, text, size: size);
+          final start = name.contains('gutter') || name.contains('margin')
+              ? Offset(at, 300)
+              : Offset(size.width / 2, at);
+          final field = tester.getRect(find.byType(EditableText));
+          expect(
+            field.contains(start),
+            isFalse,
+            reason: 'the press is outside the field\'s own scroller',
+          );
+          expect(scroll(tester).offset, 0);
+          final g = await drag(tester, start);
+          await g.up();
+          await tester.pumpAndSettle();
+          expect(scroll(tester).offset, greaterThanOrEqualTo(180));
+          expect(_controller(tester).selection.isValid, isFalse);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      });
+    }
+
+    testWidgets('over the text it scrolls once, not twice, and a mouse drag '
+        'over a margin scrolls nothing', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        await _pump(tester, text, size: const Size(1280, 800));
+        final g = await drag(tester, const Offset(640, 500));
+        await g.up();
+        await tester.pumpAndSettle();
+        // 200 px dragged, less the first step past the slop: the field alone
+        // moves it, and twice would be 360.
+        expect(scroll(tester).offset, 180);
+        final before = scroll(tester).offset;
+        final m = await drag(
+          tester,
+          const Offset(100, 500),
+          kind: PointerDeviceKind.mouse,
+        );
+        await m.up();
+        await tester.pumpAndSettle();
+        expect(scroll(tester).offset, before);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('a drag over a margin that is cancelled stops where it was', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        await _pump(tester, text, size: const Size(1280, 800));
+        final g = await drag(tester, const Offset(100, 500));
+        final at = scroll(tester).offset;
+        expect(at, greaterThan(0));
+        await g.cancel();
+        await tester.pumpAndSettle();
+        expect(scroll(tester).offset, at);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  });
+
   group('desktop', () {
     testWidgets('a selection brings up the floating bar, and B bolds it', (
       tester,
