@@ -697,6 +697,46 @@ void main() {
       expect(at, inInclusiveRange(fence, doc.indexOf('```\n\nBelow')));
     }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
+    testWidgets('a mouse click on a wide diagram puts the caret in its '
+        'block and shows its source, and a mouse drag then selects', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        doc,
+        size: const Size(600, 900),
+        blockBuilder: mermaid,
+      );
+      final on = Offset(
+        tester.getTopLeft(find.byType(MermaidCanvas)).dx + 120,
+        tester.getCenter(find.byType(MermaidCanvas)).dy,
+      );
+      await tester.tapAt(on, kind: PointerDeviceKind.mouse);
+      await tester.pumpAndSettle();
+      final fence = doc.indexOf('```mermaid');
+      final end = doc.indexOf('```\n\nBelow');
+      expect(
+        _controller(tester).selection.extentOffset,
+        inInclusiveRange(fence, end),
+      );
+      // The caret in it shows its source, as any block's; a mouse drag over
+      // that is the field's, a selection. (A mouse drags no scroll view on
+      // a desktop: the wheel scrolls a diagram sideways, as tested below.)
+      expect(find.byType(MermaidCanvas), findsNothing);
+      final gesture = await tester.startGesture(
+        on,
+        kind: PointerDeviceKind.mouse,
+      );
+      for (var k = 1; k <= 10; k++) {
+        await gesture.moveTo(on + Offset(0, 30.0 * k));
+        await tester.pump();
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(_controller(tester).selection.isCollapsed, isFalse);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
     testWidgets('on a desktop, Shift and the wheel scroll it sideways', (
       tester,
     ) async {
@@ -737,6 +777,53 @@ void main() {
         expect(_controller(tester).selection, before);
         expect(find.text('OPEN IN MERMAID'), findsOneWidget);
       }, variant: TargetPlatformVariant.only(platform));
+    }
+
+    for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.touch]) {
+      for (final focused in [true, false]) {
+        testWidgets('Open in Mermaid in a scrolled field, pressed with a '
+            '${kind.name} opens its dialog and leaves the selection as it was '
+            '(${focused ? 'caret elsewhere' : 'unfocused'})', (tester) async {
+          WebViewPlatform.instance = FakeWebViewPlatform();
+          // A page short enough that the pie is below the fold: the field
+          // scrolls to bring it in.
+          await _pump(
+            tester,
+            pie,
+            size: const Size(600, 400),
+            blockBuilder: mermaid,
+          );
+          if (focused) await _caret(tester, 2);
+          await tester.pumpAndSettle();
+          final before = _controller(tester).selection;
+          final scroll = tester
+              .state<ScrollableState>(
+                find
+                    .descendant(
+                      of: find.byType(EditableText),
+                      matching: find.byType(Scrollable),
+                    )
+                    .first,
+              )
+              .position;
+          scroll.jumpTo(scroll.maxScrollExtent);
+          await tester.pumpAndSettle();
+          expect(scroll.pixels, greaterThan(0));
+          // Where the button is painted, which is where a user clicks. Its
+          // transform, and so its accessibility frame, leaves out the field's
+          // scroll: RenderEditable hit-tests an inline widget with the scroll
+          // and transforms it without (Flutter's own), so a click placed from
+          // getCenter lands the scroll's height below the button.
+          final painted =
+              tester.getCenter(find.text('OPEN IN MERMAID')) -
+              Offset(0, scroll.pixels);
+          expect(painted.dy, inInclusiveRange(0, 400));
+          await tester.tapAt(painted, kind: kind);
+          await tester.pumpAndSettle();
+          expect(find.byType(MermaidView), findsOneWidget);
+          expect(_controller(tester).selection, before);
+        }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+      }
     }
   });
 
