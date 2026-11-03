@@ -661,11 +661,16 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
 /// testWidgets, with a skip that says why in the log: flutter test prints only
 /// a skipped test's name, and a skip is no coverage, so it has to be read as
 /// one.
-void _test(String name, WidgetTesterCallback body, {String? skip}) {
+void _test(
+  String name,
+  WidgetTesterCallback body, {
+  String? skip,
+  bool semantics = true,
+}) {
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(name, body, skip: skip != null, semanticsEnabled: semantics);
 }
 
 const _powershell =
@@ -9495,6 +9500,9 @@ touch '${done.path}'
     'rich text: a copy across a far section shaped as blanks copies its '
     'words, and a screen reader reads them',
     skip: editorSkip,
+    // No screen reader of the test's own: testWidgets turns semantics on
+    // unless told not to, and with it on nothing is blanked.
+    semantics: false,
     (tester) async {
       final original = readme(83);
       final k = await _EditorSave.start(tester, 'speed.md', text: original);
