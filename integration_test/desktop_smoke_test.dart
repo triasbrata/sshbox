@@ -9557,7 +9557,12 @@ touch '${done.path}'
       );
       expect(
         controller.selection.extentOffset,
-        greaterThan(text.indexOf('Paragraph 0:')),
+        // In it, or at the end of the blank line above it, where the click
+        // landed on CI (559 for 560): either way out of the fence.
+        inInclusiveRange(
+          text.indexOf('Paragraph 0:') - 1,
+          text.indexOf('Paragraph 1:') - 1,
+        ),
         reason: 'the click did not put the caret in the paragraph',
       );
       expect(by.abs(), lessThanOrEqualTo(5), reason: 'the line clicked moved');
