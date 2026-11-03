@@ -85,7 +85,8 @@ class _MermaidBlockState extends State<MermaidBlock> {
   @override
   Widget build(BuildContext context) {
     final p = TermulThemeData.of(context).palette;
-    final background = Theme.of(context).colorScheme.surfaceContainerHighest;
+    // A code block's own fill, which the diagram sits in.
+    final background = p.surface;
     final Widget body = switch (_read) {
       MermaidDrawable diagram => Scrollbar(
         controller: _scroll,
@@ -144,13 +145,11 @@ class _MermaidBlockState extends State<MermaidBlock> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(child: body),
-        IconButton(
+        TuiIconButton(
+          icon: '⎘',
           tooltip: 'Copy diagram source',
+          size: 40,
           onPressed: () => copyMermaid(context, widget.source),
-          icon: const Icon(Icons.content_copy, size: 18),
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 40, height: 40),
         ),
       ],
     );

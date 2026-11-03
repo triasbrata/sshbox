@@ -13,6 +13,8 @@ import 'save_chord.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
 import 'termul/tui_checkbox.dart';
+import 'termul/tui_menu.dart';
+import 'termul/tui_tooltip.dart';
 
 export 'markdown_live.dart' show MdLink;
 
@@ -1171,6 +1173,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           smartQuotesType: SmartQuotesType.disabled,
           cursorColor: p.accent,
           inputFormatters: [_Edits(_onEdit)],
+          contextMenuBuilder: _contextMenu,
           scrollPadding: const EdgeInsets.all(48),
           // A page, not a field: none of the app's field box, its fill or
           // the accent line it draws round a focused field.
@@ -1272,6 +1275,56 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           ),
         );
       },
+    );
+  }
+
+  /// The selection menu in termul's face: the field's own cut, copy, paste
+  /// and select all, and on a desktop, under a divider, the formatting the
+  /// floating bar and the chords give, with their keys.
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final mac =
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    String key(String k) => mac ? '⌘$k' : 'Ctrl+$k';
+    final desktop = MarkdownRichEditor.floatingBar;
+    TuiTextMenuItem format(String label, String k, VoidCallback run) =>
+        TuiTextMenuItem(
+          label: label,
+          shortcut: k.isEmpty ? null : key(k),
+          logName: label.toLowerCase(),
+          onPressed: () {
+            editable.hideToolbar();
+            run();
+          },
+        );
+    return TuiTextMenu(
+      anchors: editable.contextMenuAnchors,
+      panel: desktop,
+      items: [
+        for (final item in editable.contextMenuButtonItems)
+          TuiTextMenuItem(
+            label: item.label ?? richMenuLabel(item.type),
+            shortcut: switch (item.type) {
+              ContextMenuButtonType.cut => key('X'),
+              ContextMenuButtonType.copy => key('C'),
+              ContextMenuButtonType.paste => key('V'),
+              ContextMenuButtonType.selectAll => key('A'),
+              _ => null,
+            },
+            logName: item.type.name,
+            onPressed: item.onPressed ?? () {},
+          ),
+        if (desktop) ...[
+          null,
+          format('Bold', 'B', () => _toggleInline('**', MdMark.bold)),
+          format('Italic', 'I', () => _toggleInline('_', MdMark.italic)),
+          format('Code', 'E', () => _toggleInline('`', MdMark.code)),
+          format('Link', 'K', () => unawaited(_editLink())),
+          format('Heading 1', '', () => _toggleHeading(1)),
+          format('Heading 2', '', () => _toggleHeading(2)),
+          format('Quote', '', _toggleQuote),
+        ],
+      ],
     );
   }
 
@@ -1981,15 +2034,19 @@ class MarkdownRichBar extends StatelessWidget {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   children: [
-                    IconButton(
+                    TuiIconButton(
+                      icon: '↶',
                       tooltip: 'Undo',
+                      size: 44,
+                      iconSize: 18,
                       onPressed: canUndo() ? onUndo : null,
-                      icon: const Icon(Icons.undo),
                     ),
-                    IconButton(
+                    TuiIconButton(
+                      icon: '↷',
                       tooltip: 'Redo',
+                      size: 44,
+                      iconSize: 18,
                       onPressed: canRedo() ? onRedo : null,
-                      icon: const Icon(Icons.redo),
                     ),
                     const SizedBox(width: 6),
                     ..._formatButtons(controller),
@@ -2003,3 +2060,19 @@ class MarkdownRichBar extends StatelessWidget {
     );
   }
 }
+
+/// The word a selection menu row of [type] shows, where the field gives
+/// none of its own.
+@visibleForTesting
+String richMenuLabel(ContextMenuButtonType type) => switch (type) {
+  ContextMenuButtonType.cut => 'Cut',
+  ContextMenuButtonType.copy => 'Copy',
+  ContextMenuButtonType.paste => 'Paste',
+  ContextMenuButtonType.selectAll => 'Select all',
+  ContextMenuButtonType.delete => 'Delete',
+  ContextMenuButtonType.lookUp => 'Look up',
+  ContextMenuButtonType.searchWeb => 'Search web',
+  ContextMenuButtonType.share => 'Share',
+  ContextMenuButtonType.liveTextInput => 'Scan text',
+  ContextMenuButtonType.custom => '',
+};
