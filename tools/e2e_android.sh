@@ -839,6 +839,14 @@ PY
     flow md_rich_speed -e STEP=far
 
   flow md_rich_speed -e STEP=mid || status=1
+  # Down 600 lines with the arrow key, from the top: touch flings left the
+  # page at its top on CI (run 41658674844).
+  local _
+  for _ in 1 2 3 4 5 6; do
+    # shellcheck disable=SC2046
+    adb shell input keyevent $(printf 'KEYCODE_DPAD_DOWN %.0s' $(seq 100))
+  done
+  sleep 1
   adb shell input text "$typed"
   sleep 2
   flow md_rich_speed -e STEP=save || status=1
@@ -861,6 +869,10 @@ print(f"{len(b) - len(a)} {b[p:len(b) - s]!r} {a[p:len(a) - s]!r} {p / len(a):.2
   check 'typed mid-document' \
     awk -v f="${verdict##* }" 'BEGIN { exit !(f > 0.05 && f < 0.95) }'
 
+  # To the end with Ctrl+End, the keyboard up from a tap first.
+  flow md_rich_speed -e STEP=focus || status=1
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_MOVE_END
+  sleep 2
   check "the far section tapped shows its words" \
     flow md_rich_speed -e STEP=bottom
   flow md_rich_speed -e STEP=copy || status=1
