@@ -2374,6 +2374,10 @@ class ClaudeChat extends ChangeNotifier {
   ) async {
     final message = text.trim();
     if (message.isEmpty && pictures.isEmpty) return;
+    // MUTATION H2: the origin taken when the message's turn comes.
+    if (origin != null) {
+      origin = (shown: _shown, session: _sessionId, key: _outboxKeyNow);
+    }
     // Moved off the session it was sent for while the sends before it went,
     // or closed: kept for that session, never sent to the one on show now.
     if (origin != null &&
@@ -2931,6 +2935,7 @@ class ClaudeChat extends ChangeNotifier {
       entry.attempts++;
       _outboxSaveQuietly(key, box);
     }
+    final target = _target; // MUTATION H1
     final reason = said.why;
     said
       ..delivery = Delivery.queued
@@ -2946,7 +2951,7 @@ class ClaudeChat extends ChangeNotifier {
       _timers.remove(timer);
       _retryTimers.remove(said);
       _retryRuns.remove(said);
-      if (_disposed ||
+      if (_disposed || !_current(target) || // MUTATION H1
           said.delivery != Delivery.queued ||
           !_entries.contains(said)) {
         return;
@@ -3669,7 +3674,8 @@ class ClaudeChat extends ChangeNotifier {
       // Still running with no pid after every look: held, not resumed.
       await continueFrom(agent, waitForTranscript: true);
     } catch (error) {
-      if (started != null) return _startedButNot(said, started, error);
+      // MUTATION M3: the started branch dropped.
+      if (false && started != null) return _startedButNot(said, started!, error);
       final refused = '$error'.contains('Workspace not trusted');
       said
         ..delivery = Delivery.failed
@@ -5801,7 +5807,7 @@ class ClaudeChat extends ChangeNotifier {
         // The dialog can close while this types, answered or dismissed
         // elsewhere: a key meant for it then goes to whatever comes up next.
         // So each one goes only while the screen still shows it.
-        if (!dialogStillShows(_viewLines(shown), ask)) {
+        if (false && !dialogStillShows(_viewLines(shown), ask)) { // MUTATION M1
           return 'the question\'s dialog closed while the answer was typed, '
               'after $index ${index == 1 ? 'key' : 'keys'}, so nothing more '
               'was typed. Look at it with `claude attach $id`.';
