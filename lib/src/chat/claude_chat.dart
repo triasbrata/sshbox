@@ -91,6 +91,11 @@ class ChatSaid extends ChatEntry {
   /// Code, so the bubble can offer another.
   String? refusedFolder;
 
+  /// The short id of the session a new chat's start made, when this, its
+  /// first message, did not reach it: sent again there, never by starting
+  /// another.
+  String? startedAs;
+
   /// This message's place in the outbox, when it has one: the file it is kept
   /// in and its id there. Null for a message nothing keeps.
   String? outboxKey;
@@ -2291,13 +2296,16 @@ class ClaudeChat extends ChangeNotifier {
     PictureUpload? upload,
     ({String key, String id})? resume,
   ) {
-    if (!_outboxOn) return _sendNow(text, pictures, upload, null);
+    if (!_outboxOn) return _sendNow(text, pictures, upload, null, null);
+    // What the message is for is the session on show as it is sent, not the
+    // one on show when its turn comes after the sends before it.
+    final origin = (shown: _shown, session: _sessionId, key: _outboxKeyNow);
     // The first goes at once; the next waits for the one before it, so they
     // are written down, and sent, in the order they were asked for.
     final before = _admitTail;
     final run = before == null
-        ? _sendNow(text, pictures, upload, resume)
-        : before.then((_) => _sendNow(text, pictures, upload, resume));
+        ? _sendNow(text, pictures, upload, resume, origin)
+        : before.then((_) => _sendNow(text, pictures, upload, resume, origin));
     late final Future<void> mine;
     mine = run.catchError((Object _) {}).whenComplete(() {
       if (identical(_admitTail, mine)) _admitTail = null;
@@ -2306,14 +2314,74 @@ class ClaudeChat extends ChangeNotifier {
     return run;
   }
 
+  /// [message], sent for [origin], which the chat left or closed before its
+  /// turn came: kept in [origin]'s outbox as failed, for Retry when that
+  /// session is opened again, and said where the user is looking now.
+  Future<void> _keptFor(
+    ({int shown, String? session, String key}) origin,
+    String message,
+    List<ChatPicture> pictures,
+    ({String key, String id})? resume,
+  ) async {
+    final why = _disposed
+        ? 'Not sent: the chat closed before it went.'
+        : 'Not sent: you moved to another session before it went.';
+    String? lost;
+    try {
+      if (resume == null) {
+        final kept = await _outboxAdd(message, pictures, key: origin.key);
+        await _outboxMark(kept.key, kept.id, failed: true, why: why);
+      } else {
+        await _outboxMark(resume.key, resume.id, failed: true, why: why);
+        final waiting = _entries
+            .whereType<ChatSaid>()
+            .where((said) => said.outboxId == resume.id)
+            .firstOrNull;
+        if (waiting != null) {
+          waiting
+            ..delivery = Delivery.failed
+            ..why = why;
+          notifyListeners();
+        }
+      }
+    } on OutboxException catch (error) {
+      lost = error.message;
+    } catch (error) {
+      lost = '$error';
+    }
+    if (_disposed) {
+      if (lost != null) appLog.add('outbox: not kept after close');
+      return;
+    }
+    _say(
+      ChatNotice(
+        lost == null
+            ? '$why It is kept for the session it was written for, to send '
+                  'from there. What you wrote: “${_excerpt(message)}”'
+            : '$why It could not be kept on this device ($lost). What you '
+                  'wrote: “${_excerpt(message)}”',
+        failed: true,
+      ),
+    );
+  }
+
   Future<void> _sendNow(
     String text,
     List<ChatPicture> pictures,
     PictureUpload? upload,
     ({String key, String id})? resume,
+    ({int shown, String? session, String key})? origin,
   ) async {
     final message = text.trim();
     if (message.isEmpty && pictures.isEmpty) return;
+    // Moved off the session it was sent for while the sends before it went,
+    // or closed: kept for that session, never sent to the one on show now.
+    if (origin != null &&
+        (_disposed ||
+            (origin.shown != _shown && origin.session != _sessionId) ||
+            (resume != null && resume.key != _outboxKeyNow))) {
+      return _keptFor(origin, message, pictures, resume);
+    }
     final why = unsendable;
     if (why != null) {
       // Said where the user is looking, with what they wrote, so a message
@@ -2543,6 +2611,11 @@ class ClaudeChat extends ChangeNotifier {
   /// there still. A picture whose file is gone is said so, with the message
   /// left as it is.
   String? retry(ChatSaid said, {PictureUpload? upload}) {
+    final started = said.startedAs;
+    if (started != null) {
+      return 'This chat started as $started already. Find it in the sessions '
+          'list and send it there.';
+    }
     if (said.delivery != Delivery.failed || !_entries.contains(said)) {
       return 'That message is no longer here to send again.';
     }
@@ -2600,29 +2673,33 @@ class ClaudeChat extends ChangeNotifier {
   String get _outboxKeyNow =>
       OutboxStore.keyOf(hostKey!, _sessionId ?? OutboxStore.newChat);
 
-  /// What is kept, once read: the one copy every change goes through. Two
-  /// first reads at once each read the file, and the first to finish wins.
-  final Map<String, OutboxBox> _boxes = {};
+  /// What is kept, as the store's one copy every chat changes: see
+  /// [OutboxStore.open].
+  Future<OutboxBox> _box(String key) => outbox!.open(
+    key,
+    onCorrupt: () {
+      appLog.add('outbox: unreadable file set aside');
+      if (!_disposed) {
+        _say(
+          ChatNotice(
+            'Messages kept on this device for this chat could not be read '
+            'and were set aside.',
+            failed: true,
+          ),
+        );
+      }
+    },
+  );
 
-  Future<OutboxBox> _box(String key) async {
-    final have = _boxes[key];
-    if (have != null) return have;
-    final read = await outbox!.load(
-      key,
-      onCorrupt: () {
-        appLog.add('outbox: unreadable file set aside');
-        if (!_disposed) {
-          _say(
-            ChatNotice(
-              'Messages kept on this device for this chat could not be read '
-              'and were set aside.',
-              failed: true,
-            ),
-          );
-        }
-      },
-    );
-    return _boxes.putIfAbsent(key, () => read);
+  /// The entries this chat has taken to handle, given back when it closes so
+  /// another chat on the session can.
+  final Set<OutboxEntry> _owned = {};
+
+  void _own(OutboxEntry entry) {
+    // A closed chat handles nothing: what it keeps is any chat's to take.
+    if (_disposed) return;
+    entry.owner = this;
+    _owned.add(entry);
   }
 
   /// [_box], or null when the store cannot be opened: the callers that run
@@ -2647,9 +2724,10 @@ class ClaudeChat extends ChangeNotifier {
   /// into a queue that is not there.
   Future<({String key, String id, List<ChatPicture> pictures})> _outboxAdd(
     String message,
-    List<ChatPicture> pictures,
-  ) async {
-    final key = _outboxKeyNow;
+    List<ChatPicture> pictures, {
+    String? key,
+  }) async {
+    key ??= _outboxKeyNow;
     final id = '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
         '${math.Random().nextInt(1 << 32).toRadixString(36)}';
     _addedHere.add(id);
@@ -2681,6 +2759,7 @@ class ClaudeChat extends ChangeNotifier {
         createdAt: DateTime.now().toUtc(),
         pictures: kept,
       );
+      _own(entry);
       box.entries.add(entry);
       try {
         await outbox!.save(key, box);
@@ -2729,15 +2808,27 @@ class ClaudeChat extends ChangeNotifier {
 
   /// The session has the message: it is deleted from the outbox, and [turn],
   /// the transcript turn that proved it, is remembered so no other message
-  /// can be proved by it too.
+  /// can be proved by it too. With no turn named, the message itself is
+  /// remembered as a claim on the first turn of its words, for the same.
   Future<void> _outboxDelivered(String? key, String? id, String? turn) async {
     if (!_outboxOn || key == null || id == null) return;
     final box = await _boxOrNull(key);
     if (box == null) return;
-    final before = box.entries.length;
-    box.entries.removeWhere((e) => e.id == id);
-    if (box.entries.length == before) return;
-    if (turn != null) box.consumed.add(turn);
+    final entry = box.entries.where((e) => e.id == id).firstOrNull;
+    if (entry == null) return;
+    box.entries.remove(entry);
+    _owned.remove(entry);
+    if (turn != null) {
+      box.consumed.add(turn);
+    } else {
+      box.claims.add(
+        OutboxClaim.of(
+          OutboxMatch.normal(_pasteable(entry.text)),
+          entry.createdAt,
+        ),
+      );
+    }
+    box.provedAt = DateTime.now().toUtc();
     appLog.add('outbox: delivered');
     _outboxSaveQuietly(key, box);
     // The picture copies stay until this chat closes: the bubble still
@@ -2811,6 +2902,7 @@ class ClaudeChat extends ChangeNotifier {
       turns,
       box.consumed,
       textOf: _pasteable,
+      claims: box.claims,
     )[id];
   }
 
@@ -2839,7 +2931,6 @@ class ClaudeChat extends ChangeNotifier {
       entry.attempts++;
       _outboxSaveQuietly(key, box);
     }
-    final target = _target;
     final reason = said.why;
     said
       ..delivery = Delivery.queued
@@ -2856,11 +2947,14 @@ class ClaudeChat extends ChangeNotifier {
       _retryTimers.remove(said);
       _retryRuns.remove(said);
       if (_disposed ||
-          !_current(target) ||
           said.delivery != Delivery.queued ||
           !_entries.contains(said)) {
         return;
       }
+      // A new process or connection for the same session still takes it,
+      // sent to what this chat writes to now once the transcript has been
+      // looked in, never left waiting on the one it replaced: a chat moved
+      // to another session has had its timers cancelled by [_reset].
       // Still down: keep waiting, with no step used.
       if (_hostDown) {
         said
@@ -2952,6 +3046,9 @@ class ClaudeChat extends ChangeNotifier {
     final waiting = <ChatSaid>[];
     for (final entry in [...box.entries]) {
       if (shown.contains(entry.id) || _addedHere.contains(entry.id)) continue;
+      // Another chat on this session is handling it.
+      if (entry.owner != null && !identical(entry.owner, this)) continue;
+      _own(entry);
       final said =
           ChatSaid(
               entry.text,
@@ -3028,6 +3125,8 @@ class ClaudeChat extends ChangeNotifier {
     _busy = false;
     _ended = false;
     await start();
+    // What waited to be sent again goes to the new process now.
+    if (!_disposed && !_resuming) _retryNow();
   }
 
   /// What `claude agents` can see on the host: the sessions running there,
@@ -3048,6 +3147,9 @@ class ClaudeChat extends ChangeNotifier {
   /// otherwise hold [checkState]'s look for the rest of the turn, and a turn
   /// whose end was missed would spin for ever. Gives up as well once [until]
   /// completes: a page that asked and has gone, while the chat stays.
+  /// How each listing under way gives up: what [dispose] calls.
+  final Set<void Function(Object why)> _listings = {};
+
   Future<List<ClaudeAgent>> agents({
     bool all = false,
     Future<void>? until,
@@ -3072,6 +3174,7 @@ class ClaudeChat extends ChangeNotifier {
       ),
     );
     _timers.add(timer);
+    _listings.add(giveUp);
     expired.future.ignore();
     unawaited(
       until?.then(
@@ -3101,6 +3204,7 @@ class ClaudeChat extends ChangeNotifier {
     } finally {
       timer.cancel();
       _timers.remove(timer);
+      _listings.remove(giveUp);
     }
     // The listing, then the pins after a line of their own: see
     // [agentsCommand].
@@ -3476,6 +3580,10 @@ class ClaudeChat extends ChangeNotifier {
       ..outboxId = kept?.id;
     _busy = true;
     _say(said);
+    // The session's short id once `--bg` has started one: from then on the
+    // message is in a session, and a failure after it is not a start that
+    // failed.
+    String? started;
     try {
       final channel = await open(
         backgroundCommand(
@@ -3491,11 +3599,12 @@ class ClaudeChat extends ChangeNotifier {
         output = await utf8.decoder
             .bind(channel.output)
             .join()
-            .timeout(const Duration(seconds: 60));
+            .timeout(startTimeout);
       } finally {
         channel.close();
       }
       final id = backgroundId(output);
+      started = id;
       // A session with the prompt on its command line exists: the host took
       // the message, and the transcript the session writes next holds it.
       if (id != null && pictures.isEmpty) {
@@ -3549,13 +3658,18 @@ class ClaudeChat extends ChangeNotifier {
           confirm: false,
           hold: false,
         );
-        if (said.delivery == Delivery.failed) return;
+        if (said.delivery == Delivery.failed) {
+          // The session is there: its pictures go to it, not to another.
+          said.startedAs = id;
+          return;
+        }
         unawaited(_outboxDelivered(said.outboxKey, said.outboxId, null));
       }
       _busy = false;
       // Still running with no pid after every look: held, not resumed.
       await continueFrom(agent, waitForTranscript: true);
     } catch (error) {
+      if (started != null) return _startedButNot(said, started, error);
       final refused = '$error'.contains('Workspace not trusted');
       said
         ..delivery = Delivery.failed
@@ -3563,15 +3677,45 @@ class ClaudeChat extends ChangeNotifier {
             ? 'Not started in ${startFolder ?? 'the login folder'}: $error '
                   'Trusting a folder is done in Claude Code itself; or choose '
                   'another folder.'
+            : error is TimeoutException
+            ? 'Not known whether it started: the host did not answer within '
+                  '${startTimeout.inSeconds} s. Check the sessions list '
+                  'before sending it again.'
             : 'Not started: $error'
         ..refusedFolder = refused ? (startFolder ?? '') : null;
-      // Kept as failed, unless the start had gone through already (above),
-      // when its entry is gone and this finds nothing.
+      // Kept as failed, for the user to send again.
       unawaited(_outboxFailed(said.outboxKey, said.outboxId, said.why));
     } finally {
       if (_composing) _busy = false;
       notifyListeners();
     }
+  }
+
+  /// How long `claude --bg` has to say which session it started.
+  static Duration startTimeout = const Duration(seconds: 60);
+
+  /// [said], a new chat's first message, whose session [id] did start but
+  /// could then not be opened here. It is never started again by a Retry:
+  /// without pictures the session holds it, so it is sent and the chat says
+  /// where to find the session; with pictures it stays failed, and a Retry
+  /// says to send it in that session.
+  void _startedButNot(ChatSaid said, String id, Object error) {
+    final where = 'Find it in the sessions list, or open it with '
+        '`claude attach $id`.';
+    final text = '$error'.contains(id) ? '$error' : 'It started as $id, but '
+        '$error $where';
+    if (said.pictures.isEmpty) {
+      said
+        ..delivery = null
+        ..why = null;
+      _say(ChatNotice(text, failed: true));
+      return;
+    }
+    said
+      ..delivery = Delivery.failed
+      ..why = 'Not sent: $text'
+      ..startedAs = id;
+    unawaited(_outboxFailed(said.outboxKey, said.outboxId, said.why));
   }
 
   /// What the page does when the connection comes (back): a watched session
@@ -4355,6 +4499,16 @@ class ClaudeChat extends ChangeNotifier {
     for (var line = 0; line < shown.buffer.height; line++)
       shown.buffer.lines[line].getText(),
   ];
+
+  /// What [shown] has on screen now, its scrollback left out: a dialog that
+  /// was cleared away is no longer in it.
+  static List<String> _viewLines(Terminal shown) {
+    final from = math.max(0, shown.buffer.height - shown.viewHeight);
+    return [
+      for (var line = from; line < shown.buffer.height; line++)
+        shown.buffer.lines[line].getText(),
+    ];
+  }
 
   /// How many `[Image #N]` chips Claude Code's input line holds, in a screen
   /// of [lines]: from the last line that starts with its `❯`, the line
@@ -5644,6 +5798,14 @@ class ClaudeChat extends ChangeNotifier {
               : 'the chat moved to another session while it was typed; '
                     'what was typed is in the dialog at `claude attach $id`.';
         }
+        // The dialog can close while this types, answered or dismissed
+        // elsewhere: a key meant for it then goes to whatever comes up next.
+        // So each one goes only while the screen still shows it.
+        if (!dialogStillShows(_viewLines(shown), ask)) {
+          return 'the question\'s dialog closed while the answer was typed, '
+              'after $index ${index == 1 ? 'key' : 'keys'}, so nothing more '
+              'was typed. Look at it with `claude attach $id`.';
+        }
         terminal.write(Uint8List.fromList(utf8.encode(step.bytes)));
       }
       // For the last key to be read before the attach goes.
@@ -5968,6 +6130,17 @@ class ClaudeChat extends ChangeNotifier {
       timer.cancel();
     }
     _timers.clear();
+    // A listing under way ends now, its channel closed, rather than waiting
+    // for a timer that no longer runs.
+    for (final giveUp in [..._listings]) {
+      giveUp(StateError('This chat is closed.'));
+    }
+    _listings.clear();
+    // What it was handling is another chat's to take on this session now.
+    for (final entry in _owned) {
+      if (identical(entry.owner, this)) entry.owner = null;
+    }
+    _owned.clear();
     // The picture copies of what was delivered; the bubbles that drew them
     // are gone with the chat.
     for (final id in _doneWithPictures) {

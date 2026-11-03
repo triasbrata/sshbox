@@ -122,7 +122,10 @@ void main() {
       final key = OutboxStore.keyOf('h', 's');
       await store.save(
         key,
-        OutboxBox(consumed: [for (var i = 0; i < 300; i++) 't$i']),
+        OutboxBox(
+          consumed: [for (var i = 0; i < 300; i++) 't$i'],
+          provedAt: DateTime.now().toUtc(),
+        ),
       );
       final read = await store.load(key);
       expect(read.consumed, hasLength(OutboxBox.consumedCap));
@@ -359,6 +362,169 @@ void main() {
     });
   });
 
+  group('proofs and claims', () {
+    test('a queued command sent as a paste counts as its plain text', () {
+      final queued = jsonEncode({
+        'type': 'attachment',
+        'uuid': 'q1',
+        'timestamp': t0.toIso8601String(),
+        'attachment': {
+          'type': 'queued_command',
+          'prompt': '<pasted_content id="p1">\na long message\n</pasted_content id="p1">',
+        },
+      });
+      final turns = OutboxMatch.turnsIn('$queued\n', _plain);
+      expect([for (final t in turns) t.text], ['a long message']);
+    });
+
+    test('a message delivered with no turn named claims the first turn that '
+        'matches it, so a second identical message is not proved by it', () {
+      final turns = OutboxMatch.turnsIn(
+        '${_turn('u1', 'ok', t0.add(const Duration(seconds: 1)))}\n',
+        _plain,
+      );
+      final second = _entry('b', 'ok', t0.add(const Duration(seconds: 20)));
+      expect(OutboxMatch.matched([second], turns, const []), {'b': 'u1'});
+      expect(
+        OutboxMatch.matched(
+          [second],
+          turns,
+          const [],
+          claims: [OutboxClaim.of('ok', t0)],
+        ),
+        isEmpty,
+      );
+      final both = OutboxMatch.turnsIn(
+        '${_turn('u1', 'ok', t0.add(const Duration(seconds: 1)))}\n'
+        '${_turn('u2', 'ok', t0.add(const Duration(seconds: 21)))}\n',
+        _plain,
+      );
+      expect(
+        OutboxMatch.matched(
+          [second],
+          both,
+          const [],
+          claims: [OutboxClaim.of('ok', t0)],
+        ),
+        {'b': 'u2'},
+      );
+    });
+
+    test('claims are kept on disk, with no word of the message', () async {
+      final key = OutboxStore.keyOf('h', 's');
+      final now = DateTime.now().toUtc();
+      await store.save(
+        key,
+        OutboxBox(
+          entries: [_entry('a', 'x', now)],
+          claims: [OutboxClaim.of('ok', now)],
+        ),
+      );
+      final read = await store.load(key);
+      expect(read.claims.single.digest, OutboxClaim.digestOf('ok'));
+      expect(
+        File('${dir.path}/chat_outbox/$key.json').readAsStringSync(),
+        isNot(contains('"ok"')),
+      );
+      expect(read.claims.single.at, now);
+    });
+
+    test('a box with no messages keeps its proofs only while a new message '
+        'could still be matched against them; then its file goes', () async {
+      final key = OutboxStore.keyOf('h', 's');
+      final file = File('${dir.path}/chat_outbox/$key.json');
+      final now = DateTime.now().toUtc();
+      await store.save(key, OutboxBox(consumed: ['t1'], provedAt: now));
+      expect(file.existsSync(), isTrue);
+      expect((await store.load(key)).consumed, ['t1']);
+
+      await store.save(
+        key,
+        OutboxBox(
+          consumed: ['t1'],
+          claims: [OutboxClaim.of('ok', now)],
+          provedAt: now.subtract(OutboxBox.proofLife * 2),
+        ),
+      );
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('a file left with only old proofs is deleted when it is next read, '
+        'as the start-up sweep reads it', () async {
+      final key = OutboxStore.keyOf('h', 's');
+      final file = File('${dir.path}/chat_outbox/$key.json');
+      await store.save(
+        key,
+        OutboxBox(consumed: ['t1'], provedAt: DateTime.now().toUtc()),
+      );
+      final old = DateTime.now().toUtc().subtract(OutboxBox.proofLife * 2);
+      file.writeAsStringSync(
+        jsonEncode({
+          'entries': [],
+          'consumed': ['t1'],
+          'provedAt': old.toIso8601String(),
+        }),
+      );
+      await store.sweep({'h'});
+      expect(file.existsSync(), isFalse);
+      // A file from before proofs carried a time is old too.
+      await store.save(
+        key,
+        OutboxBox(consumed: ['t1'], provedAt: DateTime.now().toUtc()),
+      );
+      file.writeAsStringSync(
+        jsonEncode({
+          'entries': [],
+          'consumed': ['t1'],
+        }),
+      );
+      expect((await store.load(key)).consumed, isEmpty);
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('only the newest claims are kept past the cap', () async {
+      final key = OutboxStore.keyOf('h', 's');
+      final now = DateTime.now().toUtc();
+      await store.save(
+        key,
+        OutboxBox(
+          entries: [_entry('a', 'x', now)],
+          claims: [
+            for (var i = 0; i < OutboxBox.claimsCap + 5; i++)
+              OutboxClaim.of('c$i', now),
+          ],
+          provedAt: now,
+        ),
+      );
+      final read = (await store.load(key)).claims;
+      expect(read, hasLength(OutboxBox.claimsCap));
+      expect(read.first.digest, OutboxClaim.digestOf('c5'));
+      expect(
+        read.last.digest,
+        OutboxClaim.digestOf('c${OutboxBox.claimsCap + 4}'),
+      );
+    });
+
+    test('claims too old to match any message waiting are dropped', () async {
+      final key = OutboxStore.keyOf('h', 's');
+      final now = DateTime.now().toUtc();
+      await store.save(
+        key,
+        OutboxBox(
+          entries: [_entry('a', 'x', now)],
+          claims: [
+            OutboxClaim.of('old', now.subtract(OutboxBox.proofLife * 2)),
+            OutboxClaim.of('new', now),
+          ],
+          provedAt: now,
+        ),
+      );
+      expect(
+        [for (final c in (await store.load(key)).claims) c.digest],
+        [OutboxClaim.digestOf('new')],
+      );
+    });
+  });
   test(
     'the automatic retry waits 2 s, 5 s, 15 s, 45 s, 2 min, then gives up',
     () {
