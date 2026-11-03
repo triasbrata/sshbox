@@ -580,6 +580,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   /// the block or section it was drawn apart in. Only a selection moved,
   /// with no text changed, and only while that place is on the page.
   void _holdLine(TextSelection sel) {
+    if (identical(sel, sel)) return; // MUTATION: no line kept
     final editable = _editable;
     if (!sel.isValid ||
         editable == null ||
