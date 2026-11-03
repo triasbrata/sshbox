@@ -1,0 +1,255 @@
+# Chat outbox fixes from the v1.0.120 review, against the stand-ins of
+# tools/e2e_android.sh's chat_fixes block. The runner works the host between
+# the flow's STEPs and reads, after each, what reached the host: the stand-in's
+# log of every line chat's own Claude read (tools/e2e_fixes_claude.py), the
+# pane's log, the transcripts and the outbox file on the device. The flow
+# asserts what the user sees.
+#
+#   own_open, own_send,    H1: a message chat's own Claude never got, the
+#   own_back               connection dropped under it, goes to the Claude
+#                          started again once the connection is back; one it
+#                          answered goes nowhere again
+#   two_open, two_draft,   H2: a message sent behind a slow Retry, for a
+#   two_retry, two_switch, session the chat then leaves, is kept for that
+#   two_left, two_stay     session and typed nowhere; with no switch it goes
+#                          to that session, once
+#   new_send, new_fail,    M3: a new chat whose session started is never
+#   new_retry              started again by Retry; one that started nothing
+#                          is, by Retry
+#
+# STEP and MSG come from -e alone: Maestro lets a flow's own env: block win
+# over -e (see tools/e2e_android.sh), so they have no default here.
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+# Into the host's chat, with nothing picked.
+- runFlow:
+    when:
+      true: ${STEP == 'own_open' || STEP == 'two_open' || STEP == 'new_send' || STEP == 'new_fail'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - tapOn: "Chat with Claude"
+      - extendedWaitUntil:
+          visible: "Sessions on this host"
+          timeout: 20000
+
+# --- H1 -----------------------------------------------------------------
+
+# A finished session, continued here: chat's own Claude runs for it.
+- runFlow:
+    when:
+      true: ${STEP == 'own_open'}
+    commands:
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E fixes own.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E fixes own.*"
+      - extendedWaitUntil:
+          visible: "(?s).*Earlier fixes answer.*"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible: "Ask Claude…"
+          timeout: 30000
+
+# Sent while the connection is up: the runner says, by the stand-in, whether
+# it reaches Claude or is lost on the way.
+- runFlow:
+    when:
+      true: ${STEP == 'own_send'}
+    commands:
+      - tapOn:
+          text: "Ask Claude…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "${MSG}"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - assertVisible: "(?s).*${MSG}.*"
+      - assertNotVisible: "(?s).*Not sent.*"
+      - takeScreenshot: chat-fixes-own-sent
+
+# The connection back, from the chat's own tab: a message lost with the old
+# process is answered by the new one, by itself, with no Retry.
+- runFlow:
+    when:
+      true: ${STEP == 'own_back'}
+    commands:
+      - tapOn: "Reconnect"
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          notVisible: "Reconnect"
+          timeout: 60000
+      - tapOn:
+          text: "(?s)^(?!Close).*Claude.*"
+          optional: true
+      - extendedWaitUntil:
+          visible: "(?i)Echo: ${MSG}"
+          timeout: 120000
+      - assertNotVisible: "(?s).*Waiting for the connection.*"
+      - assertNotVisible: "(?s).*Trying again in.*"
+      - assertNotVisible: "Retry"
+      - takeScreenshot: chat-fixes-own-back
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- H2 -----------------------------------------------------------------
+
+- runFlow:
+    when:
+      true: ${STEP == 'two_open'}
+    commands:
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E live session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E live session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*in tmux pane.*"
+          timeout: 20000
+
+# A draft at the terminal (the runner typed it) refuses the message: failed,
+# with Retry.
+- runFlow:
+    when:
+      true: ${STEP == 'two_draft'}
+    commands:
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "${MSG}"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+      - extendedWaitUntil:
+          visible: "(?s).*Something is typed into.*"
+          timeout: 30000
+      - takeScreenshot: chat-fixes-two-failed
+
+# The draft gone and the host slow to read transcripts (the runner): Retry
+# looks in the transcript first, slowly, and a second message is sent behind
+# it.
+- runFlow:
+    when:
+      true: ${STEP == 'two_retry' || STEP == 'two_switch'}
+    commands:
+      - tapOn: "Retry"
+      - tapOn:
+          text: "Message “E2E live session”…"
+          waitToSettleTimeoutMs: 500
+      - inputText: "${MSG}"
+      - tapOn:
+          text: "Send"
+          waitToSettleTimeoutMs: 500
+
+# Another session picked while the two wait, in the same flow as the Retry so
+# that no start of Maestro's comes between them.
+- runFlow:
+    when:
+      true: ${STEP == 'two_switch'}
+    commands:
+      - tapOn: "Sessions on this host"
+      - extendedWaitUntil:
+          visible: "(?s)\\W*E2E short session.*"
+          timeout: 20000
+      - tapOn: "(?s)\\W*E2E short session.*"
+      - extendedWaitUntil:
+          visible: "(?s).*Short answer of the short session.*"
+          timeout: 60000
+
+# The session left: the message is not typed here, and the chat says it was
+# kept for the session it was written for.
+- runFlow:
+    when:
+      true: ${STEP == 'two_left'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s).*you moved to another session before it went.*"
+          timeout: 90000
+      - assertVisible: "(?s).*kept for the session it was written for.*"
+      - assertNotVisible: "(?i)Echo: ${MSG}"
+      - takeScreenshot: chat-fixes-two-left
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# No switch: the message goes to the session it was written for.
+- runFlow:
+    when:
+      true: ${STEP == 'two_stay'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?i)Echo: ${MSG}"
+          timeout: 90000
+      - assertNotVisible: "(?s).*you moved to another session before it went.*"
+      - takeScreenshot: chat-fixes-two-stay
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# --- M3 -----------------------------------------------------------------
+
+# A new chat's first message: `claude --bg` names a session the listing never
+# shows. The chat says where the session is, and offers no Retry.
+- runFlow:
+    when:
+      true: ${STEP == 'new_send'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Start a new chat…"
+          timeout: 20000
+      - tapOn: "Start a new chat…"
+      - inputText: "${MSG}"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*claude attach e2e0fx3a.*"
+          timeout: 60000
+      - assertVisible: "(?s).*${MSG}.*"
+      - assertNotVisible: "(?s).*Not started.*"
+      - assertNotVisible: "Retry"
+      - takeScreenshot: chat-fixes-new-started
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"
+
+# `claude --bg` starts nothing: the message is failed, with Retry.
+- runFlow:
+    when:
+      true: ${STEP == 'new_fail'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Start a new chat…"
+          timeout: 20000
+      - tapOn: "Start a new chat…"
+      - inputText: "${MSG}"
+      - tapOn: "Send"
+      - extendedWaitUntil:
+          visible: "(?s).*Not started.*"
+          timeout: 60000
+      - assertVisible: "Retry"
+      - takeScreenshot: chat-fixes-new-failed
+
+# Retry starts it again.
+- runFlow:
+    when:
+      true: ${STEP == 'new_retry'}
+    commands:
+      - tapOn: "Retry"
+      - extendedWaitUntil:
+          visible: "(?s).*Not started.*"
+          timeout: 60000
+      - takeScreenshot: chat-fixes-new-retried
+      - tapOn: "(?s)Close .*Claude.*"
+      - tapOn: "Close ${HOST_LABEL}.*"

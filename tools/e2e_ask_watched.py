@@ -66,10 +66,21 @@ SESSIONS = {
     # Held at a permission prompt, with the question open in its transcript.
     'perm': dict(n=5, kind='background', waiting='permission prompt', questions=[
         ask('Which day?', 'Day', False, [('Monday', 'first'), ('Friday', 'last')])]),
+    # Its dialog closes as the first key of an answer reaches it, answered at
+    # another terminal, and a permission prompt comes up in its place: every
+    # key after that one would land on the prompt.
+    'closes': dict(n=7, kind='background', waiting='input needed', closes=True, questions=[
+        ask('Which tier?', 'Tier', False, [('Bronze', 'basic'), ('Gold', 'full')]),
+        ask('Which tone?', 'Tone', False, [('Warm', 'soft'), ('Cool', 'crisp')])]),
     'pane': dict(n=6, kind='interactive', waiting='input needed', questions=[
         ask('Which drink?', 'Drink', False,
             [('Tea', 'hot'), ('Coffee', 'dark'), ('Water', 'plain')])]),
 }
+
+
+# What Claude Code draws when a tool waits for the user's permission.
+PERMISSION = ['', ' Bash command', '', '   rm -rf build', '', ' Do you want to proceed?',
+              ' ❯ 1. Yes', '   2. No', '', ' Esc to cancel']
 
 
 def sid_of(key):
@@ -345,7 +356,12 @@ def run(sid, pane):
                 break
             for k, ch in tokens(decoder.decode(chunk)):
                 log('key', sid=sid, k=k, c=ch)
-                if dialog.result is None:
+                if dialog.result is None and SESSIONS[key].get('closes'):
+                    dialog.result = ('closed',)
+                    log('closed', sid=sid)
+                    listed(sid, waitingFor='permission prompt')
+                    write('\x1b[2J\x1b[H' + '\r\n'.join(PERMISSION))
+                elif dialog.result is None:
                     dialog.press(k, ch)
                     if dialog.result:
                         finish()

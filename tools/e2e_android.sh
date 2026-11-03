@@ -34,7 +34,7 @@ UNITS=(smoke connect_and_keybar
   chat_working_backstop
   chat_images chat_attach_deliver chat_subagents chat_usage chat_compact chat_model
   chat_effort chat_cwd
-  folder_zip chat_outbox chat_outbox_reconnect
+  folder_zip chat_outbox chat_outbox_reconnect chat_fixes
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
@@ -2156,7 +2156,8 @@ ask_check() { # KIND
 import json, os, sys
 home, kind = sys.argv[1:3]
 events = [json.loads(l) for l in open(os.path.join(home, '.e2e-ask.log')) if l.strip()]
-n = {'single': 1, 'multi': 2, 'two': 3, 'other': 4, 'perm': 5, 'pane': 6}[kind]
+n = {'single': 1, 'multi': 2, 'two': 3, 'other': 4, 'perm': 5, 'pane': 6,
+     'closes': 7}[kind]
 sid = 'e2e00000-0000-4000-8000-00000000a%03d' % n
 keys = []
 for e in events:
@@ -2190,6 +2191,9 @@ want = {
     'perm': ([], 0, [], 'permission prompt'),
     # The pane is not an attach: its keys came through tmux.
     'pane': (['down', 'enter'], 0, [{'Which drink?': 'Coffee'}], None),
+    # The dialog closed as the first key reached it: that key alone, nothing
+    # after it on the permission prompt that came up, nothing recorded.
+    'closes': (['down'], 1, [], 'permission prompt'),
 }[kind]
 problems = []
 if keys != want[0]:
@@ -2212,7 +2216,15 @@ sys.exit(1 if problems else 0)
 PY
 }
 
-chat_ask_watched() {
+chat_ask_watched() { ask_watched_kinds single multi two other perm pane; }
+
+# M1 of the v1.0.120 review (.maestro/chat_ask_watched.yaml, KIND=closes): an
+# answer typed through `claude attach` stops once the dialog has closed, and
+# the same two-question answer to a dialog that stays goes in whole (two).
+chat_fixes_ask() { ask_watched_kinds two closes; }
+
+# ask_watched_kinds KIND...: the watched host set up, each KIND run and checked.
+ask_watched_kinds() {
   local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) log=/home/$SSH_USER/.e2e-ask.log
   local kind pid pids='' pane
   chat_stand_in
@@ -2236,7 +2248,7 @@ SH
   "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-transcripts || return 1
   # The background sessions' processes: a sleep each, as live ones.
   ask_pids=()
-  for kind in single multi two other perm; do
+  for kind in single multi two other perm closes; do
     pid=$("${as[@]}" sh -c 'setsid sleep 3600 </dev/null >/dev/null 2>&1 & echo $!')
     ask_pids+=("$pid")
     pids="$pids\"$kind\": $pid, "
@@ -2249,7 +2261,7 @@ SH
   pane=$("${as[@]}" tmux list-panes -t e2e-ask -F '#{pane_pid}')
   "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-rows "{${pids}\"pane\": $pane}" || return 1
   echo "ask host: sleeps ${ask_pids[*]}, pane pid $pane"
-  for kind in single multi two other perm pane; do
+  for kind in "$@"; do
     echo "-- chat_ask_watched: $kind"
     sudo truncate -s 0 "$log" 2>/dev/null
     # Whatever a failed run left on top (a system picker) is sent away first,
@@ -3312,6 +3324,253 @@ chat_outbox() {
   return "$OB_STATUS"
 }
 
+# The chat findings of the v1.0.120 review, fixed (.maestro/chat_fixes.yaml,
+# and chat_fixes_ask above for the answer typed into a dialog that closes).
+# Against the outbox block's host: live_session's pane, the chat stand-in's
+# finished sessions, and a `claude` of this block's own that runs chat's own
+# Claude as tools/e2e_fixes_claude.py, which logs every line it reads to
+# ~/.e2e-fixes.log. Each case runs both ways, the second the one where nothing
+# should happen, and the runner counts what reached the host after each.
+FX_HOME=/home/$SSH_USER
+FX_LOG=$FX_HOME/.e2e-fixes.log
+FX_DROP=$FX_HOME/.e2e-fixes-drop
+FX_BG_LOG=$FX_HOME/.e2e-fixes-bg.log
+FX_BG_FAIL=$FX_HOME/.e2e-fixes-bg-fail
+FX_SLOW=$FX_HOME/.e2e-fixes-slow
+FX_WC=/usr/local/bin/wc
+FX_OWN_SID=e2e0f1x1-0000-4000-8000-000000000f11
+FX_SHORT_SID=e2e00002-0000-4000-8000-000000000002
+
+# How many lines of the own stand-in's log are EVENT for TEXT; with `pids`,
+# how many processes logged it.
+fx_count() { # EVENT TEXT [pids]
+  sudo python3 - "$FX_LOG" "$1" "$2" "${3:-}" <<'PY'
+import json, sys
+path, ev, text, what = sys.argv[1:5]
+rows = []
+try:
+    for line in open(path):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get('ev') == ev and e.get('text') == text:
+            rows.append(e)
+except OSError:
+    pass
+print(len({e['pid'] for e in rows}) if what == 'pids' else len(rows))
+PY
+}
+
+# How many user turns SID's transcript holds with exactly TEXT.
+fx_turns() { # SID TEXT
+  sudo python3 - "$FX_HOME/.claude/projects/-home-$SSH_USER/$1.jsonl" "$2" <<'PY'
+import json, sys
+n = 0
+try:
+    for line in open(sys.argv[1]):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        m = e.get('message')
+        if e.get('type') == 'user' and isinstance(m, dict) and m.get('content') == sys.argv[2]:
+            n += 1
+except OSError:
+    pass
+print(n)
+PY
+}
+
+fx_lines() { sudo cat "$1" 2>/dev/null | wc -l | tr -d ' '; }
+
+fx_setup() {
+  chat_stand_in
+  end_live_session
+  live_session
+  if [ -e "$FX_WC" ]; then
+    echo "::error::$FX_WC is there already; not putting a slow one in its place" >&2
+    return 1
+  fi
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_fixes_claude.py "$FX_HOME/.e2e-fixes-claude.py"
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  # A new chat's first message: logged, and a session named that nothing
+  # lists, or with ~/.e2e-fixes-bg-fail none started at all.
+  --bg) printf '%s\n' "$*" >>"$HOME/.e2e-fixes-bg.log"
+    if [ -f "$HOME/.e2e-fixes-bg-fail" ]; then
+      echo 'claude: could not start a session'
+    else
+      echo 'backgrounded · e2e0fx3a · New chat'
+    fi ;;
+  -p) if [ "$2" = /usage ]; then exit 0; fi
+    exec env PYTHONIOENCODING=utf-8 python3 "$HOME/.e2e-fixes-claude.py" "$@" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  # H1's session: finished, so chat continues it with a Claude of its own.
+  sudo -u "$SSH_USER" HOME="$FX_HOME" python3 - "$FX_OWN_SID" <<'PY'
+import json, os, sys
+sid, home = sys.argv[1], os.environ['HOME']
+d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+with open(os.path.join(d, sid + '.jsonl'), 'w') as f:
+    for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'Earlier fixes question'}},
+              {'type': 'assistant', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': 'Earlier fixes answer'}]}}):
+        f.write(json.dumps(e) + '\n')
+path = os.path.join(home, '.e2e-agents.json')
+rows = [r for r in json.load(open(path)) if r.get('sessionId') != sid]
+rows.append({'id': 'e2ef1x01', 'cwd': home, 'kind': 'background', 'state': 'done',
+             'startedAt': 1790000000900, 'sessionId': sid, 'name': 'E2E fixes own'})
+json.dump(rows, open(path, 'w'))
+PY
+  # H2's slow host: wc, which the history read runs first, sleeps for the test
+  # user while ~/.e2e-fixes-slow is there; the real one otherwise.
+  printf '%s\n' '#!/bin/sh' \
+    "[ \"\$HOME\" = '$FX_HOME' ] && [ -f '$FX_SLOW' ] && sleep 20" \
+    'exec /usr/bin/wc "$@"' | sudo tee "$FX_WC" >/dev/null
+  sudo chmod 755 "$FX_WC"
+  sudo rm -f "$OB_PANE_LOG" "$OB_RELEASE" "$FX_LOG" "$FX_DROP" "$FX_BG_LOG" "$FX_BG_FAIL" "$FX_SLOW"
+  ob_host touch "$OB_STAMPED"
+}
+
+fx_teardown() {
+  sudo rm -f "$FX_WC" "$FX_HOME/.e2e-fixes-claude.py" "$FX_LOG" "$FX_DROP" \
+    "$FX_BG_LOG" "$FX_BG_FAIL" "$FX_SLOW" "$OB_STAMPED" "$OB_RELEASE" "$OB_PANE_LOG"
+  sudo rm -f "$FX_HOME/.claude/projects/-home-$SSH_USER/$FX_OWN_SID.jsonl"
+  adb shell am force-stop "$OB_PKG" >/dev/null 2>&1
+  end_live_session
+  stand_in ''
+}
+
+# H1, both ways. With LOST, the message's bytes never reach chat's own Claude
+# (the stand-in drops them, as a connection dropping would); the connection
+# then drops, and once it is back the Claude started again gets it, once.
+# Without, it was answered before the drop, and nothing goes again.
+fx_h1() { # lost|answered
+  local msg="fixes own $1"
+  echo "::group::chat_fixes H1 ($1): a message under a dropped connection"
+  ob_reset
+  ob_restore_ssh
+  [ "$1" = lost ] && ob_host touch "$FX_DROP"
+  flow chat_fixes -e STEP=own_open || ob_fail "H1 $1: the own_open flow failed"
+  flow chat_fixes -e STEP=own_send -e "MSG=$msg" || ob_fail "H1 $1: the own_send flow failed"
+  sleep 5
+  if [ "$1" = lost ]; then
+    ob_expect "H1 lost: the first Claude read it and lost it" "$(fx_count dropped "$msg")" 1
+    ob_expect "H1 lost: nobody answered it yet" "$(fx_count answered "$msg")" 0
+  else
+    ob_expect "H1 answered: answered before the drop" "$(fx_count answered "$msg")" 1
+  fi
+  ob_drop_ssh
+  sleep 12
+  sudo rm -f "$FX_DROP"
+  ob_restore_ssh
+  flow chat_fixes -e STEP=own_back -e "MSG=$msg" || ob_fail "H1 $1: the own_back flow failed"
+  # A second send, if one were coming, would have been read by now.
+  sleep 10
+  if [ "$1" = lost ]; then
+    ob_expect "H1 lost: read by two processes, the old and the new" "$(fx_count received "$msg" pids)" 2
+  else
+    ob_expect "H1 answered: read by one process alone" "$(fx_count received "$msg" pids)" 1
+  fi
+  ob_expect "H1 $1: answered exactly once" "$(fx_count answered "$msg")" 1
+  ob_expect "H1 $1: the transcript holds it exactly once" "$(fx_turns "$FX_OWN_SID" "$msg")" 1
+  ob_expect "H1 $1: delivered, so the device keeps no word of it" "$(ob_kept "$msg")" 0
+  echo "fixes log:"; sudo cat "$FX_LOG" 2>/dev/null
+  echo "::endgroup::"
+}
+
+# H2, both ways: a message sent behind a Retry the host is slow to look in the
+# transcript for. With SWITCH, another session is picked while both wait: the
+# message is kept for the session it was written for and typed nowhere.
+# Without, it goes to that session, once.
+fx_h2() { # switch|stay
+  local first="fixes two first $1" msg="fixes two behind $1"
+  echo "::group::chat_fixes H2 ($1): a message sent behind a slow Retry"
+  ob_reset
+  ob_restore_ssh
+  sudo rm -f "$FX_LOG"
+  flow chat_fixes -e STEP=two_open || ob_fail "H2 $1: the two_open flow failed"
+  ob_type 'a draft of my own'
+  sleep 1
+  flow chat_fixes -e STEP=two_draft -e "MSG=$first" || ob_fail "H2 $1: the two_draft flow failed"
+  ob_clear_draft
+  ob_mark
+  ob_host touch "$FX_SLOW"
+  if [ "$1" = switch ]; then
+    # The Retry, the message behind it and the switch, in one flow.
+    flow chat_fixes -e STEP=two_switch -e "MSG=$msg" || ob_fail "H2 switch: the two_switch flow failed"
+    sudo rm -f "$FX_SLOW"
+    flow chat_fixes -e STEP=two_left -e "MSG=$msg" || ob_fail "H2 switch: the two_left flow failed"
+    sleep 10
+    ob_expect "H2 switch: the session picked meanwhile never read it" "$(fx_count received "$msg")" 0
+    ob_expect "H2 switch: the pane left never read it" "$(ob_sent "$msg")" 0
+    ob_expect "H2 switch: its transcript holds none" "$(ob_turns "$msg")" 0
+    ob_expect "H2 switch: the other session's transcript holds none" "$(fx_turns "$FX_SHORT_SID" "$msg")" 0
+    ob_expect "H2 switch: kept on the device" "$(ob_kept "$msg")" 1
+    ob_expect "H2 switch: kept as failed, with the reason" \
+      "$(ob_device | grep -c 'moved to another session before it went')" 1
+  else
+    flow chat_fixes -e STEP=two_retry -e "MSG=$msg" || ob_fail "H2 stay: the two_retry flow failed"
+    sudo rm -f "$FX_SLOW"
+    flow chat_fixes -e STEP=two_stay -e "MSG=$msg" || ob_fail "H2 stay: the two_stay flow failed"
+    sleep 10
+    ob_expect "H2 stay: the pane read it exactly once" "$(ob_sent "$msg")" 1
+    ob_expect "H2 stay: its transcript holds it exactly once" "$(ob_turns "$msg")" 1
+    ob_expect "H2 stay: no other session read it" "$(fx_count received "$msg")" 0
+    ob_expect "H2 stay: delivered, so the device keeps nothing of it" "$(ob_kept "$msg")" 0
+  fi
+  sudo rm -f "$FX_SLOW"
+  echo "::endgroup::"
+}
+
+# M3, both ways. With STARTED, `claude --bg` names a session nothing lists:
+# the chat says where it is and offers no Retry, so it is started once.
+# Without, it starts nothing, and Retry starts it again.
+fx_m3() { # started|none
+  local msg="fixes new $1"
+  echo "::group::chat_fixes M3 ($1): a new chat's first message"
+  ob_reset
+  ob_restore_ssh
+  sudo rm -f "$FX_BG_LOG" "$FX_BG_FAIL"
+  if [ "$1" = started ]; then
+    flow chat_fixes -e STEP=new_send -e "MSG=$msg" || ob_fail "M3 started: the new_send flow failed"
+    sleep 5
+    ob_expect "M3 started: claude --bg ran once" "$(fx_lines "$FX_BG_LOG")" 1
+    ob_expect "M3 started: with the message" "$(sudo grep -c -- "$msg" "$FX_BG_LOG")" 1
+  else
+    ob_host touch "$FX_BG_FAIL"
+    flow chat_fixes -e STEP=new_fail -e "MSG=$msg" || ob_fail "M3 none: the new_fail flow failed"
+    ob_expect "M3 none: claude --bg ran once" "$(fx_lines "$FX_BG_LOG")" 1
+    flow chat_fixes -e STEP=new_retry -e "MSG=$msg" || ob_fail "M3 none: the new_retry flow failed"
+    sleep 5
+    ob_expect "M3 none: Retry ran claude --bg again" "$(fx_lines "$FX_BG_LOG")" 2
+  fi
+  echo "--bg log:"; sudo cat "$FX_BG_LOG" 2>/dev/null
+  sudo rm -f "$FX_BG_FAIL"
+  echo "::endgroup::"
+}
+
+chat_fixes() {
+  OB_STATUS=0
+  fx_setup || { fx_teardown; return 1; }
+  fx_h1 lost
+  fx_h1 answered
+  fx_h2 switch
+  fx_h2 stay
+  fx_m3 started
+  fx_m3 none
+  ob_restore_ssh
+  keep_shots 'chat-fixes-*.png'
+  fx_teardown
+  local status=$OB_STATUS
+  chat_fixes_ask || status=1
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -3476,6 +3735,7 @@ done
 u_folder_zip() { report_bare folder_zip folder_zip; }
 u_chat_outbox() { report_bare chat_outbox chat_outbox; }
 u_chat_outbox_reconnect() { report_bare chat_outbox_reconnect chat_outbox_reconnect; }
+u_chat_fixes() { report_bare chat_fixes chat_fixes; }
 u_chat_edit_previous() { gate chat_edit_previous chat_edit_previous; }
 u_chat_follow_jump() { gate chat_follow_jump chat_follow_jump; }
 for name in chat_ask_watched chat_slash chat_ask \
