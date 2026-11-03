@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text editor_save file_editor text_size)
+  md_rich_text md_rich_speed editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -779,6 +779,130 @@ md_rich_text() {
   return "$status"
 }
 
+
+# Rich text on a long file, sections away from the caret shaped as blanks
+# while no screen reader is on (.maestro/md_rich_speed.yaml): an 83 KB
+# README-like file, read off the host. Maestro reads the app through
+# Android's accessibility, which turns Flutter's semantics on, so here the
+# field is drawn for a screen reader. Asserted:
+#   - opened in Rich text, not refused to Source, and nothing written;
+#   - the far section's own words are in the accessibility text, not spaces
+#     (Maestro turns semantics on, so a check of the tree: it holds even with
+#     blanking forced on, run 41615231879; the desktop tests guard the blanks);
+#   - 20 characters typed mid-document and saved: the file is the original
+#     with exactly those 20 inserted, at one place in its middle;
+#   - the far section tapped shows its words;
+#   - the whole document selected and copied, pasted over the one word of a
+#     plain .txt and saved: the .txt holds the document's own text, the far
+#     section's words included and no run of spaces the document lacks.
+md_rich_speed() {
+  local status=0 home=/home/$SSH_USER old=1577836800
+  local file=$home/jeansh-e2e-speed.md paste=$home/jeansh-e2e-paste.txt
+  local typed=abcdefghijklmnopqrst verdict
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_rich_speed: $what"
+      status=1
+    fi
+  }
+  local orig
+  orig=$(mktemp)
+  python3 - "$orig" <<'PY'
+import sys
+parts = ['# Jeansh e2e speed\n\nA README-like file for Rich text.\n']
+i = 0
+while sum(map(len, parts)) < 83 * 1024:
+    s = (f'## Section {i}\n\nSome **bold** text, _italic_, `code` and a '
+         f'[link](https://example.com/{i}) in a paragraph long enough to wrap '
+         f'onto a second line, word{i}x.\n\n- one {i}\n- [ ] task {i}\n')
+    if i % 5 == 0:
+        s += f'\n```sh\necho {i}\n```\n'
+    if i % 7 == 0:
+        s += f'\n| a | b |\n|---|---|\n| {i} | x |\n'
+    parts.append(s)
+    i += 1
+parts.append('## Far section\n\nquokkafar marmalade zephyr lantern.\n')
+open(sys.argv[1], 'w').write('\n'.join(parts))
+PY
+  echo "the document: $(wc -c <"$orig") bytes, $(wc -l <"$orig") lines"
+  sudo install -o "$SSH_USER" -m 644 "$orig" "$file"
+  sudo touch -d "@$old" "$file"
+  printf 'pastehere\n' | sudo -u "$SSH_USER" tee "$paste" >/dev/null
+
+  flow md_rich_speed -e STEP=open || { rm -f "$orig"; return 1; }
+  sleep 2
+  check 'opened in Rich text, nothing was written' \
+    [ "$(sudo stat -c %Y "$file")" = "$old" ]
+  check "the far section's words are in the accessibility text" \
+    flow md_rich_speed -e STEP=far
+
+  flow md_rich_speed -e STEP=mid || status=1
+  # Down 600 lines with the arrow key, from the top: touch flings left the
+  # page at its top on CI (run 41658674844).
+  local _
+  for _ in 1 2 3 4 5 6; do
+    # shellcheck disable=SC2046
+    adb shell input keyevent $(printf 'KEYCODE_DPAD_DOWN %.0s' $(seq 100))
+  done
+  sleep 1
+  adb shell input text "$typed"
+  sleep 2
+  flow md_rich_speed -e STEP=save || status=1
+  sleep 2
+  verdict=$(sudo cat "$file" | python3 -c '
+import sys
+a = open(sys.argv[1]).read()
+b = sys.stdin.read()
+p = 0
+while p < min(len(a), len(b)) and a[p] == b[p]:
+    p += 1
+s = 0
+while s < min(len(a), len(b)) - p and a[-1 - s] == b[-1 - s]:
+    s += 1
+print(f"{len(b) - len(a)} {b[p:len(b) - s]!r} {a[p:len(a) - s]!r} {p / len(a):.2f}")
+' "$orig")
+  echo "the save, against the original: grew by, inserted, removed, at: $verdict"
+  check 'the save is the original with exactly the 20 typed characters' \
+    [ "${verdict% *}" = "20 '$typed' ''" ]
+  check 'typed mid-document' \
+    awk -v f="${verdict##* }" 'BEGIN { exit !(f > 0.05 && f < 0.95) }'
+
+  # To the end with Ctrl+End, the keyboard up from a tap first.
+  flow md_rich_speed -e STEP=focus || status=1
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_MOVE_END
+  sleep 2
+  check "the far section tapped shows its words" \
+    flow md_rich_speed -e STEP=bottom
+  flow md_rich_speed -e STEP=copy || status=1
+  flow md_rich_speed -e STEP=paste || status=1
+  flow md_rich_speed -e STEP=save || status=1
+  sleep 2
+  verdict=$(sudo cat "$paste" | python3 -c '
+import re, sys
+doc = open(sys.argv[1]).read()
+got = sys.stdin.read()
+runs = max((len(m) for m in re.findall(" +", got)), default=0)
+print("same" if got.rstrip("\n") == doc.rstrip("\n") else "differs",
+      "far" if "quokkafar marmalade zephyr lantern." in got else "nofar",
+      "word200x" if "word200x" in got else "nomid",
+      runs, len(got), len(doc))
+' "$file")
+  echo "the pasted .txt against the saved document: $verdict"
+  check "the paste holds the far section's words" grep -q ' far ' <<<" $verdict "
+  check 'the paste holds a middle section' grep -q ' word200x ' <<<" $verdict "
+  check 'the paste has no run of spaces the document lacks' \
+    awk -v r="$(cut -d' ' -f4 <<<"$verdict")" 'BEGIN { exit !(r < 4) }'
+  check 'the paste is the document, byte for byte' grep -q '^same ' <<<"$verdict"
+
+  flow md_rich_speed -e STEP=close || status=1
+  sudo rm -f "$file" "$paste"
+  rm -f "$orig"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-speed-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
 # #253: an .html file opens rendered in a web tab, and a .txt file still opens
 # in the editor. Both files go in the login home, the root of the host's file
 # tree, and are gone with the runner.
@@ -3487,6 +3611,7 @@ done
 # land, on main or in the redesign. It wants its checks moved to this host.
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
+u_md_rich_speed() { report_bare md_rich_speed md_rich_speed; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.

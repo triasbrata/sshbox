@@ -1,0 +1,196 @@
+# A long Markdown file in Rich text, where sections away from the caret are
+# shaped as blanks while no screen reader is on: tools/e2e_android.sh's
+# md_rich_speed puts an 83 KB README-like jeansh-e2e-speed.md and a small
+# jeansh-e2e-paste.txt in the login home, types and reads the files on the
+# host between this flow's steps.
+#
+# Maestro reads the app through Android's accessibility, which turns Flutter's
+# semantics on, so on the emulator nothing is ever blanked: what this proves
+# is the screen reader's side, with the desktop tests (desktop_smoke_test)
+# proving the blanks. The field's accessibility text holds the far words
+# even with blanking forced on (run 41615231879), so `far` is a check of the
+# tree, never a guard of the blanking.
+#
+# Gboard is up from the open on, and the editor is the band between the
+# file's header and the keyboard, about 28% to 55% down the 320x640
+# emulator: every swipe and tap stays in it. A swipe across Gboard
+# glide-types words, hideKeyboard with no keyboard up is Back, which closes
+# the tab, and a slow swipe is a long press that drags the caret, so the
+# swipes are quick flings.
+#
+# STEP comes from -e alone (see chat_images.yaml):
+#   open    the file opened from the drawer, in Rich text, nothing to save
+#   far     the far section's own words in the field's accessibility text
+#   mid    scrolled to the middle and the text tapped, for the caret
+#   save    Unsaved changes, then Save to host and nothing unsaved
+#   focus   the text tapped, for the caret and the keyboard
+#   bottom  at the end, the far section tapped: its words shown
+#   copy    the whole document selected and copied with the toolbar
+#   paste   jeansh-e2e-paste.txt opened, its one word long-pressed, Paste
+#   close   both file tabs closed
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+  FILE: "jeansh-e2e-speed.md"
+  FAR: "(?s).*quokkafar marmalade zephyr lantern.*"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - stopApp
+      - launchApp:
+          clearState: false
+      - extendedWaitUntil:
+          visible: '(?s).*${HOST_LABEL}.*\n.*'
+          timeout: 15000
+      - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Browse files"
+          timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - inputText: "jeansh-e2e-speed"
+      - tapOn: "(?s)\\W*${FILE}"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 30000
+      # In Rich text, not refused to Source as too large.
+      - extendedWaitUntil:
+          visible: "(?s).*A README-like file for Rich text\\..*"
+          timeout: 15000
+      - assertNotVisible: "(?s).*Too large for Rich text.*"
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      - takeScreenshot: md-rich-speed-opened
+
+- runFlow:
+    when:
+      true: ${STEP == 'far'}
+    commands:
+      # The field's text, as a screen reader reads it: the last section's
+      # own words, not the spaces it is shaped as with no reader on.
+      - assertVisible: "${FAR}"
+
+- runFlow:
+    when:
+      true: ${STEP == 'focus'}
+    commands:
+      - tapOn:
+          point: "50%,42%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'mid'}
+    commands:
+      # Flung up eight times, as a reader scrolls, and looked at: on CI the
+      # page stayed at its top (run 41658674844), so the caret is moved
+      # with the arrow keys after this, by tools/e2e_android.sh.
+      - repeat:
+          times: 8
+          commands:
+            - swipe:
+                start: "50%,53%"
+                end: "50%,30%"
+                duration: 250
+      - waitForAnimationToEnd
+      - takeScreenshot: md-rich-speed-flung
+      - tapOn:
+          point: "50%,42%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'save'}
+    commands:
+      - extendedWaitUntil:
+          visible: "(?s).*Unsaved changes.*"
+          timeout: 10000
+      - takeScreenshot: md-rich-speed-edited
+      - tapOn: "Save to host"
+      - extendedWaitUntil:
+          notVisible: "(?s).*Unsaved changes.*"
+          timeout: 20000
+
+- runFlow:
+    when:
+      true: ${STEP == 'bottom'}
+    commands:
+      # tools/e2e_android.sh has put the caret at the end with Ctrl+End:
+      # the end of the document, the far section, at the band's foot.
+      - takeScreenshot: md-rich-speed-bottom
+      - tapOn:
+          point: "50%,52%"
+      - waitForAnimationToEnd
+      - assertVisible: "${FAR}"
+      - takeScreenshot: md-rich-speed-far-tapped
+
+- runFlow:
+    when:
+      true: ${STEP == 'copy'}
+    commands:
+      - longPressOn:
+          point: "50%,45%"
+      - extendedWaitUntil:
+          visible: "Select all"
+          timeout: 5000
+      - tapOn: "Select all"
+      - extendedWaitUntil:
+          visible: "Copy"
+          timeout: 5000
+      - assertNotVisible: "Select all"
+      - tapOn: "Copy"
+      - assertNotVisible: "Copy"
+
+- runFlow:
+    when:
+      true: ${STEP == 'paste'}
+    commands:
+      # The Markdown file saved, closed with no question: Browse files is
+      # the terminal's.
+      - tapOn: "Close file"
+      - waitForAnimationToEnd
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - eraseText
+      - inputText: "jeansh-e2e-paste"
+      - tapOn: "(?s)\\W*jeansh-e2e-paste.txt"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      # The file's one word, pastehere, where file_editor.yaml finds the
+      # first word on this emulator; selected, so the paste replaces it.
+      - longPressOn:
+          point: "25%,22%"
+      - runFlow:
+          when:
+            notVisible: "Paste"
+          commands:
+            - longPressOn:
+                point: "25%,29%"
+      - extendedWaitUntil:
+          visible: "Paste"
+          timeout: 5000
+      - tapOn: "Paste"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'close'}
+    commands:
+      - tapOn: "Close file"
+      - waitForAnimationToEnd

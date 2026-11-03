@@ -26,7 +26,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show DropdownButton, IconButton, Icons, InkWell, TextField, Tooltip;
-import 'package:flutter/rendering.dart' show OffsetLayer, RenderParagraph;
+import 'package:flutter/rendering.dart'
+    show OffsetLayer, RenderParagraph, SemanticsBinding;
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -660,11 +661,16 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
 /// testWidgets, with a skip that says why in the log: flutter test prints only
 /// a skipped test's name, and a skip is no coverage, so it has to be read as
 /// one.
-void _test(String name, WidgetTesterCallback body, {String? skip}) {
+void _test(
+  String name,
+  WidgetTesterCallback body, {
+  String? skip,
+  bool semantics = true,
+}) {
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(name, body, skip: skip != null, semanticsEnabled: semantics);
 }
 
 const _powershell =
@@ -9428,6 +9434,164 @@ touch '${done.path}'
     },
   );
 
+  // A README-like file of about [kb] KB for Rich text, ending in a section of
+  // words found nowhere else.
+  String readme(int kb) {
+    final parts = ['# Jeansh e2e speed\n\nA README-like file for Rich text.\n'];
+    var size = parts.first.length;
+    for (var i = 0; size < kb * 1024; i++) {
+      final s = StringBuffer(
+        '## Section $i\n\nSome **bold** text, _italic_, `code` and a '
+        '[link](https://example.com/$i) in a paragraph long enough to wrap '
+        'onto a second line, word${i}x.\n\n- one $i\n- [ ] task $i\n',
+      );
+      if (i % 5 == 0) s.write('\n```sh\necho $i\n```\n');
+      if (i % 7 == 0) s.write('\n| a | b |\n|---|---|\n| $i | x |\n');
+      parts.add('$s');
+      size += s.length + 1;
+    }
+    parts.add('## Far section\n\n$_far\n');
+    return parts.join('\n');
+  }
+
+  // The Rich text limit, 240 KB: a 200 KB file opens in Rich text, where it
+  // used to say it was too large and show Source; a 250 KB file still says
+  // so. A mutation with the limit back at 160 KB opens 200 KB in Source.
+  _test(
+    'rich text: a 200 KB file opens in Rich text, and a 250 KB one in Source '
+    'with the toast',
+    skip: editorSkip,
+    (tester) async {
+      final rich = find.byType(MarkdownRichEditor);
+      final tooLarge = find.textContaining('Too large for Rich text');
+      var k = await _EditorSave.start(tester, 'big200.md', text: readme(200));
+      debugPrint('rich text limit: 200 KB file is ${k.initial.length} chars');
+      await _grab(tester, 'desktop-md-rich-speed-200kb');
+      expect(rich, findsOneWidget, reason: '200 KB not opened in Rich text');
+      expect(tooLarge, findsNothing, reason: '200 KB said too large');
+      await _closeTabs(tester);
+
+      k = await _EditorSave.start(tester, 'big250.md', text: readme(250));
+      debugPrint('rich text limit: 250 KB file is ${k.initial.length} chars');
+      expect(rich, findsNothing, reason: '250 KB opened in Rich text');
+      // The toast is up for a second from the open; asked again, it says so
+      // again and Source stays.
+      await tester.tap(_label('rich text'));
+      await _until(
+        tester,
+        () => find
+            .textContaining('Too large for Rich text (over 240 KB)')
+            .evaluate()
+            .isNotEmpty,
+        'the 250 KB file to say it is too large for Rich text',
+      );
+      await _grab(tester, 'desktop-md-rich-speed-250kb');
+      expect(rich, findsNothing, reason: '250 KB went to Rich text');
+      await _closeTabs(tester);
+    },
+  );
+
+  // A copy across sections shaped as blanks, with real keys: select all and
+  // copy in an 83 KB file, the far section drawn as spaces in the field
+  // while no screen reader is on, and the clipboard holds the file's own
+  // text, its words. Then a screen reader on (semantics): the field's text
+  // holds the far section's words, not spaces; off again, the blanks.
+  _test(
+    'rich text: a copy across a far section shaped as blanks copies its '
+    'words, and a screen reader reads them',
+    skip: editorSkip,
+    // No screen reader of the test's own: testWidgets turns semantics on
+    // unless told not to, and with it on nothing is blanked.
+    semantics: false,
+    (tester) async {
+      final original = readme(83);
+      final k = await _EditorSave.start(tester, 'speed.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      String drawn() => tester
+          .widget<EditableText>(field)
+          .controller
+          .buildTextSpan(context: tester.element(field), withComposing: false)
+          .toPlainText(includeSemanticsLabels: false);
+      int longestBlank(String s) =>
+          RegExp(r' +')
+              .allMatches(s)
+              .fold(0, (m, r) => r[0]!.length > m ? r[0]!.length : m);
+
+      await tester.showKeyboard(field);
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      final reader = SemanticsBinding.instance.semanticsEnabled;
+      var shown = drawn();
+      debugPrint(
+        'rich text blanks: screen reader $reader, the field draws the far '
+        'words: ${shown.contains(_far)}, longest blank ${longestBlank(shown)}',
+      );
+      // The platform's own accessibility on, as on CI's Mac: the field is
+      // drawn for a screen reader from the start, and nothing is blanked.
+      if (reader) {
+        expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      } else {
+        expect(shown.contains(_far), isFalse, reason: 'far not blanked');
+        expect(longestBlank(shown), greaterThan(40), reason: 'no blanks');
+      }
+
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await k.press('ctrl+a', 'keystroke "a" using command down');
+      await k.press('ctrl+c', 'keystroke "c" using command down');
+      String? copied;
+      await _until(tester, () {
+        _clipboard().then((t) => copied = t);
+        return copied != null && copied != 'untouched';
+      }, 'the copy to reach the clipboard');
+      debugPrint(
+        'rich text copy: ${copied!.length} chars of ${original.length}, '
+        'far words ${copied!.contains(_far)}, longest blank '
+        '${longestBlank(copied!)}',
+      );
+      expect(copied, original, reason: 'the copy is not the file');
+
+      // The selection back to a caret at the top, as before the copy, so
+      // what follows is the reader's doing alone.
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, caret back at the top: far words drawn '
+        '${drawn().contains(_far)}',
+      );
+
+      // A screen reader on: the far section's own words in the field's text.
+      final semantics = tester.ensureSemantics();
+      await tester.pump(const Duration(milliseconds: 300));
+      shown = drawn();
+      debugPrint(
+        'rich text, screen reader on: far words ${shown.contains(_far)}, '
+        'longest blank ${longestBlank(shown)}',
+      );
+      expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      expect(longestBlank(shown), lessThan(4), reason: 'reader on: blanks');
+      semantics.dispose();
+      // The reader let go: blanks again, as at the start. The binding may
+      // drop semantics a frame or two later.
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, reader let go: semantics '
+        '${SemanticsBinding.instance.semanticsEnabled}, far words drawn '
+        '${drawn().contains(_far)}',
+      );
+      await _until(
+        tester,
+        () => drawn().contains(_far) == reader,
+        'the reader let go: the far section drawn as at the start',
+        timeout: const Duration(seconds: 5),
+      );
+      await _closeTabs(tester);
+    },
+  );
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
   // the engine reports them. Run it in profile to read a real number.
@@ -9673,3 +9837,5 @@ class _EditorSave {
     expect(this.text(), text, reason: '$when: the text changed');
   }
 }
+
+const _far = 'quokkafar marmalade zephyr lantern.';
