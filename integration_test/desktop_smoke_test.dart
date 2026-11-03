@@ -9461,23 +9461,26 @@ touch '${done.path}'
       );
       final controller = tester.widget<EditableText>(field).controller;
       editable() => tester.state<EditableTextState>(field).renderEditable;
+      // The field's own scroller, which the page scrolls with.
+      final scroll = tester
+          .state<ScrollableState>(
+            find.descendant(of: field, matching: find.byType(Scrollable)),
+          )
+          .position;
+
       // Where [line] starts on the page: in a section drawn apart, its own
-      // paragraph; otherwise the field's text, where it is drawn.
+      // paragraph, placed as if the field were not scrolled (as the widget
+      // test reads it); otherwise the field's text, where it is drawn.
       Offset at(String line) {
-        for (final e
-            in find
-                .descendant(
-                  of: find.byType(MarkdownRichEditor),
-                  matching: find.byType(RichText),
-                )
-                .evaluate()) {
-          final p = e.renderObject! as RenderParagraph;
+        for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
           final i = p.text.toPlainText().indexOf(line);
-          if (i >= 0 && p.attached && p.hasSize) {
-            return p.localToGlobal(
-              p.getOffsetForCaret(TextPosition(offset: i), Rect.zero),
-            );
-          }
+          if (i < 0 || !p.attached || !p.hasSize) continue;
+          final boxes = p.getBoxesForSelection(
+            TextSelection(baseOffset: i, extentOffset: i + 1),
+          );
+          if (boxes.isEmpty) continue;
+          return p.localToGlobal(boxes.first.toRect().topLeft) -
+              Offset(0, scroll.pixels);
         }
         final i = text.indexOf(line);
         final box = editable()
@@ -9489,33 +9492,31 @@ touch '${done.path}'
         return editable().localToGlobal(box.topLeft);
       }
 
-      final scroll = tester
-          .stateList<ScrollableState>(
-            find.descendant(
-              of: find.byType(MarkdownRichEditor),
-              matching: find.byType(Scrollable),
-            ),
-          )
-          .first;
-      final view = scroll.context.findRenderObject()! as RenderBox;
-      final viewTop = view.localToGlobal(Offset.zero).dy;
+      final view = tester.getRect(field);
+      final middle = view.top + view.height / 2;
 
       // The caret on [inFence], so the fence shows its source, and [line]
-      // scrolled to the middle of the page.
+      // scrolled to the middle of the page: again until it holds, as
+      // sections coming into view lay out at their own heights.
       Future<void> sourceShown(String inFence, String line) async {
         await tester.showKeyboard(field);
         controller.selection = TextSelection.collapsed(
           offset: text.indexOf(inFence),
         );
         await tester.pump(const Duration(milliseconds: 300));
-        final p = scroll.position;
-        p.jumpTo(
-          (p.pixels + at(line).dy - viewTop - view.size.height / 2).clamp(
-            p.minScrollExtent,
-            p.maxScrollExtent,
-          ),
+        for (var i = 0; i < 4; i++) {
+          scroll.jumpTo(
+            (scroll.pixels + at(line).dy - middle).clamp(
+              scroll.minScrollExtent,
+              scroll.maxScrollExtent,
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        debugPrint(
+          'rich text caret: "$line" at ${at(line).dy}, the page\'s middle '
+          '$middle, the page ${view.top} to ${view.bottom}',
         );
-        await tester.pump(const Duration(milliseconds: 300));
       }
 
       // How far [line] moved on the page while [act] ran.
