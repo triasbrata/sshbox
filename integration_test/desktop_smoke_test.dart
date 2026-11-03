@@ -9554,6 +9554,16 @@ touch '${done.path}'
       );
       expect(copied, original, reason: 'the copy is not the file');
 
+      // The selection back to a caret at the top, as before the copy, so
+      // what follows is the reader's doing alone.
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, caret back at the top: far words drawn '
+        '${drawn().contains(_far)}',
+      );
+
       // A screen reader on: the far section's own words in the field's text.
       final semantics = tester.ensureSemantics();
       await tester.pump(const Duration(milliseconds: 300));
