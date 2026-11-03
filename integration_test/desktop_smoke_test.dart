@@ -9603,7 +9603,26 @@ pie title E2E pets
           await tester.pump(const Duration(milliseconds: 300));
           debugPrint('rich text: clicking Open in Mermaid');
           await _realPointer(() async {
-            final at = tester.getCenter(button);
+            // Where it is drawn: an inline block's reported centre sits one
+            // field-scroll below it (RenderEditable's paint transform leaves
+            // its scroll offset out, which hit testing takes off), so the
+            // field's own scroll is taken off here.
+            final scrolled = tester
+                .state<ScrollableState>(
+                  find
+                      .descendant(
+                        of: find.descendant(
+                          of: find.byType(MarkdownRichEditor),
+                          matching: find.byType(EditableText),
+                        ),
+                        matching: find.byType(Scrollable),
+                      )
+                      .first,
+                )
+                .position
+                .pixels;
+            final at = tester.getCenter(button) - Offset(0, scrolled);
+            debugPrint('rich text: the field is scrolled $scrolled px');
             await _osMouse(tester, [
               'move ${at.dx} ${at.dy}',
               'down',
