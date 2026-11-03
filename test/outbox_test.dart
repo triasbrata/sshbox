@@ -482,6 +482,29 @@ void main() {
       expect(file.existsSync(), isFalse);
     });
 
+    test('only the newest claims are kept past the cap', () async {
+      final key = OutboxStore.keyOf('h', 's');
+      final now = DateTime.now().toUtc();
+      await store.save(
+        key,
+        OutboxBox(
+          entries: [_entry('a', 'x', now)],
+          claims: [
+            for (var i = 0; i < OutboxBox.claimsCap + 5; i++)
+              OutboxClaim.of('c$i', now),
+          ],
+          provedAt: now,
+        ),
+      );
+      final read = (await store.load(key)).claims;
+      expect(read, hasLength(OutboxBox.claimsCap));
+      expect(read.first.digest, OutboxClaim.digestOf('c5'));
+      expect(
+        read.last.digest,
+        OutboxClaim.digestOf('c${OutboxBox.claimsCap + 4}'),
+      );
+    });
+
     test('claims too old to match any message waiting are dropped', () async {
       final key = OutboxStore.keyOf('h', 's');
       final now = DateTime.now().toUtc();

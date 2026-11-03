@@ -6502,6 +6502,80 @@ void main() {
       expect(chat.watching?.id, '9e1f2a3b');
     });
 
+    /// A new chat whose `claude --bg` starts 9e1f2a3b, which [listed] says
+    /// the host lists, or not, with what it ran in `commands`.
+    (ClaudeChat, _LiveHost, List<String>) startingWithPictures({
+      bool listed = true,
+    }) {
+      final host = _LiveHost('0\n');
+      final commands = <String>[];
+      final chat = ClaudeChat(
+        open: (command) async {
+          commands.add(command);
+          if (command.contains(' --bg ')) {
+            return _says(
+              'backgrounded · 9e1f2a3b (idle — send a prompt to start)\n',
+            );
+          }
+          return host.open(command);
+        },
+        openTerminal: host.openTerminal,
+        startLook: const Duration(milliseconds: 1),
+      );
+      addTearDown(chat.dispose);
+      if (listed) {
+        host.listed = {
+          'pid': 7,
+          'id': '9e1f2a3b',
+          'cwd': '/srv/app',
+          'kind': 'background',
+          'sessionId': '9e1f2a3b-0000-4000-8000-000000000000',
+          'name': '9e1f2a3b',
+          'status': 'idle',
+          'state': 'blocked',
+        };
+      }
+      return (chat, host, commands);
+    }
+
+    test('a new chat whose session started but whose pictures could not be '
+        'put in it is failed, and Retry sends nobody a second session',
+        () async {
+      final (chat, _, commands) = startingWithPictures();
+      await chat.send(
+        '[Image #1] what is this?',
+        pictures: [picture('a.png', 1)],
+        upload: (picture) async => throw StateError('no room on the host'),
+      );
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.startedAs, '9e1f2a3b');
+      expect(chat.retry(said), contains('started as 9e1f2a3b'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(commands.where((c) => c.contains(' --bg ')), hasLength(1));
+    });
+
+    test('a new chat with pictures whose session started and is not listed '
+        'is failed, pointing to that session, and Retry starts no other',
+        () async {
+      final (chat, _, commands) = startingWithPictures(listed: false);
+      await chat.send(
+        '[Image #1] what is this?',
+        pictures: [picture('a.png', 1)],
+        upload: (picture) async => '/tmp/${picture.name}',
+      );
+
+      final said = chat.entries.whereType<ChatSaid>().single;
+      expect(said.delivery, Delivery.failed);
+      expect(said.startedAs, '9e1f2a3b');
+      expect(said.why, startsWith('Not sent: '));
+      expect(said.why, contains('claude attach 9e1f2a3b'));
+      expect(chat.retry(said), contains('started as 9e1f2a3b'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(commands.where((c) => c.contains(' --bg ')), hasLength(1));
+    });
+
     test('a transcript\'s pictures are kept to draw, numbered as it numbered '
         'them, and one too big is left out', () async {
       final big = 'A' * (ClaudeChat.pictureLimit * 2);
@@ -9531,6 +9605,76 @@ void main() {
       expect(kept.why, contains('moved to another session'));
     });
 
+    test('a Retry waiting behind a slow send, in a chat then closed, is kept '
+        'failed, and its bubble says why', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true)
+        ..typedAnswer = 'sshbox:no draft\n';
+      final chat = ClaudeChat(
+        open: host.open,
+        openTerminal: host.openTerminal,
+        hostKey: 'h1',
+        outbox: flaky,
+        backoff: (_) => null,
+      );
+      await chat.continueFrom(_interactive);
+      chat.send('try me later');
+      await until(
+        () =>
+            chat.entries.whereType<ChatSaid>().firstOrNull?.delivery ==
+            Delivery.failed,
+      );
+      final failed = chat.entries.whereType<ChatSaid>().single;
+
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      expect(chat.retry(failed), isNull);
+      await _settle();
+      chat.dispose();
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await wait(100);
+
+      expect(failed.delivery, Delivery.failed);
+      expect(failed.why, contains('the chat closed before it went'));
+      final kept = (await flaky.inner.load(key)).entries
+          .where((e) => e.text == 'try me later')
+          .single;
+      expect(kept.failed, isTrue);
+      expect(kept.why, contains('the chat closed before it went'));
+    });
+
+    test('a message the chat moved away from whose picture cannot be copied '
+        'says so, with what was written', () async {
+      final flaky = _FlakyStore(OutboxStore.memory());
+      final host = _LiveHost('0\n', interactive: true);
+      final chat = make(host, outbox: flaky);
+      await chat.continueFrom(_interactive);
+      final shot = File('${dir.path}/shot.png')..writeAsBytesSync([1, 2]);
+      flaky.saveGate = Completer<void>();
+      final slow = chat.send('first, slow to save');
+      await _settle();
+      final behind = chat.send(
+        '[Image #1] with a picture',
+        pictures: [ChatPicture(path: shot.path, name: 'shot.png', number: 1)],
+      );
+      await _settle();
+      await chat.newChat();
+      flaky.copyFails = true;
+      flaky.saveGate!.complete();
+      flaky.saveGate = null;
+      await slow;
+      await behind;
+      await wait(100);
+
+      final notice = chat.entries.whereType<ChatNotice>().last.text;
+      expect(notice, contains('could not be kept on this device'));
+      expect(notice, contains('copy refused'));
+      expect(notice, contains('with a picture'));
+    });
+
     test('a message the chat moved away from that cannot be kept on the '
         'device says so, with what was written', () async {
       final flaky = _FlakyStore(OutboxStore.memory());
@@ -10523,6 +10667,9 @@ class _FlakyStore extends OutboxStore {
 
   final OutboxStore inner;
   bool failSave = false;
+
+  /// A copy of a picture fails with an error that is no [OutboxException].
+  bool copyFails = false;
   Completer<void>? saveGate;
 
   @override
@@ -10543,7 +10690,9 @@ class _FlakyStore extends OutboxStore {
 
   @override
   Future<String> copyPicture(String entryId, String name, String source) =>
-      inner.copyPicture(entryId, name, source);
+      copyFails
+      ? Future.error(StateError('copy refused'))
+      : inner.copyPicture(entryId, name, source);
 
   @override
   Future<void> dropPictures(String entryId) => inner.dropPictures(entryId);
