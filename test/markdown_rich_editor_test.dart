@@ -50,10 +50,12 @@ Future<_Host> _pump(
                 host.changes.add((t, coalesce));
                 setState(() => host.text = t);
               },
-              blockBuilder: blockBuilder ?? (context, md) => Text(
-                'RENDERED ${md.split('\n').first}',
-                key: ValueKey('rendered ${md.hashCode}'),
-              ),
+              blockBuilder:
+                  blockBuilder ??
+                  (context, md) => Text(
+                    'RENDERED ${md.split('\n').first}',
+                    key: ValueKey('rendered ${md.hashCode}'),
+                  ),
               onOpenLink: host.opened.add,
               onRefused: host.refused.add,
               askLink: (_) async => host.linkAnswer,
@@ -235,6 +237,15 @@ void main() {
     );
     expect(after, contains('**Second'));
   });
+
+  testWidgets('types only what is typed: no smart dashes or quotes', (
+    tester,
+  ) async {
+    await _pump(tester, 'a -- "b"\n');
+    final field = tester.widget<EditableText>(find.byType(EditableText));
+    expect(field.smartDashesType, SmartDashesType.disabled);
+    expect(field.smartQuotesType, SmartQuotesType.disabled);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
 
   testWidgets('# typed at a line start makes a heading', (tester) async {
     final host = await _pump(tester, 'Intro\n\n\n\nEnd');
