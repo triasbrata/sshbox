@@ -550,6 +550,11 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     widget.controller?._changed();
     _placeBar();
     _placeTaskNodes();
+    final was = _was;
+    _was = _text.value;
+    if (was.text == _text.text && was.selection != _text.selection) {
+      _holdLine(_text.selection);
+    }
     final text = _text.text;
     if (text == _known) return;
     _known = text;
@@ -558,6 +563,90 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         _typing && now.difference(_lastAt) < const Duration(milliseconds: 1500);
     _lastAt = now;
     widget.onChanged(text, coalesce: coalesce);
+  }
+
+  /// The field's value as [_onText] last saw it.
+  late TextEditingValue _was = _text.value;
+
+  /// Keeps the line the caret has gone to where it was on the page.
+  ///
+  /// Moving the caret draws the block it left as rendered again and the
+  /// one it went to as its source, which are seldom the same height: when
+  /// the one left is above, everything below it moved, the place just
+  /// tapped or arrowed to with it. That place is measured before the frame
+  /// and after it, and the page scrolled by the difference, so it stays
+  /// under the finger. The place is the start of the caret's line, or,
+  /// where that line was not drawn as text before the frame, the start of
+  /// the block or section it was drawn apart in. Only a selection moved,
+  /// with no text changed, and only while that place is on the page.
+  void _holdLine(TextSelection sel) {
+    final editable = _editable;
+    if (!sel.isValid ||
+        editable == null ||
+        !editable.attached ||
+        !editable.hasSize ||
+        !_scroll.hasClients) {
+      return;
+    }
+    final live = _text.live;
+    final at = sel.extentOffset;
+    var line = 0;
+    for (final l in live.lines) {
+      if (l.start > at) break;
+      line = l.start;
+    }
+    // Where the line was drawn apart: the section, a widget whose top is
+    // where its first line is; or else a block drawn rendered.
+    var block = line;
+    for (final w in live.sections) {
+      if (w.start <= line && line < w.end) block = w.start;
+    }
+    for (final w in live.swaps) {
+      final whole = switch (w.kind) {
+        MdSwapKind.table ||
+        MdSwapKind.fence ||
+        MdSwapKind.image ||
+        MdSwapKind.frontMatter ||
+        MdSwapKind.details => true,
+        _ => false,
+      };
+      if (whole && w.range.start <= at && at < w.range.end) {
+        block = w.range.start;
+      }
+    }
+    Rect? place(RenderEditable e, int k) {
+      if (k >= _text.text.length) return null;
+      final boxes = e.getBoxesForSelection(
+        TextSelection(baseOffset: k, extentOffset: k + 1),
+      );
+      if (boxes.isEmpty) return null;
+      final r = boxes.first.toRect();
+      // A hidden character is drawn a hundredth of a pixel high.
+      return r.height > 2 ? r : null;
+    }
+
+    var anchor = line;
+    var before = place(editable, line);
+    if (before == null) {
+      anchor = block;
+      before = place(editable, block);
+    }
+    if (before == null || before.top < 0 || before.top > editable.size.height) {
+      return;
+    }
+    final top = before.top;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      final e = _editable;
+      if (!mounted || e == null || !e.attached || !_scroll.hasClients) return;
+      final after = place(e, anchor);
+      if (after == null) return;
+      final moved = after.top - top;
+      if (moved.abs() < 1) return;
+      final pos = _scroll.position;
+      _scroll.jumpTo(
+        (pos.pixels + moved).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+      );
+    });
   }
 
   /// Sets the text from a command: one undo step of its own.
