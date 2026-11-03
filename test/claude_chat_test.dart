@@ -9381,7 +9381,12 @@ void main() {
       final now = t.chat.entries.whereType<ChatSaid>().single;
       expect(now.text, 'keep me');
       expect(now.delivery, Delivery.sending);
-      expect((await onDisk()).entries.single.failed, isFalse);
+      expect(
+        (await onDiskOnce(
+          (box) => box.entries.singleOrNull?.failed == false,
+        )).entries.single.failed,
+        isFalse,
+      );
     });
 
     test('a message waiting for its next try when Claude is restarted from '
