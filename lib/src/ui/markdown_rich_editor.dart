@@ -863,6 +863,8 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
 
   void _onPointerDown(PointerDownEvent event) {
     _pointerDown = true;
+    _blockPress = false;
+    _selectionAtDown = _text.selection;
     _bar.value = null;
     final keys = HardwareKeyboard.instance;
     if (keys.isControlPressed || keys.isMetaPressed) {
@@ -899,9 +901,12 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     // The press landed on a section drawn apart, which the field only knows
     // as one character: once the tap has put the caret there, it goes where
     // the press really was.
+    final atDown = _selectionAtDown;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       if (!mounted || precise > _text.text.length) return;
       final sel = _text.selection;
+      // The field did not take the tap: a button in a block did.
+      if (sel == atDown) return;
       if (sel.isValid && sel.isCollapsed && sel.baseOffset != precise) {
         _text.selection = TextSelection.collapsed(offset: precise);
       }
@@ -1014,9 +1019,23 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   void _sectionDown(_SectionView view, int offset) {
     final start = view.handle.start;
     _precise = start + offset;
+    // A block that takes the pointer for itself, a diagram scrolled
+    // sideways or its button, is left where it is: drawn again as part of
+    // the field, it would be built anew under the finger, and the drag or
+    // the tap it had begun would be lost.
+    if (_blockPress) return;
     _text.pinned = {start};
     _text.restyle();
   }
+
+  /// A press that went down inside a code block or a table, which take the
+  /// pointer for themselves; set before [_sectionDown] hears of it, the
+  /// block being deeper, and cleared by [_onPointerDown], which hears last.
+  bool _blockPress = false;
+
+  /// The selection as a press went down, to tell after it whether the
+  /// field took the tap or something in a block did.
+  TextSelection? _selectionAtDown;
 
   /// [swap] drawn; [at] says where its source starts now, for a section
   /// drawn apart while the text before it changes.
@@ -1082,10 +1101,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
       MdSwapKind.table || MdSwapKind.fence || MdSwapKind.image => block(
         IgnorePointer(
           ignoring: swap.kind == MdSwapKind.image,
-          child: _Rendered(
-            key: ValueKey(source),
-            builder: widget.blockBuilder,
-            markdown: htmlImage(source) ?? source,
+          child: Listener(
+            onPointerDown: (_) => _blockPress = true,
+            child: _Rendered(
+              key: ValueKey(source),
+              builder: widget.blockBuilder,
+              markdown: htmlImage(source) ?? source,
+            ),
           ),
         ),
       ),
