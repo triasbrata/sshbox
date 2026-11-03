@@ -28,7 +28,7 @@ cd "$ROOT"
 UNITS=(smoke connect_and_keybar
   tabs file_browser logs duplicate_session dotfiles card_tap_reconnect
   port_forward_no_host terminal_selection
-  single_instance jeansh_open2 jeansh_open share_text share_chat chat_continue_cwd
+  single_instance jeansh_open2 jeansh_open open_notify_hardening share_text share_chat chat_continue_cwd
   chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
   html_tab html_site tab_close_narrow chat_session_status chat_progress
   chat_working_backstop
@@ -2399,6 +2399,118 @@ jeansh_open() {
   return "$status"
 }
 
+# jeansh notify and jeansh open on a host (.maestro/open_notify_hardening.yaml),
+# with the host's install switch on, against this runner's sshd, whose stock
+# config takes LC_* so the direct notify variables reach the shell:
+#  - notify: the direct way succeeds (curl -f exits 0 only when the app's own
+#    listener took the bearer), with the secret among none of curl's arguments,
+#    read by a stand-in curl ahead on PATH that records only counts and then
+#    runs the real one; a secret that is not base64url is not sent that way.
+#  - nonce: a jeansh open sequence shown in one tab opens a file tab there, and
+#    the same sequence shown in a second tab on the same host opens none.
+#  - fish: with fish as the login shell the installed jeansh is byte for byte
+#    what a bash login installs.
+ONH_STATUS=0
+onh_host() { sudo -u "$SSH_USER" -H "$@"; }
+onh_fail() { echo "::error::open_notify_hardening: $1"; echo "❌ $1"; ONH_STATUS=1; }
+onh_expect() { # label got want
+  if [ "$2" = "$3" ]; then echo "✅ $1"; else onh_fail "$1: got [$2], expected [$3]"; fi
+}
+onh_cat() { sudo cat "/home/$SSH_USER/$1" 2>/dev/null; }
+
+open_notify_hardening() {
+  local home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local ref fish shell
+  ONH_STATUS=0
+  ref=$(mktemp)
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home/jn-bin" "$home"/jn*.* "$home/jn.osc"
+  onh_host sh -s <<'EOS2'
+mkdir -p "$HOME/jeansh-e2e-open" && printf 'jeansh e2e a\n' >"$HOME/jeansh-e2e-open/a.md" || exit 1
+mkdir -p "$HOME/jn-bin" || exit 1
+# Counts only, so nothing secret is written anywhere; then the real curl.
+cat >"$HOME/jn-bin/curl" <<'EOF'
+#!/bin/sh
+s=0 u=0 k=0
+for a in "$@"; do
+  if [ -n "$LC_SSHBOX_NOTIFY_SECRET" ]; then
+    case $a in *"$LC_SSHBOX_NOTIFY_SECRET"*) s=$((s + 1)) ;; esac
+  fi
+  case $a in http://127.0.0.1:*) u=1 ;; esac
+  [ "$a" = -K ] && k=1
+done
+echo "direct=$u secret_in_args=$s config_on_stdin=$k" >>"$HOME/jn.argv"
+exec /usr/bin/curl "$@"
+EOF
+chmod 755 "$HOME/jn-bin/curl"
+EOS2
+
+  echo "::group::open_notify_hardening: the switch on, a bash login installs jeansh"
+  flow jeansh_open2 -e STEP=on || onh_fail "the switch flow failed"
+  flow open_notify_hardening -e STEP=connect || onh_fail "the connect flow failed"
+  sudo cp "$bin" "$ref" 2>/dev/null || onh_fail "a bash login installed no jeansh"
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: notify"
+  flow open_notify_hardening -e STEP=notify || onh_fail "the notify flow failed"
+  echo "jeansh notify said: [$(onh_cat jn1.err | tr '\n' ' ')] then [$(onh_cat jn2.err | tr '\n' ' ')]"
+  onh_expect "notify: the shell has the direct URL and secret" "$(onh_cat jn.has | tr -d ' \n')" 2
+  onh_expect "notify: positive, delivered down the connection, exit 0" "$(onh_cat jn1.rc)" 0
+  onh_expect "notify: positive, curl had the secret in none of its arguments and its config on stdin" \
+    "$(onh_cat jn.argv | sed -n 1p)" "direct=1 secret_in_args=0 config_on_stdin=1"
+  onh_expect "notify: negative, a secret that is not base64url exits 1 (no relay key on this runner)" \
+    "$(onh_cat jn2.rc)" 1
+  onh_expect "notify: negative, and curl was not called down the connection" \
+    "$(onh_cat jn.argv | grep -c 'direct=1')" 1
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: nonce"
+  flow open_notify_hardening -e STEP=nonce || onh_fail "nonce: the flow failed (a file tab in the second tab, or none in the first)"
+  onh_expect "nonce: the sequence was written to a file, exit 0" "$(onh_cat jn3.rc)" 0
+  onh_expect "nonce: the file holds one jeansh open sequence" \
+    "$(onh_cat jn.osc | grep -c '7733;open;')" 1
+  onh_expect "nonce: the second tab's cat ran" "$(onh_cat jn4.done)" ran
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: fish"
+  fish=$(command -v fish || true)
+  if [ -z "$fish" ]; then
+    sudo apt-get install -y -qq fish >/dev/null 2>&1 ||
+      { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq fish >/dev/null 2>&1; }
+    fish=$(command -v fish || true)
+  fi
+  if [ -z "$fish" ]; then
+    onh_fail "fish: fish could not be installed, so nothing was learned"
+  else
+    shell=$(getent passwd "$SSH_USER" | cut -d: -f7)
+    sudo rm -f "$bin"
+    sudo usermod -s "$fish" "$SSH_USER"
+    onh_expect "fish: the login shell is fish" "$(getent passwd "$SSH_USER" | cut -d: -f7)" "$fish"
+    flow open_notify_hardening -e STEP=connect || onh_fail "fish: the connect flow failed"
+    sudo usermod -s "$shell" "$SSH_USER"
+    if sudo test -f "$bin"; then
+      sudo cmp "$ref" "$bin" && echo "✅ fish: positive, the installed jeansh is byte for byte the bash one" ||
+        { onh_fail "fish: the installed jeansh differs from the bash one"; sudo diff "$ref" "$bin" | head -8; }
+      sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" ||
+        onh_fail "fish: the installed jeansh lacks its marker line"
+    else
+      onh_fail "fish: a fish login installed no jeansh"
+    fi
+    onh_expect "fish: the login shell is back" "$(getent passwd "$SSH_USER" | cut -d: -f7)" "$shell"
+  fi
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: the switch off"
+  flow jeansh_open2 -e STEP=off || onh_fail "the switch-off flow failed"
+  echo "::endgroup::"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'open-notify-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home/jn-bin" \
+    "$home"/jn*.* "$home/jn.osc" "$home/jn.argv" "$home/jn.has"
+  rm -f "$ref"
+  [ "$ONH_STATUS" = 0 ] && echo "✅ open_notify_hardening: every case passed"
+  return "$ONH_STATUS"
+}
+
 # jeansh open: secret file, file limit, onward ssh, install result (#218,
 # .maestro/jeansh_open2.yaml), against this runner's sshd with the host's
 # install switch on. Terminal text cannot be read from a flow, so the flow
@@ -3419,6 +3531,7 @@ done
 u_single_instance() { report single_instance single_instance; }
 u_jeansh_open2() { report_bare jeansh_open2 jeansh_open2; }
 u_jeansh_open() { report jeansh_open jeansh_open; }
+u_open_notify_hardening() { report_bare open_notify_hardening open_notify_hardening; }
 u_share_text() { report share_text share_text; }
 u_share_chat() { report share_chat share_chat; }
 u_chat_continue_cwd() { report chat_continue_cwd chat_continue_cwd; }
