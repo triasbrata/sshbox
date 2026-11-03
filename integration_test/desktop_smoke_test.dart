@@ -9540,6 +9540,8 @@ touch '${done.path}'
         kind: PointerDeviceKind.mouse,
       );
 
+      final moves = <String, double>{};
+
       // A click below the fence shown as its source.
       await sourceShown('echo "fence line 3"', 'Paragraph 0:');
       await _grab(tester, 'desktop-md-rich-caret-source');
@@ -9565,7 +9567,7 @@ touch '${done.path}'
         ),
         reason: 'the click did not put the caret in the paragraph',
       );
-      expect(by.abs(), lessThanOrEqualTo(5), reason: 'the line clicked moved');
+      moves['the line clicked'] = by;
 
       // The fence already rendered: a click on another paragraph.
       by = await moved(
@@ -9573,7 +9575,7 @@ touch '${done.path}'
         'Paragraph 1:',
         () => click('Paragraph 1:'),
       );
-      expect(by.abs(), lessThanOrEqualTo(5), reason: 'a still page moved');
+      moves['a still page'] = by;
 
       // Down from the fence's closing line, out of the fence.
       await sourceShown('```\n\nParagraph 0', 'Paragraph 0:');
@@ -9587,7 +9589,12 @@ touch '${done.path}'
         greaterThan(text.indexOf('```\n\nParagraph 0') + 3),
         reason: 'Down did not leave the fence',
       );
-      expect(by.abs(), lessThanOrEqualTo(5), reason: 'Down moved the line');
+      moves['Down out of the fence'] = by;
+      // Every move measured before any is held to, so a mutation shows
+      // each case's verdict.
+      for (final MapEntry(:key, :value) in moves.entries) {
+        expect(value.abs(), lessThanOrEqualTo(5), reason: '$key moved');
+      }
       await _closeTabs(tester);
     },
   );
