@@ -3636,7 +3636,7 @@ touch '${done.path}'
         );
         final before = transfers.items.toSet();
         await tester.tapAt(
-          tester.getCenter(dev),
+          tester.getCenter(dev.last),
           kind: PointerDeviceKind.mouse,
           buttons: kSecondaryMouseButton,
         );
@@ -3696,7 +3696,9 @@ touch '${done.path}'
       debugPrint('✅ a folded pair: README kept, readme skipped and named');
       await tester.tap(_label('OK'));
       await tester.pump(const Duration(seconds: 1));
-      navigator.pop();
+      // Back to Home: the dialog, then the page, so the next page's dev is
+      // the only one on screen.
+      navigator.popUntil((route) => route.isFirst);
       await tester.pump(const Duration(seconds: 1));
 
       // (−) No pair: every file comes down and nothing is skipped.
@@ -3717,7 +3719,7 @@ touch '${done.path}'
         'Saved dev',
       );
       debugPrint('✅ no pair: every file saved, nothing skipped');
-      navigator.pop();
+      navigator.popUntil((route) => route.isFirst);
       await tester.pump(const Duration(seconds: 1));
       await _closeTabs(tester);
     },
