@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text md_mermaid editor_save file_editor text_size)
+  md_rich_text md_mermaid md_chrome editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -852,6 +852,90 @@ print(hashlib.sha256(px[row * (h // 10):row * (h * 9 // 10)]).hexdigest())'
 
   check 'a chat reply draws its mermaid graph, with Copy diagram source' \
     chat_mermaid
+  return "$status"
+}
+
+# Rich text in termul's chrome (.maestro/md_chrome.yaml), read off the host.
+# A 2x2 for each half:
+#   - the menu: a long press on a word shows termul's row, Copy and Select
+#     all, with no Bold, which is the desktop panel's; its Copy holds the
+#     word, which pasted in Source and saved ends the file with "zebra";
+#   - bold over blocks (M13): Select all and B on a file of front matter, a
+#     ```sh fence and a paragraph bolds the paragraph alone, the front
+#     matter and the fence byte for byte as they were; on a file that is a
+#     fence alone, nothing changes and there is nothing to save.
+# A mutation in which bold takes every line, code and front matter
+# included, fails both of the second.
+md_chrome() {
+  local status=0 home=/home/$SSH_USER m13 m13_bold fence got
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_chrome: $what"
+      status=1
+    fi
+  }
+  put() { printf '%s' "$2" | sudo -u "$SSH_USER" tee "$home/$1.md" >/dev/null; }
+  read_back() { sudo cat "$home/$1.md"; echo x; }
+  local zebra
+  zebra="$(printf 'zebra %.0s' $(seq 40))"
+  zebra="${zebra% }"$'\n'
+  m13=$'---\ntitle: E2E chrome\ntags: [e2e]\n---\n\n```sh\necho fence-one\necho fence-two\n```\n\n'
+  m13+="$(printf 'Plain paragraph words here %.0s' $(seq 12))"
+  m13="${m13% }."$'\n'
+  m13_bold=${m13/Plain paragraph/**Plain paragraph}
+  m13_bold=${m13_bold/here./here.**}
+  fence=$'```sh\necho fence-only\n```\n'
+  put jeansh-e2e-zebra "$zebra"
+  put jeansh-e2e-m13 "$m13"
+  put jeansh-e2e-fence "$fence"
+
+  app_fresh
+  # The menu: Copy, then pasted at the end in Source.
+  check 'the zebra file opens in Rich text' \
+    flow md_chrome -e STEP=open -e FIRST=yes -e FILE=jeansh-e2e-zebra
+  check "a long press shows termul's row: Copy, Select all, no Bold" \
+    flow md_chrome -e STEP=press -e FIRST=no -e FILE=x
+  flow md_chrome -e STEP=source -e FIRST=no -e FILE=x || status=1
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_MOVE_END
+  sleep 1
+  adb shell input keyevent KEYCODE_PASTE
+  sleep 1
+  flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
+  sleep 2
+  got=$(read_back jeansh-e2e-zebra)
+  echo "zebra file's end: $(printf '%s' "${got%x}" | tail -c 40 | od -c | head -3)"
+  check 'Copy held the word: pasted in Source, the file ends with it' \
+    [ "${got%x}" = "${zebra}zebra" ]
+  flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
+
+  # M13: Select all and B.
+  flow md_chrome -e STEP=open -e FIRST=no -e FILE=jeansh-e2e-m13 || status=1
+  check 'Select all and B on front matter, a fence and a paragraph' \
+    flow md_chrome -e STEP=all-bold -e FIRST=no -e FILE=jeansh-e2e-m13 -e AT=80%
+  flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
+  sleep 2
+  got=$(read_back jeansh-e2e-m13)
+  echo "The m13 file on the host after the save:"
+  printf '%s' "${got%x}" | sed 's/^/  | /'
+  check 'the paragraph alone is bold' [ "${got%x}" = "$m13_bold" ]
+  check 'the front matter and the fence are byte for byte as they were' \
+    [ "$(printf '%s' "${got%x}" | head -n 9)" = "$(printf '%s' "$m13" | head -n 9)" ]
+  flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
+
+  # A fence alone: Select all and B change nothing.
+  flow md_chrome -e STEP=open -e FIRST=no -e FILE=jeansh-e2e-fence || status=1
+  flow md_chrome -e STEP=all-bold -e FIRST=no -e FILE=jeansh-e2e-fence -e AT=36% ||
+    status=1
+  check 'B on a selection inside a fence leaves nothing to save' \
+    flow md_chrome -e STEP=unchanged -e FIRST=no -e FILE=x
+  check 'and the fence file is as it was' \
+    [ "$(read_back jeansh-e2e-fence)" = "${fence}x" ]
+  flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
+
+  keep_shots 'md-chrome-*.png'
+  sudo rm -f "$home"/jeansh-e2e-{zebra,m13,fence}.md
   return "$status"
 }
 
@@ -3564,6 +3648,7 @@ done
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
 u_md_mermaid() { report md_mermaid md_mermaid; }
+u_md_chrome() { report md_chrome md_chrome; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.

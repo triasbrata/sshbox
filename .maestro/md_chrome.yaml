@@ -1,0 +1,138 @@
+# Rich text in termul's chrome (D): tools/e2e_android.sh's md_chrome puts
+# three files in the login home, sends keys with adb between this flow's
+# steps and reads the files on the host, which hold the proof.
+#
+#   jeansh-e2e-zebra.md  one paragraph of "zebra", so a long press anywhere
+#                        on it selects that word
+#   jeansh-e2e-m13.md    front matter, a ```sh fence and a long paragraph
+#   jeansh-e2e-fence.md  a ```sh fence alone
+#
+# STEP comes from -e alone (see chat_images.yaml):
+#   open      FILE opened from the drawer, in Rich text
+#   press     a long press on the text: termul's row, Copy and Select all,
+#             and no Bold, which is the desktop panel's; Copy tapped
+#   source    Source, and the text tapped for the caret; the runner pastes
+#   all-bold  a long press, Select all, the keyboard away and B on the bar
+#   save      Unsaved changes, then Save to host
+#   unchanged nothing to save
+#   close     the file tab closed
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- runFlow:
+    when:
+      true: ${STEP == 'open'}
+    commands:
+      - runFlow:
+          when:
+            true: ${FIRST == 'yes'}
+          commands:
+            - stopApp
+            - launchApp:
+                clearState: false
+            - extendedWaitUntil:
+                visible: '(?s).*${HOST_LABEL}.*\n.*'
+                timeout: 15000
+            - tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+            - tapOn:
+                text: "Trust"
+                optional: true
+            - extendedWaitUntil:
+                visible: "Browse files"
+                timeout: 30000
+      - tapOn: "Browse files"
+      - extendedWaitUntil:
+          visible: "Filter by name"
+          timeout: 30000
+      - tapOn: "Filter by name"
+      - eraseText
+      - inputText: "${FILE}"
+      # \W*: the redesign draws a glyph before each name in the tree.
+      - tapOn: "(?s)\\W*${FILE}.md"
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+      - takeScreenshot: md-chrome-${FILE}-opened
+
+- runFlow:
+    when:
+      true: ${STEP == 'press'}
+    commands:
+      - longPressOn:
+          point: "50%,38%"
+      - waitForAnimationToEnd
+      # termul's row: the field's own words, and none of the desktop's
+      # formatting.
+      - extendedWaitUntil:
+          visible: "Copy"
+          timeout: 5000
+      - assertVisible: "Select all"
+      - assertNotVisible: "Bold"
+      - takeScreenshot: md-chrome-menu
+      - tapOn: "Copy"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'source'}
+    commands:
+      - hideKeyboard
+      - tapOn: "source"
+      - waitForAnimationToEnd
+      - tapOn:
+          point: "50%,38%"
+      - waitForAnimationToEnd
+
+- runFlow:
+    when:
+      true: ${STEP == 'all-bold'}
+    commands:
+      - longPressOn:
+          point: "50%,${AT}"
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Select all"
+          timeout: 5000
+      - tapOn: "Select all"
+      - waitForAnimationToEnd
+      - takeScreenshot: md-chrome-${FILE}-selected
+      # The keyboard away first: its own b key is a "B" to Maestro too.
+      - hideKeyboard
+      - waitForAnimationToEnd
+      - tapOn: "B"
+      - waitForAnimationToEnd
+      - takeScreenshot: md-chrome-${FILE}-bold
+
+- runFlow:
+    when:
+      true: ${STEP == 'save'}
+    commands:
+      - hideKeyboard
+      - extendedWaitUntil:
+          visible: "(?s).*Unsaved changes.*"
+          timeout: 5000
+      - tapOn: "Save to host"
+      - extendedWaitUntil:
+          notVisible: "(?s).*Unsaved changes.*"
+          timeout: 10000
+
+- runFlow:
+    when:
+      true: ${STEP == 'unchanged'}
+    commands:
+      - assertNotVisible: "(?s).*Unsaved changes.*"
+      - assertVisible:
+          text: "Save to host"
+          enabled: false
+
+- runFlow:
+    when:
+      true: ${STEP == 'close'}
+    commands:
+      - hideKeyboard
+      - tapOn: "Close file"
+      - waitForAnimationToEnd

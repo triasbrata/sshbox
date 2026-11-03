@@ -9631,6 +9631,141 @@ pie title E2E pets
     },
   );
 
+  // D: Rich text's selection menu in termul's face. A real right-click on a
+  // selection opens the panel with the field's own rows and, under them,
+  // the formatting with its keys (Ctrl+B, or ⌘B on a Mac); its Bold wraps
+  // the selection, which saved is the file. With no selection, a right-click
+  // opens the panel with no Cut. A mutation with the panel taken out leaves
+  // Flutter's own menu, which has no Ctrl+B.
+  _test(
+    'rich text: a right-click on a selection shows termul\'s panel with its '
+    'keys, and its Bold wraps the selection; with none, no Cut',
+    skip: editorSkip,
+    (tester) async {
+      const original = 'one two three\n';
+      final k = await _EditorSave.start(tester, 'chrome.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      final editable = tester.state<EditableTextState>(field);
+      Offset at(int offset) {
+        final render = editable.renderEditable;
+        return render.localToGlobal(
+          render.getLocalRectForCaret(TextPosition(offset: offset)).center,
+        );
+      }
+
+      final bold = Platform.isMacOS ? '⌘B' : 'Ctrl+B';
+      Future<void> click(Offset p, {bool right = false}) => _realPointer(
+        () => right
+            ? _realRightClick(tester, p)
+            : _osMouse(tester, [
+                'move ${p.dx} ${p.dy}',
+                'down',
+                'sleep 40',
+                'up',
+              ]),
+      );
+
+      // The whole line selected, and a right-click inside it.
+      await tester.showKeyboard(field);
+      editable.userUpdateTextEditingValue(
+        editable.textEditingValue.copyWith(
+          selection: const TextSelection(baseOffset: 0, extentOffset: 13),
+        ),
+        SelectionChangedCause.keyboard,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await click(at(5), right: true);
+      await _until(
+        tester,
+        () => find.text(bold).evaluate().isNotEmpty,
+        "the panel, with Bold's $bold",
+      );
+      expect(find.text('Cut'), findsOneWidget);
+      expect(find.text('Copy'), findsWidgets);
+      debugPrint(
+        "✅ rich text: a right-click on a selection shows termul's "
+        'panel, Cut, Copy and Bold $bold',
+      );
+      await _grab(tester, 'desktop-md-chrome-panel');
+      await click(tester.getCenter(find.text('Bold')));
+      await _until(
+        tester,
+        () => k.text() == '**one two three**\n',
+        'Bold to wrap the selection',
+      );
+      debugPrint('✅ rich text: the panel\'s Bold wrapped the selection');
+      await k.chord(save);
+      await _until(
+        tester,
+        () => k.file.readAsStringSync() == '**one two three**\n',
+        'the save to write the bold alone',
+        timeout: const Duration(seconds: 8),
+      );
+
+      // No selection: a right-click past the text's end, on its empty last
+      // line, where no word is for a Mac to select.
+      await click(at(k.text().length), right: true);
+      await _until(
+        tester,
+        () => find.text('Select all').evaluate().isNotEmpty,
+        'the panel with no selection',
+      );
+      expect(
+        find.text('Cut'),
+        findsNothing,
+        reason: 'Cut offered with nothing selected',
+      );
+      debugPrint('✅ rich text: with no selection the panel has no Cut');
+      await _escape(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // D: italic off `***x***`, bold and italic in one pair of markers, takes
+  // italic's own star and leaves **x**. A real Ctrl+I (⌘I on a Mac). A
+  // mutation without the three-marker branch leaves `x`.
+  _test('rich text: italic off ***x*** leaves **x**', skip: editorSkip, (
+    tester,
+  ) async {
+    const original = '***x***\n';
+    final k = await _EditorSave.start(tester, 'triple.md', text: original);
+    final field = find.descendant(
+      of: find.byType(MarkdownRichEditor),
+      matching: find.byType(EditableText),
+    );
+    final editable = tester.state<EditableTextState>(field);
+    await tester.showKeyboard(field);
+    editable.userUpdateTextEditingValue(
+      editable.textEditingValue.copyWith(
+        selection: const TextSelection(baseOffset: 3, extentOffset: 4),
+      ),
+      SelectionChangedCause.keyboard,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await k.press('ctrl+i', 'keystroke "i" using command down');
+    await _until(
+      tester,
+      () => k.text() != original,
+      'the italic chord to change the text',
+    );
+    expect(k.text(), '**x**\n');
+    debugPrint(
+      '✅ rich text: ${Platform.isMacOS ? '⌘I' : 'Ctrl+I'} on ***x*** '
+      'left **x**',
+    );
+    await k.chord(save);
+    await _until(
+      tester,
+      () => k.file.readAsStringSync() == '**x**\n',
+      'the save to write **x**',
+      timeout: const Duration(seconds: 8),
+    );
+    await _closeTabs(tester);
+  });
+
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
   // the engine reports them. Run it in profile to read a real number.
