@@ -9563,9 +9563,13 @@ pie title E2E pets
         ),
       );
       semantics.dispose();
-      // What is drawn as text outside the field: no diagram's source.
-      Finder drawn(String text) => find.byWidgetPredicate(
-        (w) => w is RichText && w.text.toPlainText().contains(text),
+      // What a diagram's block draws as text: no diagram's source. (The
+      // field's own text holds every source, drawn or not.)
+      Finder drawn(String text) => find.descendant(
+        of: find.byType(MermaidBlock),
+        matching: find.byWidgetPredicate(
+          (w) => w is RichText && w.text.toPlainText().contains(text),
+        ),
       );
       expect(drawn('flowchart LR'), findsNothing);
       expect(drawn('sequenceDiagram'), findsNothing);

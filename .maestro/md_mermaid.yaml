@@ -80,10 +80,12 @@ env:
     when:
       true: ${STEP == 'swipe-left'}
     commands:
+      # By points, inside the flowchart as the 320x640 emulator draws it
+      # (its rows 240 to 540): a finger dragged across it from right to left.
       - swipe:
-          from: "(?s)Flowchart: Jeansh app.*"
-          direction: LEFT
-          duration: 600
+          start: "85%, 62%"
+          end: "15%, 62%"
+          duration: 800
       - waitForAnimationToEnd
       # Still drawn: a swipe is not a tap.
       - assertVisible: "(?s)Flowchart: Jeansh app.*"
@@ -94,9 +96,9 @@ env:
       true: ${STEP == 'swipe-right'}
     commands:
       - swipe:
-          from: "(?s)Flowchart: Jeansh app.*"
-          direction: RIGHT
-          duration: 600
+          start: "15%, 62%"
+          end: "85%, 62%"
+          duration: 800
       - waitForAnimationToEnd
       - assertVisible: "(?s)Flowchart: Jeansh app.*"
 
