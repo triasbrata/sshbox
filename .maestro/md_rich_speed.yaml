@@ -74,11 +74,14 @@ env:
     when:
       true: ${STEP == 'mid'}
     commands:
+      # The keyboard down first: a swipe across Gboard glide-types words.
+      - hideKeyboard
+      - waitForAnimationToEnd
       - repeat:
           times: 12
           commands:
             - swipe:
-                start: "50%,80%"
+                start: "50%,70%"
                 end: "50%,15%"
                 duration: 300
       - waitForAnimationToEnd
@@ -104,11 +107,13 @@ env:
     when:
       true: ${STEP == 'bottom'}
     commands:
+      - hideKeyboard
+      - waitForAnimationToEnd
       - repeat:
           times: 60
           commands:
             - swipe:
-                start: "50%,85%"
+                start: "50%,70%"
                 end: "50%,10%"
                 duration: 200
       - waitForAnimationToEnd
@@ -143,6 +148,11 @@ env:
     when:
       true: ${STEP == 'paste'}
     commands:
+      # The Markdown file saved, closed with no question: Browse files is
+      # the terminal's.
+      - hideKeyboard
+      - tapOn: "Close file"
+      - waitForAnimationToEnd
       - tapOn: "Browse files"
       - extendedWaitUntil:
           visible: "Filter by name"
