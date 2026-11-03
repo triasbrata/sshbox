@@ -9428,6 +9428,161 @@ touch '${done.path}'
     },
   );
 
+  // #340: moving the caret out of a code fence shown as its source draws the
+  // fence rendered again, of another height, and the line moved to stays
+  // where it was on the page. A 2x2, by a click and by Down: a paragraph
+  // below the fence clicked, or reached by Down from the fence, moves 5 px at
+  // most; a second paragraph clicked, nothing above changing, holds still
+  // too. A mutation that keeps no line moves the first by the fence's change
+  // of height.
+  _test(
+    'rich text: leaving a fence shown as source by a click or Down keeps the '
+    'line where it was',
+    skip: editorSkip,
+    (tester) async {
+      const words =
+          'amber basil cedar delta ember fjord garnet harbor indigo juniper';
+      final text = [
+        '# Caret e2e',
+        '',
+        '```sh',
+        for (var i = 0; i < 26; i++) 'echo "fence line $i"',
+        '```',
+        '',
+        for (var i = 0; i < 30; i++) ...[
+          'Paragraph $i: ${List.filled(1 + i % 3, words).join(' ')}.',
+          '',
+        ],
+      ].join('\n');
+      final k = await _EditorSave.start(tester, 'caret.md', text: text);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      final controller = tester.widget<EditableText>(field).controller;
+      editable() => tester.state<EditableTextState>(field).renderEditable;
+      // Where [line] starts on the page: in a section drawn apart, its own
+      // paragraph; otherwise the field's text, where it is drawn.
+      Offset at(String line) {
+        for (final e
+            in find
+                .descendant(
+                  of: find.byType(MarkdownRichEditor),
+                  matching: find.byType(RichText),
+                )
+                .evaluate()) {
+          final p = e.renderObject! as RenderParagraph;
+          final i = p.text.toPlainText().indexOf(line);
+          if (i >= 0 && p.attached && p.hasSize) {
+            return p.localToGlobal(
+              p.getOffsetForCaret(TextPosition(offset: i), Rect.zero),
+            );
+          }
+        }
+        final i = text.indexOf(line);
+        final box = editable()
+            .getBoxesForSelection(
+              TextSelection(baseOffset: i, extentOffset: i + 1),
+            )
+            .first
+            .toRect();
+        return editable().localToGlobal(box.topLeft);
+      }
+
+      final scroll = tester
+          .stateList<ScrollableState>(
+            find.descendant(
+              of: find.byType(MarkdownRichEditor),
+              matching: find.byType(Scrollable),
+            ),
+          )
+          .first;
+      final view = scroll.context.findRenderObject()! as RenderBox;
+      final viewTop = view.localToGlobal(Offset.zero).dy;
+
+      // The caret on [inFence], so the fence shows its source, and [line]
+      // scrolled to the middle of the page.
+      Future<void> sourceShown(String inFence, String line) async {
+        await tester.showKeyboard(field);
+        controller.selection = TextSelection.collapsed(
+          offset: text.indexOf(inFence),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        final p = scroll.position;
+        p.jumpTo(
+          (p.pixels + at(line).dy - viewTop - view.size.height / 2).clamp(
+            p.minScrollExtent,
+            p.maxScrollExtent,
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      // How far [line] moved on the page while [act] ran.
+      Future<double> moved(
+        String what,
+        String line,
+        Future<void> Function() act,
+      ) async {
+        final before = at(line).dy;
+        await act();
+        await tester.pump(const Duration(milliseconds: 300));
+        final by = at(line).dy - before;
+        debugPrint('rich text caret: $what moved "$line" by $by px');
+        return by;
+      }
+
+      Future<void> click(String line) => tester.tapAt(
+        at(line) + const Offset(30, 6),
+        kind: PointerDeviceKind.mouse,
+      );
+
+      // A click below the fence shown as its source.
+      await sourceShown('echo "fence line 3"', 'Paragraph 0:');
+      await _grab(tester, 'desktop-md-rich-caret-source');
+      final fenceSource = at('Paragraph 0:').dy - at('# Caret e2e').dy;
+      var by = await moved(
+        'a click below the fence',
+        'Paragraph 0:',
+        () => click('Paragraph 0:'),
+      );
+      await _grab(tester, 'desktop-md-rich-caret-clicked');
+      debugPrint(
+        'rich text caret: heading to Paragraph 0, source '
+        '$fenceSource px, rendered '
+        '${at('Paragraph 0:').dy - at('# Caret e2e').dy} px',
+      );
+      expect(
+        controller.selection.extentOffset,
+        greaterThan(text.indexOf('Paragraph 0:')),
+        reason: 'the click did not put the caret in the paragraph',
+      );
+      expect(by.abs(), lessThanOrEqualTo(5), reason: 'the line clicked moved');
+
+      // The fence already rendered: a click on another paragraph.
+      by = await moved(
+        'a click with the fence rendered',
+        'Paragraph 1:',
+        () => click('Paragraph 1:'),
+      );
+      expect(by.abs(), lessThanOrEqualTo(5), reason: 'a still page moved');
+
+      // Down from the fence's closing line, out of the fence.
+      await sourceShown('```\n\nParagraph 0', 'Paragraph 0:');
+      by = await moved(
+        'Down out of the fence',
+        'Paragraph 0:',
+        () => k.press('Down', 'key code 125'),
+      );
+      expect(
+        controller.selection.extentOffset,
+        greaterThan(text.indexOf('```\n\nParagraph 0') + 3),
+        reason: 'Down did not leave the fence',
+      );
+      expect(by.abs(), lessThanOrEqualTo(5), reason: 'Down moved the line');
+      await _closeTabs(tester);
+    },
+  );
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
   // the engine reports them. Run it in profile to read a real number.

@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text editor_save file_editor text_size)
+  md_rich_text md_rich_caret editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -779,6 +779,88 @@ md_rich_text() {
   return "$status"
 }
 
+
+# #340: a tap below a code fence shown as its source draws the fence rendered
+# again, and the line tapped stays under the finger (.maestro/md_rich_caret.yaml).
+# The text is one field to the accessibility tree, so where a line is drawn
+# is read off the screen: the band of pixels around the tap is looked for in
+# a screenshot after it (tools/e2e_band_shift.py). A 2x2:
+#   - the fence tapped, so its source shows, scrolled off the top, and a
+#     paragraph below tapped: the fence goes back to rendered, and the
+#     paragraph moves 5 px at most;
+#   - then another paragraph tapped, nothing above changing height: it moves
+#     5 px at most either way.
+# A mutation that keeps no line moves the first by the fence's change of
+# height; the second holds still in it too.
+md_rich_caret() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-caret.md
+  local w h by
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_rich_caret: $what"
+      status=1
+    fi
+  }
+  python3 - <<'PY' | sudo -u "$SSH_USER" tee "$file" >/dev/null
+words = ('amber basil cedar delta ember fjord garnet harbor indigo juniper '
+         'kestrel lilac maple nutmeg orchid pepper quartz rowan saffron '
+         'thistle umber violet willow yarrow zinnia').split()
+out = ['# Caret e2e', '', '```sh']
+out += [f'echo "fence line {i:02d} {words[i % len(words)]}"' for i in range(26)]
+out += ['```', '']
+for i in range(60):
+    n = 1 + i % 4
+    w = [words[(i * 7 + k) % len(words)] for k in range(9 * n)]
+    out += [f'Paragraph {i}: ' + ' '.join(w) + '.', '']
+print('\n'.join(out))
+PY
+  read -r w h < <(adb shell wm size | sed -n 's/.*: \([0-9]*\)x\([0-9]*\).*/\1 \2/p' | tail -1)
+  echo "screen ${w}x${h}"
+  shot() {
+    sleep 2
+    adb exec-out screencap >"$EVIDENCE/md-rich-caret-$1.raw"
+    adb exec-out screencap -p >"$EVIDENCE/md-rich-caret-$1.png"
+  }
+  # The move of the band at y, from screenshot $1 to $2.
+  moved() {
+    local got
+    got=$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-$1.raw" \
+      "$EVIDENCE/md-rich-caret-$2.raw" "$3")
+    echo "the band at y=$3, $1 to $2: shift, its diff, the diff unshifted: $got" >&2
+    echo "${got%% *}"
+  }
+
+  flow md_rich_caret -e STEP=open || return 1
+  # The fence, drawn rendered under the heading: tapped, its source shows.
+  adb shell input tap $((w / 2)) $((h * 40 / 100))
+  shot fence-tapped
+  # Scrolled slowly, no fling, until the fence is off the top.
+  for _ in 1 2; do
+    adb shell input swipe $((w / 2)) $((h * 75 / 100)) $((w / 2)) $((h * 15 / 100)) 1500
+  done
+  shot before
+  # A paragraph below the fence, high on the page, above the keyboard.
+  local y1=$((h * 25 / 100)) y2=$((h * 40 / 100))
+  adb shell input tap $((w / 2)) "$y1"
+  shot after
+  by=$(moved before after "$y1")
+  check "a tap below the fence shown as source moved the line tapped ${by} px (5 at most)" \
+    [ "${by#-}" -le 5 ]
+  # Nothing above changes height now: a second paragraph tapped holds still.
+  adb shell input tap $((w / 2)) "$y2"
+  shot again
+  by=$(moved after again "$y2")
+  check "a tap with the fence already rendered moved the line tapped ${by} px (5 at most)" \
+    [ "${by#-}" -le 5 ]
+  rm -f "$EVIDENCE"/md-rich-caret-*.raw
+  flow md_rich_caret -e STEP=close || status=1
+  sudo rm -f "$file"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-caret-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
 # #253: an .html file opens rendered in a web tab, and a .txt file still opens
 # in the editor. Both files go in the login home, the root of the host's file
 # tree, and are gone with the runner.
@@ -3487,6 +3569,7 @@ done
 # land, on main or in the redesign. It wants its checks moved to this host.
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
+u_md_rich_caret() { report_bare md_rich_caret md_rich_caret; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.
