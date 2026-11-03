@@ -3680,6 +3680,43 @@ touch '${done.path}'
         out.path,
       );
       final dev = '${out.path}${sep}dev';
+      if (Platform.isWindows) {
+        // Every stream of everything in the folder, as NTFS has them: a
+        // notes:v2 written as named would be stream v2 of a file notes.
+        final streams = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-Command',
+            r'Get-ChildItem -LiteralPath $env:JEANSH_DIR -Force | '
+                r'ForEach-Object { Get-Item -LiteralPath $_.FullName -Stream * } '
+                r'| ForEach-Object { "$($_.FileName)|$($_.Stream)" }',
+          ],
+          environment: {'JEANSH_DIR': dev},
+        );
+        final lines = '${streams.stdout}'
+            .split('\n')
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .map((l) => l.split(sep).last)
+            .toList();
+        debugPrint('streams in dev: $lines');
+        expect(streams.exitCode, 0, reason: '${streams.stderr}');
+        expect(
+          // The file itself, and the mark every download gets on Windows.
+          lines.where(
+            (l) => !l.endsWith(r'|:$DATA') && !l.endsWith('|Zone.Identifier'),
+          ),
+          isEmpty,
+          reason: '❌ notes:v2 was written into a stream: $lines',
+        );
+        expect(
+          File('$dev${sep}notes').existsSync(),
+          isFalse,
+          reason: '❌ notes:v2 made a file notes: $lines',
+        );
+        debugPrint('✅ notes:v2 skipped: no file notes and no stream v2');
+      }
       expect(File('$dev${sep}README').readAsBytesSync(), [
         1,
         1,
