@@ -9565,11 +9565,19 @@ touch '${done.path}'
       expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
       expect(longestBlank(shown), lessThan(4), reason: 'reader on: blanks');
       semantics.dispose();
+      // The reader let go: blanks again, as at the start. The binding may
+      // drop semantics a frame or two later.
       await tester.pump(const Duration(milliseconds: 300));
-      expect(
-        drawn().contains(_far),
-        reader,
-        reason: 'the reader let go: blanks as at the start',
+      debugPrint(
+        'rich text, reader let go: semantics '
+        '${SemanticsBinding.instance.semanticsEnabled}, far words drawn '
+        '${drawn().contains(_far)}',
+      );
+      await _until(
+        tester,
+        () => drawn().contains(_far) == reader,
+        'the reader let go: the far section drawn as at the start',
+        timeout: const Duration(seconds: 5),
       );
       await _closeTabs(tester);
     },

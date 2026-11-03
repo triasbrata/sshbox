@@ -5,15 +5,23 @@
 # host between this flow's steps.
 #
 # Maestro reads the app through Android's accessibility, which turns Flutter's
-# semantics on, so on the emulator the field is drawn as a screen reader
-# needs it: its text, a far section's words included, in the tree. Blanking
-# forced on whatever a screen reader says puts spaces there instead, and
-# `far` goes red.
+# semantics on, so on the emulator nothing is ever blanked: what this proves
+# is the screen reader's side, with the desktop tests (desktop_smoke_test)
+# proving the blanks. The field's accessibility text holds the far words
+# even with blanking forced on (run 41615231879), so `far` is a check of the
+# tree, never a guard of the blanking.
+#
+# Gboard is up from the open on, and the editor is the band between the
+# file's header and the keyboard, about 28% to 55% down the 320x640
+# emulator: every swipe and tap stays in it. A swipe across Gboard
+# glide-types words, hideKeyboard with no keyboard up is Back, which closes
+# the tab, and a slow swipe is a long press that drags the caret, so the
+# swipes are quick flings.
 #
 # STEP comes from -e alone (see chat_images.yaml):
 #   open    the file opened from the drawer, in Rich text, nothing to save
 #   far     the far section's own words in the field's accessibility text
-#   mid     scrolled to the middle and the text tapped, for the caret
+#   mid    scrolled to the middle and the text tapped, for the caret
 #   save    Unsaved changes, then Save to host and nothing unsaved
 #   bottom  scrolled to the end and the far section tapped: its words shown
 #   copy    the whole document selected and copied with the toolbar
@@ -74,19 +82,16 @@ env:
     when:
       true: ${STEP == 'mid'}
     commands:
-      # The keyboard down first: a swipe across Gboard glide-types words.
-      - hideKeyboard
-      - waitForAnimationToEnd
       - repeat:
-          times: 12
+          times: 8
           commands:
             - swipe:
-                start: "50%,70%"
-                end: "50%,15%"
-                duration: 300
+                start: "50%,53%"
+                end: "50%,30%"
+                duration: 250
       - waitForAnimationToEnd
       - tapOn:
-          point: "50%,50%"
+          point: "50%,42%"
       - waitForAnimationToEnd
 
 - runFlow:
@@ -96,7 +101,6 @@ env:
       - extendedWaitUntil:
           visible: "(?s).*Unsaved changes.*"
           timeout: 10000
-      - hideKeyboard
       - takeScreenshot: md-rich-speed-edited
       - tapOn: "Save to host"
       - extendedWaitUntil:
@@ -107,22 +111,22 @@ env:
     when:
       true: ${STEP == 'bottom'}
     commands:
-      - hideKeyboard
+      # The keyboard up again (Save took the focus), then to the end.
+      - tapOn:
+          point: "50%,42%"
       - waitForAnimationToEnd
       - repeat:
-          times: 60
+          times: 80
           commands:
             - swipe:
-                start: "50%,70%"
-                end: "50%,10%"
-                duration: 200
+                start: "50%,53%"
+                end: "50%,30%"
+                duration: 150
       - waitForAnimationToEnd
-      # The last line on the page, the far section's paragraph.
       - takeScreenshot: md-rich-speed-bottom
+      # The end of the document, the far section, at the band's foot.
       - tapOn:
-          point: "50%,60%"
-      - waitForAnimationToEnd
-      - hideKeyboard
+          point: "50%,52%"
       - waitForAnimationToEnd
       - assertVisible: "${FAR}"
       - takeScreenshot: md-rich-speed-far-tapped
@@ -132,7 +136,7 @@ env:
       true: ${STEP == 'copy'}
     commands:
       - longPressOn:
-          point: "50%,50%"
+          point: "50%,45%"
       - extendedWaitUntil:
           visible: "Select all"
           timeout: 5000
@@ -150,7 +154,6 @@ env:
     commands:
       # The Markdown file saved, closed with no question: Browse files is
       # the terminal's.
-      - hideKeyboard
       - tapOn: "Close file"
       - waitForAnimationToEnd
       - tapOn: "Browse files"
@@ -188,8 +191,4 @@ env:
       true: ${STEP == 'close'}
     commands:
       - tapOn: "Close file"
-      - waitForAnimationToEnd
-      - tapOn:
-          text: "Close file"
-          optional: true
       - waitForAnimationToEnd

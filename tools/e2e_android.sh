@@ -787,7 +787,8 @@ md_rich_text() {
 # field is drawn for a screen reader. Asserted:
 #   - opened in Rich text, not refused to Source, and nothing written;
 #   - the far section's own words are in the accessibility text, not spaces
-#     (a mutation with blanking forced on goes red here);
+#     (Maestro turns semantics on, so a check of the tree: it holds even with
+#     blanking forced on, run 41615231879; the desktop tests guard the blanks);
 #   - 20 characters typed mid-document and saved: the file is the original
 #     with exactly those 20 inserted, at one place in its middle;
 #   - the far section tapped shows its words;
