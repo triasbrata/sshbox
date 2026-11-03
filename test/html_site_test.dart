@@ -135,12 +135,37 @@ void main() {
     final css = await get(s, 'style.css');
     expect((css.$1, css.$2), (200, 'h1{color:red}'));
     expect(css.$3.value('content-type'), startsWith('text/css'));
-    expect(css.$3.value('content-security-policy'), isNull);
+    expect(css.$3.value('content-security-policy'), contains('connect-src'));
     final png = await get(s, 'img/a.png');
     expect(png.$1, 200);
     expect(png.$3.value('content-type'), 'image/png');
     expect(s.problems.value, isEmpty);
   });
+
+  test(
+    'every response carries the site CSP, an svg and a refusal too',
+    () async {
+      File('${site.path}/x.svg').writeAsStringSync('<svg/>');
+      final s = await start();
+      for (final rel in [
+        'x.svg',
+        'style.css',
+        'img/a.png',
+        'nope.js',
+        '.env',
+      ]) {
+        final csp = (await get(s, rel)).$3.value('content-security-policy');
+        expect(csp, contains("connect-src 'self' https:"), reason: rel);
+        expect(csp, contains("form-action 'self' https:"), reason: rel);
+        expect(csp, isNot(contains('http:')), reason: rel);
+      }
+      final outsideToken = await raw(s, '/elsewhere');
+      expect(
+        outsideToken.$3.value('content-security-policy'),
+        contains('connect-src'),
+      );
+    },
+  );
 
   test('HEAD sends no body, anything but GET and HEAD is refused', () async {
     final s = await start();
@@ -206,6 +231,39 @@ void main() {
         expect(s.problems.value['/${s.token}/leak.txt'], contains('link'));
       },
     );
+
+    test('a file listed once and then turned into a link is refused', () async {
+      final s = await start();
+      expect((await get(s, 'style.css')).$2, 'h1{color:red}');
+      File('${site.path}/style.css').deleteSync();
+      Link('${site.path}/style.css').createSync('${outside.path}/secret.txt');
+      final r = await get(s, 'style.css');
+      expect(r.$1, 403);
+      expect(r.$2, isNot(contains('TOP SECRET')));
+      expect(s.problems.value['/${s.token}/style.css'], contains('link'));
+    });
+
+    test('a file turned into a link while it is read is refused', () async {
+      final swapping = _SwappingBrowser('${outside.path}/secret.txt');
+      final s = served = await HtmlSite.start(
+        browser: swapping,
+        htmlPath: '${site.path}/page.html',
+      );
+      final r = await get(s, 'style.css');
+      expect(swapping.swapped, isTrue);
+      expect(r.$1, 403);
+      expect(r.$2, isNot(contains('TOP SECRET')));
+      // Read with nothing swapped, a file is served as before.
+      expect((await get(s, 'img/a.png')).$1, 200);
+    });
+
+    test('a file gone while it is read is missing', () async {
+      final s = served = await HtmlSite.start(
+        browser: _SwappingBrowser(null),
+        htmlPath: '${site.path}/page.html',
+      );
+      expect((await get(s, 'style.css')).$1, 404);
+    });
 
     test('even a link that stays inside is not followed', () async {
       final s = await start();
@@ -366,6 +424,25 @@ void main() {
     }
   });
 
+  test(
+    'a request that cannot make its scratch folder gives its turn back',
+    () async {
+      var broken = true;
+      final real = Directory.systemTemp;
+      final s = await IOOverrides.runZoned(
+        () => start(const HtmlSiteLimits(concurrent: 1)),
+        getSystemTempDirectory: () =>
+            broken ? Directory('${root.path}/no/such/folder') : real,
+      );
+      for (var i = 0; i < 3; i++) {
+        expect((await get(s, 'style.css')).$1, 500);
+      }
+      broken = false;
+      final r = await get(s, 'style.css').timeout(const Duration(seconds: 5));
+      expect((r.$1, r.$2), (200, 'h1{color:red}'));
+    },
+  );
+
   group('a host that fails', () {
     test('a read that throws is a 500, said and not leaked', () async {
       final s = served = await HtmlSite.start(
@@ -410,8 +487,7 @@ void main() {
     final s = await start();
     expect((await get(s, 'img/none.png')).$1, 404);
     site.deleteSync(recursive: true);
-    // The listing was cached before; a Reload sees the folder gone.
-    s.reset();
+    // Every request lists again, so the folder is seen gone at once.
     expect((await get(s, 'page.html')).$1, 404);
   });
 }
@@ -467,4 +543,34 @@ class _FailingBrowser extends _DirBrowser {
     void Function(int received, int total)? onProgress,
     Future<void>? cancel,
   }) async => throw error;
+}
+
+/// Lists a real folder, and as `style.css` is read puts a link to [target] in
+/// its place, or with no target takes it away, then reads where that leads,
+/// as a read that follows links would.
+class _SwappingBrowser extends _DirBrowser {
+  _SwappingBrowser(this.target);
+  final String? target;
+  var swapped = false;
+
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    int offset = 0,
+    int? length,
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    if (path.endsWith('/style.css') && !swapped) {
+      swapped = true;
+      File(path).deleteSync();
+      if (target == null) {
+        File(localPath).writeAsStringSync('');
+        return;
+      }
+      Link(path).createSync(target!);
+    }
+    return super.download(path, localPath, length: length);
+  }
 }
