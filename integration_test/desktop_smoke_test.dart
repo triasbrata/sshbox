@@ -9522,8 +9522,14 @@ touch '${done.path}'
         'rich text blanks: screen reader $reader, the field draws the far '
         'words: ${shown.contains(_far)}, longest blank ${longestBlank(shown)}',
       );
-      expect(shown.contains(_far), isFalse, reason: 'far section not blanked');
-      expect(longestBlank(shown), greaterThan(40), reason: 'no blanks drawn');
+      // The platform's own accessibility on, as on CI's Mac: the field is
+      // drawn for a screen reader from the start, and nothing is blanked.
+      if (reader) {
+        expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      } else {
+        expect(shown.contains(_far), isFalse, reason: 'far not blanked');
+        expect(longestBlank(shown), greaterThan(40), reason: 'no blanks');
+      }
 
       await Clipboard.setData(const ClipboardData(text: 'untouched'));
       await k.press('ctrl+a', 'keystroke "a" using command down');
@@ -9552,7 +9558,11 @@ touch '${done.path}'
       expect(longestBlank(shown), lessThan(4), reason: 'reader on: blanks');
       semantics.dispose();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(drawn().contains(_far), isFalse, reason: 'reader off: no blanks');
+      expect(
+        drawn().contains(_far),
+        reader,
+        reason: 'the reader let go: blanks as at the start',
+      );
       await _closeTabs(tester);
     },
   );
