@@ -621,11 +621,17 @@ Future<void> _drag(
 }
 
 /// Opens the Git panel from a Local shell and picks [repo] in it.
-///
-/// Where the home holds this repository alone it is picked already; where it
-/// holds others, as a runner's home can, it is picked from the list.
 Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
   await tester.tap(find.byTooltip('Git'));
+  await _pickRepo(tester, repo);
+}
+
+/// Picks [repo] in the Git panel on screen.
+///
+/// Where the home holds this repository alone it is picked already; where it
+/// holds others it is picked from the list. A runner's home holds ~/.nvm, a
+/// git checkout, which sorts first and so is picked first.
+Future<void> _pickRepo(WidgetTester tester, Directory repo) async {
   final name = repo.path.split('/').last;
   bool ours(String? root) => root != null && root.endsWith('/$name');
   // Material's DropdownButton on main, the redesign's TuiDropdown: both
@@ -648,17 +654,6 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
     debugPrint(
       'Git panel picked ${shown().value} first, of ${choices().join(', ')}',
     );
-    // The repository picked first has its branch read before ours is
-    // picked, every time: picking ours while that read was still out hid
-    // the panel's fault, a header naming the last repository's branch until
-    // its own was read, and made the switch-branch test fail only now and
-    // then. A repository whose branch cannot be read names none, so this
-    // waits a while and goes on either way.
-    final end = DateTime.now().add(const Duration(seconds: 10));
-    while (find.byTooltip('Switch branch').evaluate().isEmpty &&
-        DateTime.now().isBefore(end)) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
     // Picked through the picker's own onChanged, which is what choosing it
     // from the list calls: a long list in a small menu is its own fight.
     final root = choices().firstWhere(ours);
@@ -2785,15 +2780,43 @@ touch '${done.path}'
       await git(['branch', 'e2e-other']);
       final first = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
 
+      // Another repository, picked and read first: picking this test's own
+      // after it is what left the header naming the decoy's branch, which
+      // the home's ~/.nvm did on a runner only when its read won the race.
+      final decoy = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-decoy-');
+      addTearDown(() => decoy.deleteSync(recursive: true));
+      for (final args in [
+        ['init', '-q', '-b', 'e2e-decoy'],
+        [
+          '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+          'commit', '-q', '--allow-empty', '-m', 'e2e',
+        ],
+      ]) {
+        final done = await Process.run('git', ['-C', decoy.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+      }
+
       await _launch(tester);
       await _localShell(tester);
-      await _gitPanelOn(tester, repo);
+      await _gitPanelOn(tester, decoy);
+      await _until(
+        tester,
+        () => find.text('e2e-decoy').evaluate().isNotEmpty,
+        "the decoy's branch in the header",
+      );
+      await _pickRepo(tester, repo);
       await _until(
         tester,
         () => find.byTooltip('Switch branch').evaluate().isNotEmpty,
         'the branch in the header',
       );
       expect(find.text(first), findsWidgets);
+      expect(
+        find.text('e2e-decoy'),
+        findsNothing,
+        reason: 'the header still names the last repository picked',
+      );
       // Every toast gone first: toasts sit over every menu, and the header's
       // opens at the top of the window, where they are.
       await _until(
