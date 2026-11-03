@@ -9461,11 +9461,13 @@ touch '${done.path}'
       );
       final controller = tester.widget<EditableText>(field).controller;
       editable() => tester.state<EditableTextState>(field).renderEditable;
-      // The field's own scroller, which the page scrolls with.
+      // The field's own scroller, which the page scrolls with: the first
+      // vertical one, a code block's own scrolling sideways.
       final scroll = tester
-          .state<ScrollableState>(
+          .stateList<ScrollableState>(
             find.descendant(of: field, matching: find.byType(Scrollable)),
           )
+          .firstWhere((s) => s.position.axis == Axis.vertical)
           .position;
 
       // Where [line] starts on the page: in a section drawn apart, its own
