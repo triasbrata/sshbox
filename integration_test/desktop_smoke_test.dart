@@ -3634,6 +3634,15 @@ touch '${done.path}'
           () => dev.evaluate().isNotEmpty,
           'the page to list dev',
         );
+        // A toast from the run before lies over the top rows, and the page
+        // slides in: both gone before the right-click.
+        await _until(
+          tester,
+          () => find.byType(TuiToastCard).evaluate().isEmpty,
+          'the last toast to go',
+          timeout: const Duration(seconds: 30),
+        );
+        await tester.pump(const Duration(milliseconds: 600));
         final before = transfers.items.toSet();
         await tester.tapAt(
           tester.getCenter(dev.last),
