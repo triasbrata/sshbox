@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
@@ -174,24 +175,35 @@ class OutboxBox {
   }
 }
 
-/// A delivered message whose turn was not named: its text as it reached the
-/// session, normalised, and when it was written.
+/// A delivered message whose turn was not named: a digest of its text as it
+/// reached the session, normalised, and when it was written. A digest, so no
+/// word of a delivered message stays on the device.
 class OutboxClaim {
-  const OutboxClaim(this.text, this.at);
+  const OutboxClaim(this.digest, this.at);
 
-  final String text;
+  /// The claim of a message whose text, as [OutboxMatch.normal] reads it, is
+  /// [normal].
+  OutboxClaim.of(String normal, DateTime at) : this(digestOf(normal), at);
+
+  final String digest;
 
   /// UTC.
   final DateTime at;
 
-  Map<String, dynamic> toJson() => {'text': text, 'at': at.toIso8601String()};
+  static String digestOf(String normal) =>
+      sha256.convert(utf8.encode(normal)).toString();
+
+  Map<String, dynamic> toJson() => {
+    'digest': digest,
+    'at': at.toIso8601String(),
+  };
 
   static OutboxClaim? fromJson(Object? json) {
     if (json is! Map) return null;
-    final text = json['text'];
+    final digest = json['digest'];
     final at = json['at'] is String ? DateTime.tryParse(json['at']) : null;
-    if (text is! String || at == null) return null;
-    return OutboxClaim(text, at.toUtc());
+    if (digest is! String || at == null) return null;
+    return OutboxClaim(digest, at.toUtc());
   }
 }
 
@@ -593,11 +605,11 @@ class OutboxMatch {
     Iterable<OutboxClaim> claims = const [],
   }) {
     final used = {...consumed};
-    String? take(String want, DateTime createdAt) {
+    String? take(bool Function(TranscriptTurn turn) wants, DateTime createdAt) {
       final earliest = createdAt.subtract(skew);
       for (final turn in turns) {
         if (used.contains(turn.key) ||
-            turn.text != want ||
+            !wants(turn) ||
             turn.at.isBefore(earliest)) {
           continue;
         }
@@ -608,12 +620,12 @@ class OutboxMatch {
     }
 
     for (final claim in claims) {
-      take(claim.text, claim.at);
+      take((turn) => OutboxClaim.digestOf(turn.text) == claim.digest, claim.at);
     }
     final result = <String, String>{};
     for (final entry in entries) {
       final want = normal(textOf == null ? entry.text : textOf(entry.text));
-      final turn = take(want, entry.createdAt);
+      final turn = take((turn) => turn.text == want, entry.createdAt);
       if (turn != null) result[entry.id] = turn;
     }
     return result;

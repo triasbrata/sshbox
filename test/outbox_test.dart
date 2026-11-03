@@ -390,7 +390,7 @@ void main() {
           [second],
           turns,
           const [],
-          claims: [OutboxClaim('ok', t0)],
+          claims: [OutboxClaim.of('ok', t0)],
         ),
         isEmpty,
       );
@@ -404,24 +404,28 @@ void main() {
           [second],
           both,
           const [],
-          claims: [OutboxClaim('ok', t0)],
+          claims: [OutboxClaim.of('ok', t0)],
         ),
         {'b': 'u2'},
       );
     });
 
-    test('claims are kept on disk', () async {
+    test('claims are kept on disk, with no word of the message', () async {
       final key = OutboxStore.keyOf('h', 's');
       final now = DateTime.now().toUtc();
       await store.save(
         key,
         OutboxBox(
           entries: [_entry('a', 'x', now)],
-          claims: [OutboxClaim('ok', now)],
+          claims: [OutboxClaim.of('ok', now)],
         ),
       );
       final read = await store.load(key);
-      expect(read.claims.single.text, 'ok');
+      expect(read.claims.single.digest, OutboxClaim.digestOf('ok'));
+      expect(
+        File('${dir.path}/chat_outbox/$key.json').readAsStringSync(),
+        isNot(contains('"ok"')),
+      );
       expect(read.claims.single.at, now);
     });
 
@@ -438,7 +442,7 @@ void main() {
         key,
         OutboxBox(
           consumed: ['t1'],
-          claims: [OutboxClaim('ok', now)],
+          claims: [OutboxClaim.of('ok', now)],
           provedAt: now.subtract(OutboxBox.proofLife * 2),
         ),
       );
@@ -486,13 +490,16 @@ void main() {
         OutboxBox(
           entries: [_entry('a', 'x', now)],
           claims: [
-            OutboxClaim('old', now.subtract(OutboxBox.proofLife * 2)),
-            OutboxClaim('new', now),
+            OutboxClaim.of('old', now.subtract(OutboxBox.proofLife * 2)),
+            OutboxClaim.of('new', now),
           ],
           provedAt: now,
         ),
       );
-      expect([for (final c in (await store.load(key)).claims) c.text], ['new']);
+      expect(
+        [for (final c in (await store.load(key)).claims) c.digest],
+        [OutboxClaim.digestOf('new')],
+      );
     });
   });
   test(

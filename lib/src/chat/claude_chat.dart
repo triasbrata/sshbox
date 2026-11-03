@@ -2822,7 +2822,10 @@ class ClaudeChat extends ChangeNotifier {
       box.consumed.add(turn);
     } else {
       box.claims.add(
-        OutboxClaim(OutboxMatch.normal(_pasteable(entry.text)), entry.createdAt),
+        OutboxClaim.of(
+          OutboxMatch.normal(_pasteable(entry.text)),
+          entry.createdAt,
+        ),
       );
     }
     box.provedAt = DateTime.now().toUtc();
