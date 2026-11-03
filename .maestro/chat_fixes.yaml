@@ -5,9 +5,9 @@
 # pane's log, the transcripts and the outbox file on the device. The flow
 # asserts what the user sees.
 #
-#   own_open, own_send,    H1: a message chat's own Claude never got, the
-#   own_back               connection dropped under it, goes to the Claude
-#                          started again once the connection is back; one it
+#   own_open, own_send,    H1: a message chat's own Claude never got, its
+#   own_restart            process ended under it, goes to the Claude
+#                          started again from the menu; one it
 #                          answered goes nowhere again
 #   two_open, two_draft,   H2: a message sent behind a slow Retry, for a
 #   two_retry, two_switch, session the chat then leaves, is kept for that
@@ -82,29 +82,29 @@ env:
       - assertNotVisible: "(?s).*Not sent.*"
       - takeScreenshot: chat-fixes-own-sent
 
-# The connection back, from the chat's own tab: a message lost with the old
-# process is answered by the new one, by itself, with no Retry.
+# Claude restarted from the chat's menu after its process ended (the runner
+# ended it): a message lost with the old process is answered by the new one,
+# by itself, with no Retry.
 - runFlow:
     when:
-      true: ${STEP == 'own_back'}
+      true: ${STEP == 'own_restart'}
     commands:
-      - tapOn: "Reconnect"
-      - tapOn:
-          text: "Trust"
-          optional: true
-      - extendedWaitUntil:
-          notVisible: "Reconnect"
-          timeout: 60000
-      - tapOn:
-          text: "(?s)^(?!Close).*Claude.*"
-          optional: true
+      - runFlow:
+          when:
+            true: ${LOST == 'yes'}
+          commands:
+            - extendedWaitUntil:
+                visible: "(?s).*Trying again in.*"
+                timeout: 30000
+            - takeScreenshot: chat-fixes-own-waiting
+      - tapOn: "Chat settings"
+      - tapOn: "Restart Claude"
       - extendedWaitUntil:
           visible: "(?i)Echo: ${MSG}"
-          timeout: 120000
-      - assertNotVisible: "(?s).*Waiting for the connection.*"
+          timeout: 90000
       - assertNotVisible: "(?s).*Trying again in.*"
       - assertNotVisible: "Retry"
-      - takeScreenshot: chat-fixes-own-back
+      - takeScreenshot: chat-fixes-own-restarted
       - tapOn: "(?s)Close .*Claude.*"
       - tapOn: "Close ${HOST_LABEL}.*"
 
@@ -163,7 +163,7 @@ env:
     when:
       true: ${STEP == 'two_switch'}
     commands:
-      - tapOn: "Sessions on this host"
+      - runFlow: common/sessions.yaml
       - extendedWaitUntil:
           visible: "(?s)\\W*E2E short session.*"
           timeout: 20000

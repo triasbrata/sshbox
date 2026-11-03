@@ -3446,32 +3446,41 @@ fx_teardown() {
 }
 
 # H1, both ways. With LOST, the message's bytes never reach chat's own Claude
-# (the stand-in drops them, as a connection dropping would); the connection
-# then drops, and once it is back the Claude started again gets it, once.
-# Without, it was answered before the drop, and nothing goes again.
+# (the stand-in drops them); its process then ends, the message waits for its
+# next try, and Claude is restarted from the chat's menu: the Claude started
+# again gets it, once. Without, it was answered first, and nothing goes again.
 fx_h1() { # lost|answered
-  local msg="fixes own $1"
-  echo "::group::chat_fixes H1 ($1): a message under a dropped connection"
+  local msg="fixes own $1" lost=no pid
+  [ "$1" = lost ] && lost=yes
+  echo "::group::chat_fixes H1 ($1): a message whose Claude ended under it"
   ob_reset
   ob_restore_ssh
-  [ "$1" = lost ] && ob_host touch "$FX_DROP"
+  sudo rm -f "$FX_LOG"
+  [ "$lost" = yes ] && ob_host touch "$FX_DROP"
   flow chat_fixes -e STEP=own_open || ob_fail "H1 $1: the own_open flow failed"
   flow chat_fixes -e STEP=own_send -e "MSG=$msg" || ob_fail "H1 $1: the own_send flow failed"
   sleep 5
-  if [ "$1" = lost ]; then
+  if [ "$lost" = yes ]; then
     ob_expect "H1 lost: the first Claude read it and lost it" "$(fx_count dropped "$msg")" 1
     ob_expect "H1 lost: nobody answered it yet" "$(fx_count answered "$msg")" 0
   else
-    ob_expect "H1 answered: answered before the drop" "$(fx_count answered "$msg")" 1
+    ob_expect "H1 answered: answered before its Claude ended" "$(fx_count answered "$msg")" 1
   fi
-  ob_drop_ssh
-  sleep 12
   sudo rm -f "$FX_DROP"
-  ob_restore_ssh
-  flow chat_fixes -e STEP=own_back -e "MSG=$msg" || ob_fail "H1 $1: the own_back flow failed"
+  # The Claude that read it, ended: the newest stand-in this session started.
+  pid=$(sudo python3 - "$FX_LOG" <<'PY'
+import json, sys
+pids = [e['pid'] for e in map(json.loads, open(sys.argv[1])) if e.get('ev') == 'start']
+print(pids[-1] if pids else '')
+PY
+)
+  echo "ending chat's own Claude, pid $pid"
+  [ -n "$pid" ] && sudo kill "$pid"
+  flow chat_fixes -e STEP=own_restart -e "MSG=$msg" -e "LOST=$lost" ||
+    ob_fail "H1 $1: the own_restart flow failed"
   # A second send, if one were coming, would have been read by now.
   sleep 10
-  if [ "$1" = lost ]; then
+  if [ "$lost" = yes ]; then
     ob_expect "H1 lost: read by two processes, the old and the new" "$(fx_count received "$msg" pids)" 2
   else
     ob_expect "H1 answered: read by one process alone" "$(fx_count received "$msg" pids)" 1
