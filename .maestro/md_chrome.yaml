@@ -80,11 +80,23 @@ env:
     when:
       true: ${STEP == 'source'}
     commands:
-      - hideKeyboard
+      - runFlow:
+          # Only when Gboard is up (its strip's GIF): hideKeyboard with no
+          # keyboard is Back, which closes the file tab or asks to discard.
+          when:
+            visible: "GIF"
+          commands:
+            - hideKeyboard
+            - waitForAnimationToEnd
       - tapOn: "source"
       - waitForAnimationToEnd
-      - tapOn:
-          point: "50%,38%"
+      # The empty last line, below the paragraph's seven rows: a long press
+      # puts the caret there, and the editor's menu offers Paste.
+      - longPressOn:
+          point: "50%,49%"
+      - waitForAnimationToEnd
+      - takeScreenshot: md-chrome-source-menu
+      - tapOn: "Paste"
       - waitForAnimationToEnd
 
 - runFlow:
@@ -101,8 +113,12 @@ env:
       - waitForAnimationToEnd
       - takeScreenshot: md-chrome-${FILE}-selected
       # The keyboard away first: its own b key is a "B" to Maestro too.
-      - hideKeyboard
-      - waitForAnimationToEnd
+      - runFlow:
+          when:
+            visible: "GIF"
+          commands:
+            - hideKeyboard
+            - waitForAnimationToEnd
       - tapOn: "B"
       - waitForAnimationToEnd
       - takeScreenshot: md-chrome-${FILE}-bold
@@ -111,7 +127,12 @@ env:
     when:
       true: ${STEP == 'save'}
     commands:
-      - hideKeyboard
+      - runFlow:
+          when:
+            visible: "GIF"
+          commands:
+            - hideKeyboard
+            - waitForAnimationToEnd
       - extendedWaitUntil:
           visible: "(?s).*Unsaved changes.*"
           timeout: 5000
@@ -133,6 +154,11 @@ env:
     when:
       true: ${STEP == 'close'}
     commands:
-      - hideKeyboard
+      - runFlow:
+          when:
+            visible: "GIF"
+          commands:
+            - hideKeyboard
+            - waitForAnimationToEnd
       - tapOn: "Close file"
       - waitForAnimationToEnd

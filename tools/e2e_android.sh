@@ -892,16 +892,12 @@ md_chrome() {
   put jeansh-e2e-fence "$fence"
 
   app_fresh
-  # The menu: Copy, then pasted at the end in Source.
+  # The menu: Copy, then Paste from Source's own menu on the empty last line.
   check 'the zebra file opens in Rich text' \
     flow md_chrome -e STEP=open -e FIRST=yes -e FILE=jeansh-e2e-zebra
   check "a long press shows termul's row: Copy, Select all, no Bold" \
     flow md_chrome -e STEP=press -e FIRST=no -e FILE=x
   flow md_chrome -e STEP=source -e FIRST=no -e FILE=x || status=1
-  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_MOVE_END
-  sleep 1
-  adb shell input keyevent KEYCODE_PASTE
-  sleep 1
   flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
   sleep 2
   got=$(read_back jeansh-e2e-zebra)
