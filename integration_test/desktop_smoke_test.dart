@@ -36,6 +36,8 @@ import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/files/file_browser.dart'
+    show FileBrowser, RemoteEntry, RemoteEntryKind;
 import 'package:sshbox/src/files/local_file_browser.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart' show FileBrowserPage;
@@ -3431,6 +3433,290 @@ touch '${done.path}'
       expect(_zipTemps(), isEmpty, reason: 'the cancel left a folder');
       expect(await zipRunning(), isFalse, reason: 'a zip process outlived it');
       expect(picker.saveAsked, 0, reason: 'a cancel reached the save dialog');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #335, H3: a temp folder named with a slash at its end, as macOS names
+  // $TMPDIR. The archive script printed a path holding //, which was refused:
+  // Download as zip failed on every Mac Local shell and left its archive
+  // behind. The drawer is the real FileBrowserPage over a real
+  // LocalFileBrowser whose TMPDIR the test sets, so the case is the same on
+  // any runner; the save is answered through the OS's own dialog.
+  _test(
+    'Download as zip works where TMPDIR ends in a slash, and a cancel there '
+    'leaves nothing',
+    skip: Platform.isWindows || Platform.environment['CI'] != 'true'
+        ? "a real zip and sh under a TMPDIR of the test's own are macOS and "
+              'Linux CI only'
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      final dir = Directory(home).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final src = Directory('${dir.path}/dev')..createSync();
+      File('${src.path}/a b.txt').writeAsStringSync('slash\n');
+      // Big enough to be cancelled while it compresses, and made before the
+      // page lists the folder.
+      final big = Directory('${dir.path}/big')..createSync();
+      for (var i = 0; i < 3; i++) {
+        final made = await Process.run('dd', [
+          'if=/dev/urandom',
+          'of=${big.path}/chunk$i.bin',
+          'bs=1048576',
+          'count=100',
+        ]);
+        expect(made.exitCode, 0, reason: '${made.stderr}');
+      }
+      final tmp = _scratch();
+      List<String> leftovers() => tmp
+          .listSync()
+          .map((e) => e.path.split('/').last)
+          .where((n) => n.startsWith('jeansh-zip.'))
+          .toList();
+      // The real environment, but for TMPDIR, given a slash at its end.
+      Future<Process> slashed(String c) => Process.start(
+        '/bin/sh',
+        ['-c', c],
+        workingDirectory: home,
+        environment: {...Platform.environment, 'TMPDIR': '${tmp.path}/'},
+        includeParentEnvironment: false,
+      );
+      debugPrint('TMPDIR for the host: ${tmp.path}/');
+
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      unawaited(
+        navigator.push(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, _, _) => FileBrowserPage(
+              browser: LocalFileBrowser(
+                process: slashed,
+                home: () async => home,
+              ),
+              title: 'slashed host',
+              initialRoot: dir.path,
+            ),
+          ),
+        ),
+      );
+      Future<void> menu(String row, String item) async {
+        final target = find.text(row);
+        await _until(
+          tester,
+          () => target.evaluate().isNotEmpty,
+          'the page to list $row',
+        );
+        await tester.tapAt(
+          tester.getCenter(target),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, item);
+      }
+
+      Transfer? mine(String name, Set<Transfer> before) => transfers.items
+          .where((t) => !before.contains(t) && t.name == name)
+          .firstOrNull;
+
+      // (+) The zip is made, saved and listed, and nothing stays in TMPDIR.
+      final out = _scratch();
+      var before = transfers.items.toSet();
+      ProcessResult? answer;
+      await menu('dev', 'Download as zip');
+      unawaited(
+        _answerSaveDialog('${out.path}/dev.zip').then((r) => answer = r),
+      );
+      await _until(
+        tester,
+        () =>
+            mine('dev.zip', before) != null &&
+            mine('dev.zip', before)!.state != TransferState.running,
+        'the zip to end',
+        timeout: const Duration(seconds: 90),
+      );
+      final zipped = mine('dev.zip', before)!;
+      if (zipped.state != TransferState.done) {
+        fail('❌ zip under a slashed TMPDIR: ${zipped.state} ${zipped.error}');
+      }
+      await _until(tester, () => answer != null, 'the dialog answered');
+      final saved = Uri.parse(zipped.saved!).toFilePath();
+      addTearDown(() {
+        if (File(saved).existsSync()) File(saved).deleteSync();
+      });
+      final listing = await Process.run('unzip', ['-Z1', saved]);
+      expect(listing.exitCode, 0, reason: '${listing.stderr}');
+      expect('${listing.stdout}', contains('dev/a b.txt'));
+      await _until(
+        tester,
+        () => leftovers().isEmpty,
+        'TMPDIR to hold no jeansh-zip folder',
+      );
+      expect(find.textContaining('made no archive'), findsNothing);
+      debugPrint('✅ zip under a slashed TMPDIR: saved, listed, no leftover');
+
+      // (−) A cancel while compressing: no file, no folder, no process.
+      Future<bool> zipRunning() async =>
+          (await Process.run('pgrep', ['-f', r'jeansh-zip\.'])).exitCode == 0;
+      before = transfers.items.toSet();
+      await menu('big', 'Download as zip');
+      await _until(
+        tester,
+        () =>
+            mine('big.zip', before)?.phase?.startsWith('Compressing') ?? false,
+        'the row to say Compressing',
+      );
+      await _until(
+        tester,
+        () async => leftovers().isNotEmpty && await zipRunning(),
+        'the host to have its archive folder and a zip process',
+      );
+      transfers.cancel(mine('big.zip', before)!);
+      await _until(
+        tester,
+        () => mine('big.zip', before)!.state != TransferState.running,
+        'the cancelled transfer to end',
+        timeout: const Duration(seconds: 30),
+      );
+      expect(mine('big.zip', before)!.state, TransferState.cancelled);
+      await _until(
+        tester,
+        () async => leftovers().isEmpty && !await zipRunning(),
+        'TMPDIR to hold no jeansh-zip folder and no zip process',
+      );
+      expect(find.textContaining('made no archive'), findsNothing);
+      debugPrint('✅ cancel under a slashed TMPDIR: nothing left');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #335, M6: names that differ only in case, and on Windows a name with a
+  // colon, written into a real case-folding volume (APFS, NTFS). The host is
+  // held in memory, since such a pair cannot be made on this machine; the
+  // download writes to the real disk through the real page, a right-click
+  // and the menu.
+  _test(
+    'Download folder skips a name this computer would fold onto another, '
+    'and saves the rest',
+    skip: !Platform.isMacOS && !Platform.isWindows
+        ? 'names fold onto each other on macOS and Windows only'
+        : null,
+    (tester) async {
+      final picker = _PickFolder.install();
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      Future<void> run(_MemoryHost host, String out) async {
+        picker.directory = out;
+        unawaited(
+          navigator.push(
+            PageRouteBuilder<void>(
+              pageBuilder: (_, _, _) => FileBrowserPage(
+                browser: host,
+                title: 'memory host',
+                initialRoot: '/home/me',
+              ),
+            ),
+          ),
+        );
+        final dev = find.text('dev');
+        await _until(
+          tester,
+          () => dev.evaluate().isNotEmpty,
+          'the page to list dev',
+        );
+        final before = transfers.items.toSet();
+        await tester.tapAt(
+          tester.getCenter(dev),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, 'Download folder');
+        await _until(
+          tester,
+          () => transfers.items.any(
+            (t) =>
+                !before.contains(t) &&
+                t.name == 'dev' &&
+                t.state != TransferState.running,
+          ),
+          'the folder download to end',
+          timeout: const Duration(seconds: 60),
+        );
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      final sep = Platform.pathSeparator;
+      List<String> names(String dir) =>
+          Directory(dir).listSync().map((e) => e.path.split(sep).last).toList()
+            ..sort();
+
+      // (+) README and readme, and on Windows notes:v2.
+      final out = _scratch();
+      await run(
+        _MemoryHost({
+          'README': [1, 1],
+          'readme': [2, 2, 2],
+          if (Platform.isWindows) 'notes:v2': [3],
+        }),
+        out.path,
+      );
+      final dev = '${out.path}${sep}dev';
+      expect(File('$dev${sep}README').readAsBytesSync(), [
+        1,
+        1,
+      ], reason: '❌ readme was written over README');
+      expect(names(dev), [
+        'README',
+      ], reason: '❌ the folder holds ${names(dev)}');
+      await _until(
+        tester,
+        () => find
+            .textContaining('readme (would overwrite README on this computer)')
+            .evaluate()
+            .isNotEmpty,
+        'the end dialog to name the skipped readme',
+      );
+      if (Platform.isWindows) {
+        expect(
+          find.textContaining('notes:v2 (a character Windows does not allow)'),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('Saved dev'), findsNothing);
+      debugPrint('✅ a folded pair: README kept, readme skipped and named');
+      await tester.tap(_label('OK'));
+      await tester.pump(const Duration(seconds: 1));
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+
+      // (−) No pair: every file comes down and nothing is skipped.
+      final plain = _scratch();
+      await run(
+        _MemoryHost({
+          'README': [1, 1],
+          'other.txt': [4],
+        }),
+        plain.path,
+      );
+      expect(names('${plain.path}${sep}dev'), ['README', 'other.txt']);
+      expect(find.textContaining('would overwrite'), findsNothing);
+      expect(find.textContaining('Windows does not allow'), findsNothing);
+      await _until(
+        tester,
+        () => find.text('Saved dev').evaluate().isNotEmpty,
+        'Saved dev',
+      );
+      debugPrint('✅ no pair: every file saved, nothing skipped');
       navigator.pop();
       await tester.pump(const Duration(seconds: 1));
       await _closeTabs(tester);
@@ -9672,4 +9958,59 @@ class _EditorSave {
     );
     expect(this.text(), text, reason: '$when: the text changed');
   }
+}
+
+/// A host held in memory: `/home/me/dev` holding [files], name to bytes. For
+/// names this machine's own disk could not hold side by side.
+class _MemoryHost extends Fake implements FileBrowser {
+  _MemoryHost(this.files);
+
+  final Map<String, List<int>> files;
+
+  @override
+  Future<String> resolveHome() async => '/home/me';
+
+  @override
+  Future<RemoteEntryKind?> stat(String path) async =>
+      path.startsWith('/home/me/dev/')
+      ? RemoteEntryKind.file
+      : RemoteEntryKind.directory;
+
+  @override
+  Future<List<RemoteEntry>> list(String path) async => switch (path) {
+    '/home/me' || '/home/me/' => const [
+      RemoteEntry(
+        name: 'dev',
+        path: '/home/me/dev',
+        kind: RemoteEntryKind.directory,
+      ),
+    ],
+    '/home/me/dev' => [
+      for (final MapEntry(:key, :value) in files.entries)
+        RemoteEntry(
+          name: key,
+          path: '/home/me/dev/$key',
+          kind: RemoteEntryKind.file,
+          size: value.length,
+        ),
+    ],
+    _ => const [],
+  };
+
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    int offset = 0,
+    int? length,
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    final bytes = files[path.substring('/home/me/dev/'.length)]!;
+    File(localPath).writeAsBytesSync(bytes);
+    onProgress?.call(bytes.length, bytes.length);
+  }
+
+  @override
+  Future<void> close() async {}
 }
