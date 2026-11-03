@@ -38,6 +38,12 @@ class _Shell
   /// How long the host takes to answer: one round trip.
   Duration answerDelay = Duration.zero;
 
+  /// While set, the install channel is not confirmed until it completes.
+  Completer<void>? stallOpen;
+
+  /// How many install channels were closed.
+  int closed = 0;
+
   /// The secret the last install was sent on its stdin.
   String? get installedSecret =>
       installInputs.isEmpty ? null : installInputs.last.split('\n').first;
@@ -49,6 +55,7 @@ class _Shell
   @override
   Future<CommandChannel> open(String command) async {
     installs.add(command);
+    await stallOpen?.future;
     final out = StreamController<Uint8List>();
     return (
       output: out.stream,
@@ -64,7 +71,7 @@ class _Shell
           out.close();
         });
       },
-      close: () {},
+      close: () => closed++,
     );
   }
 
@@ -306,6 +313,31 @@ void main() {
       final hung = await installWith('hang');
       expect(hung.single, contains('did not answer'));
     });
+
+    test(
+      'a host that never confirms the install channel is waited on up to '
+      'the ceiling, the shell opens, and the late channel is closed',
+      () async {
+        final old = LiveSession.openInstallTimeout;
+        addTearDown(() => LiveSession.openInstallTimeout = old);
+        LiveSession.openInstallTimeout = const Duration(milliseconds: 40);
+        final said = <String>[];
+        final shell = _Shell()..stallOpen = Completer<void>();
+        final session = SessionManager(onOpenProblem: said.add)
+            .create(host, transport: (_, _) => shell);
+        addTearDown(session.dispose);
+        await session
+            .connect(secrets: _Secrets())
+            .timeout(const Duration(seconds: 2));
+        expect(session.isConnected, isTrue);
+        expect(said.single, contains('did not answer'));
+        expect(shell.installInputs, isEmpty);
+        shell.stallOpen!.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(shell.closed, 1);
+        expect(shell.installInputs, isEmpty);
+      },
+    );
 
     test('a problem met while connecting is said when the connect is over, '
         'never before, and also when the connect then fails', () async {
