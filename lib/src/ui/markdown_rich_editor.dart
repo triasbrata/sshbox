@@ -1784,7 +1784,7 @@ TextEditingValue? toggleInline(
     // `***x***` is bold and italic in one pair of markers: taking one off
     // takes its own part of them, one character for italic and two for
     // bold, and leaves the other.
-    if (open.end - open.start == 3 && close.end - close.start == 3) {
+    if (false && open.end - open.start == 3 && close.end - close.start == 3) {
       final k = bit == MdMark.italic ? 1 : 2;
       open = MdRange(open.start, open.start + k);
       close = MdRange(close.end - k, close.end);
