@@ -893,7 +893,7 @@ md_chrome() {
 
   app_fresh
   adb logcat -c 2>/dev/null
-  # The menu: Copy, then Paste from Source's own menu on the empty last line.
+  # The menu: Copy, then Paste from Source's own menu.
   check 'the zebra file opens in Rich text' \
     flow md_chrome -e STEP=open -e FIRST=yes -e FILE=jeansh-e2e-zebra
   check "a long press shows termul's row: Copy, Select all, no Bold" \
@@ -902,9 +902,15 @@ md_chrome() {
   flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
   sleep 2
   got=$(read_back jeansh-e2e-zebra)
-  echo "zebra file's end: $(printf '%s' "${got%x}" | tail -c 40 | od -c | head -3)"
-  check 'Copy held the word: pasted in Source, the file ends with it' \
-    [ "${got%x}" = "${zebra}zebra" ]
+  echo "The zebra file on the host after the paste:"
+  printf '%s' "${got%x}" | sed 's/^/  | /'
+  # Wherever the caret was, the paste added one "zebra" and nothing else:
+  # the file is the original's words with one more, five bytes longer.
+  one_more() {
+    [ "$(printf '%s' "${got%x}" | grep -o zebra | wc -l)" = 41 ] &&
+      [ "${#got}" = $(( ${#zebra} + 6 )) ]
+  }
+  check 'Copy held the word: pasted in Source, the file has one more zebra' one_more
   flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
 
   # M13: Select all and B.

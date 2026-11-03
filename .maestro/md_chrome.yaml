@@ -90,8 +90,8 @@ env:
             - waitForAnimationToEnd
       - tapOn: "source"
       - waitForAnimationToEnd
-      # The empty last line, below the paragraph's seven rows: a long press
-      # puts the caret there, and the editor's menu offers Paste.
+      # A long press in the text, wherever it lands: the editor puts the
+      # caret there and its menu offers Paste.
       - longPressOn:
           point: "50%,49%"
       - waitForAnimationToEnd
