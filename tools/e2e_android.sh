@@ -851,7 +851,7 @@ print(hashlib.sha256(px[row * (h // 10):row * (h * 9 // 10)]).hexdigest())'
   sudo rm -f "$home/jeansh-e2e-mermaid.md" "$home/jeansh-e2e-pie.md"
 
   check 'a chat reply draws its mermaid graph, with Copy diagram source' \
-    stand_in_flow chat_mermaid
+    chat_mermaid
   return "$status"
 }
 

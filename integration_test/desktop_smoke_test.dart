@@ -2376,7 +2376,7 @@ touch '${done.path}'
         '✅ terminal: graph TD selected, Show as diagram drew it natively',
       );
       await _grab(tester, 'desktop-mermaid-terminal-flowchart');
-      await tester.tap(_label('Close'));
+      await tester.tap(find.text('CLOSE'));
       await _until(
         tester,
         () => find.byType(MermaidBlock).evaluate().isEmpty,
@@ -2408,7 +2408,7 @@ touch '${done.path}'
           '✅ terminal: a pie shows its source and Open in Mermaid, no canvas',
         );
         await _grab(tester, 'desktop-mermaid-terminal-pie');
-        await tester.tap(_label('Close'));
+        await tester.tap(find.text('CLOSE'));
         await tester.pump(const Duration(milliseconds: 600));
       }
       await _closeTabs(tester);
@@ -9558,7 +9558,9 @@ pie title E2E pets
       );
       expect(
         tester.getSemantics(canvases.at(1)).label,
-        startsWith('Sequence diagram between User, Android, Jeansh app'),
+        startsWith(
+          'Sequence diagram between FCM SDK on the tablet, Jeansh app',
+        ),
       );
       semantics.dispose();
       // What is drawn as text outside the field: no diagram's source.
