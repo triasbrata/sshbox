@@ -6,12 +6,17 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/markdown_live.dart';
 import 'package:sshbox/src/ui/markdown_rich_editor.dart';
+import 'package:sshbox/src/ui/mermaid_canvas.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/save_chord.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
 import 'package:sshbox/src/ui/termul/termul_theme.dart';
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart';
 import 'package:sshbox/src/ui/termul/tui_menu.dart';
 import 'package:sshbox/src/ui/tui.dart' show jeanshTheme;
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
+
+import 'fake_web_view.dart';
 
 class _Host {
   _Host(this.text);
@@ -637,6 +642,102 @@ void main() {
     await tester.tap(find.text('RENDERED ![pic](a.png)'));
     await tester.pump();
     expect(downs, isEmpty);
+  });
+
+  group('a Mermaid block in rich text', () {
+    // A flowchart far wider than the page, drawn by the real MermaidBlock.
+    final chain = [for (var k = 0; k < 14; k++) 'N$k[Node number $k]'];
+    final wide = 'flowchart LR\n  ${chain.join(' --> ')}\n';
+    final doc =
+        '${[for (var k = 0; k < 12; k++) 'Above $k.'].join('\n\n')}\n\n'
+        '```mermaid\n$wide```\n\nBelow.\n';
+    final pie =
+        '${[for (var k = 0; k < 12; k++) 'Above $k.'].join('\n\n')}\n\n'
+        '```mermaid\npie\n  "a": 1\n```\n\nBottom.\n';
+
+    Widget mermaid(BuildContext context, String md) {
+      final m = RegExp(r'^```mermaid\n([\s\S]*?)```').firstMatch(md);
+      if (m == null) return Text('RENDERED ${md.split('\n').first}');
+      return MermaidBlock(source: m[1]!);
+    }
+
+    ScrollPosition sideways(WidgetTester tester) => tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MermaidBlock),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+
+    testWidgets('a drag across a wide diagram scrolls it sideways, and a tap '
+        'on it still puts the caret in its block', (tester) async {
+      await _pump(
+        tester,
+        doc,
+        size: const Size(600, 900),
+        blockBuilder: mermaid,
+      );
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      final scroll = sideways(tester);
+      expect(scroll.maxScrollExtent, greaterThan(300));
+      // On it, where it is on the page: its centre is far off to the right.
+      final on = Offset(
+        tester.getTopLeft(find.byType(MermaidCanvas)).dx + 120,
+        tester.getCenter(find.byType(MermaidCanvas)).dy,
+      );
+      await tester.dragFrom(on, const Offset(-300, 0));
+      await tester.pumpAndSettle();
+      expect(sideways(tester).pixels, greaterThan(100));
+
+      await tester.tapAt(on);
+      await tester.pumpAndSettle();
+      final at = _controller(tester).selection.extentOffset;
+      final fence = doc.indexOf('```mermaid');
+      expect(at, inInclusiveRange(fence, doc.indexOf('```\n\nBelow')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('on a desktop, Shift and the wheel scroll it sideways', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        doc,
+        size: const Size(600, 900),
+        blockBuilder: mermaid,
+      );
+      // On it, where it is on the page: its centre is far off to the right.
+      final on = Offset(
+        tester.getTopLeft(find.byType(MermaidCanvas)).dx + 120,
+        tester.getCenter(find.byType(MermaidCanvas)).dy,
+      );
+      final mouse = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(on));
+      await tester.sendEventToBinding(mouse.scroll(const Offset(300, 0)));
+      await tester.pumpAndSettle();
+      expect(sideways(tester).pixels, greaterThan(100));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets('Open in Mermaid opens its dialog and leaves the caret '
+          'where it was (${platform.name})', (tester) async {
+        WebViewPlatform.instance = FakeWebViewPlatform();
+        await _pump(
+          tester,
+          pie,
+          size: const Size(600, 1200),
+          blockBuilder: mermaid,
+        );
+        await _caret(tester, 2);
+        await tester.pumpAndSettle();
+        final before = _controller(tester).selection;
+        await tester.tap(find.text('OPEN IN MERMAID'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MermaidView), findsOneWidget);
+        expect(_controller(tester).selection, before);
+        expect(find.text('OPEN IN MERMAID'), findsOneWidget);
+      }, variant: TargetPlatformVariant.only(platform));
+    }
   });
 
   testWidgets('front matter draws as keys and values, <details> as its '
