@@ -661,11 +661,16 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
 /// testWidgets, with a skip that says why in the log: flutter test prints only
 /// a skipped test's name, and a skip is no coverage, so it has to be read as
 /// one.
-void _test(String name, WidgetTesterCallback body, {String? skip}) {
+void _test(
+  String name,
+  WidgetTesterCallback body, {
+  String? skip,
+  bool semantics = true,
+}) {
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(name, body, skip: skip != null, semanticsEnabled: semantics);
 }
 
 const _powershell =
@@ -9495,6 +9500,9 @@ touch '${done.path}'
     'rich text: a copy across a far section shaped as blanks copies its '
     'words, and a screen reader reads them',
     skip: editorSkip,
+    // No screen reader of the test's own: testWidgets turns semantics on
+    // unless told not to, and with it on nothing is blanked.
+    semantics: false,
     (tester) async {
       final original = readme(83);
       final k = await _EditorSave.start(tester, 'speed.md', text: original);
@@ -9522,8 +9530,14 @@ touch '${done.path}'
         'rich text blanks: screen reader $reader, the field draws the far '
         'words: ${shown.contains(_far)}, longest blank ${longestBlank(shown)}',
       );
-      expect(shown.contains(_far), isFalse, reason: 'far section not blanked');
-      expect(longestBlank(shown), greaterThan(40), reason: 'no blanks drawn');
+      // The platform's own accessibility on, as on CI's Mac: the field is
+      // drawn for a screen reader from the start, and nothing is blanked.
+      if (reader) {
+        expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      } else {
+        expect(shown.contains(_far), isFalse, reason: 'far not blanked');
+        expect(longestBlank(shown), greaterThan(40), reason: 'no blanks');
+      }
 
       await Clipboard.setData(const ClipboardData(text: 'untouched'));
       await k.press('ctrl+a', 'keystroke "a" using command down');
@@ -9552,7 +9566,11 @@ touch '${done.path}'
       expect(longestBlank(shown), lessThan(4), reason: 'reader on: blanks');
       semantics.dispose();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(drawn().contains(_far), isFalse, reason: 'reader off: no blanks');
+      expect(
+        drawn().contains(_far),
+        reader,
+        reason: 'the reader let go: blanks as at the start',
+      );
       await _closeTabs(tester);
     },
   );
