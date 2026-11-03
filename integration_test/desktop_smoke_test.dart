@@ -9729,7 +9729,7 @@ pie title E2E pets
       await click(at(k.text().length), right: true);
       await _until(
         tester,
-        () => find.text('Select all').evaluate().isNotEmpty,
+        () => find.text(bold).evaluate().isNotEmpty,
         'the panel with no selection',
       );
       expect(
