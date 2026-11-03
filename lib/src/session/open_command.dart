@@ -41,8 +41,7 @@ if [ "$1" = notify ] && [ $# -ge 2 ] && [ $# -le 3 ]; then
   ns=$LC_SSHBOX_NOTIFY_SECRET
   case $ns in *[!A-Za-z0-9_-]*) ns= ;; esac
   if [ -n "$LC_SSHBOX_NOTIFY_URL" ] && [ -n "$ns" ] &&
-    printf 'header = "Authorization: Bearer %s"\n' "$ns" |
-    curl -K - -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" \
+    curl -fsS --connect-timeout 2 -m 5 "$LC_SSHBOX_NOTIFY_URL" -H "Authorization: Bearer $ns" \
       --data-urlencode "title=$title" --data-urlencode "body=$body" \
       >/dev/null 2>&1; then
     exit 0
@@ -67,7 +66,7 @@ if [ "$1" = notify ] && [ $# -ge 2 ] && [ $# -le 3 ]; then
   # script reads the same to a login shell, such as fish, that takes a
   # doubled backslash in single quotes as one.
   bs=$(printf '\134')
-  esc() { printf %s "$1" | tr '\n' ' ' | sed "s/[$bs\"]/$bs$bs&/g"; }
+  esc() { printf %s "$1" | tr '\n' ' ' | sed 's/[\\"]/\\&/g'; }
   if [ -n "$title" ]; then
     data=$(printf '{"title":"%s","body":"%s"}' "$(esc "$title")" "$(esc "$body")")
   else

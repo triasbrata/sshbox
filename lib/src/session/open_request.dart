@@ -151,6 +151,7 @@ class OpenRequests {
   int _droppedSince = 0;
   String _droppedWhy = '';
   Timer? _droppedTimer;
+  final _seenHere = <String>{};
 
   static final _random = Random.secure();
   static String newSecret() => base64Url
@@ -175,7 +176,7 @@ class OpenRequests {
             ? (at - nowSeconds).abs() <= unmeasuredWindow
             : (at - (nowSeconds + offset)).abs() <= window) &&
         _hex.hasMatch(args[3]) &&
-        ring.firstUse(args[3]);
+        _seenHere.add(args[3]);
     if (!good) return _refuse(now);
     final (:path, :why) = decode(args[4]);
     if (path == null) return _drop(now, why!);
