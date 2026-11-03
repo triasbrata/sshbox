@@ -389,7 +389,8 @@ env:
           text: "Close ${HOST_LABEL}.*"
           optional: true
 
-# swap: swap.html reads swap.css and stay.css again every 1.5 s. After its
+# swap: swap.html reads swap.css and stay.css again every 1.5 s, keeping its
+# first result on screen as "first ...". After its
 # first read it tells the listener, and the runner turns swap.css into a link
 # to the secret file beside the folder, with no Reload. swap.css is then
 # refused and said to be a link, the secret is nowhere, and stay.css, still a
@@ -427,7 +428,7 @@ env:
           timeout: 2000
       - tapOn: "Open in browser tab"
       - extendedWaitUntil:
-          visible: "(?s).*swap read ORIGINAL-CSS.*"
+          visible: "(?s).*first swap read ORIGINAL-CSS.*"
           timeout: 30000
       # Read again after the runner's change, without Reload.
       - extendedWaitUntil:
