@@ -1827,7 +1827,7 @@ TextEditingValue? toggleInline(
   final edits = <(int, int)>[];
   for (final line in live.lines) {
     if (line.end < sel.start || line.start > sel.end) continue;
-    if (!_prose(line.kind)) continue;
+    // MUTATION: every line takes bold, code and front matter too
     var s = sel.start > line.content ? sel.start : line.content;
     var e = sel.end < line.end ? sel.end : line.end;
     while (s < e && t[s].trim().isEmpty) {
