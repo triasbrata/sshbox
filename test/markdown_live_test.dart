@@ -354,6 +354,88 @@ void main() {
       );
       expect(toggleQuote(all, MdLive.parse(q.text)).text, 'Title\n\nbody');
     });
+
+    // M13: a mark over many blocks must not write into code, YAML, a
+    // table, HTML, a rule or a definition, whose bytes it would change.
+    const mixed =
+        '---\ntitle: X\n---\n\na\n\n```sh\necho hi\n```\n\n'
+        '| h | i |\n|---|---|\n| 1 | 2 |\n\n<div>x</div>\n\n***\n\n'
+        '[d]: https://e.x\n\n    code\n\nT\n===\n\nb\n';
+
+    test('bold, italic and code over everything mark the prose alone', () {
+      final all = value(mixed, 0, mixed.length);
+      for (final (marker, bit) in [
+        ('**', MdMark.bold),
+        ('_', MdMark.italic),
+        ('`', MdMark.code),
+      ]) {
+        final on = toggleInline(all, MdLive.parse(mixed), marker, bit)!;
+        expect(
+          on.text,
+          mixed
+              .replaceFirst('\na\n', '\n${marker}a$marker\n')
+              .replaceFirst('\nT\n', '\n${marker}T$marker\n')
+              .replaceFirst('\nb\n', '\n${marker}b$marker\n'),
+          reason: marker,
+        );
+      }
+    });
+
+    test('nothing but code under the selection marks nothing', () {
+      const t = 'p\n\n```\nx\n```\n';
+      expect(
+        toggleInline(value(t, 4, t.length), MdLive.parse(t), '**', MdMark.bold),
+        isNull,
+      );
+    });
+
+    test('a heading over everything heads the prose alone', () {
+      final h = toggleHeading(
+        value(mixed, 0, mixed.length),
+        MdLive.parse(mixed),
+        2,
+      );
+      expect(
+        h.text,
+        mixed
+            .replaceFirst('\na\n', '\n## a\n')
+            .replaceFirst('\nT\n', '\n## T\n')
+            .replaceFirst('\nb\n', '\n## b\n'),
+      );
+      // With only code under it, nothing changes.
+      const code = '```\nx\n```';
+      expect(
+        toggleHeading(value(code, 0, code.length), MdLive.parse(code), 1).text,
+        code,
+      );
+    });
+
+    test('a quote leaves front matter be and takes the rest', () {
+      const t = '---\na: 1\n---\n\nbody';
+      final q = toggleQuote(value(t, 0, t.length), MdLive.parse(t));
+      expect(q.text, '---\na: 1\n---\n> \n> body');
+      const only = '---\na: 1\n---';
+      final none = value(only, 0, only.length);
+      expect(toggleQuote(none, MdLive.parse(only)), none);
+    });
+
+    test('italic or bold off ***x*** leaves the other', () {
+      const t = 'a ***x*** b';
+      final live = MdLive.parse(t);
+      expect(
+        toggleInline(value(t, 5), live, '_', MdMark.italic)!.text,
+        'a **x** b',
+      );
+      expect(
+        toggleInline(value(t, 5), live, '**', MdMark.bold)!.text,
+        'a *x* b',
+      );
+      const u = 'a ___x___ b';
+      expect(
+        toggleInline(value(u, 5), MdLive.parse(u), '_', MdMark.italic)!.text,
+        'a __x__ b',
+      );
+    });
   });
 
   group('front matter and HTML', () {

@@ -12,6 +12,7 @@ import 'package:sshbox/src/ui/save_chord.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
 import 'package:sshbox/src/ui/termul/termul_theme.dart';
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart';
+import 'package:sshbox/src/ui/termul/tui_menu.dart';
 import 'package:sshbox/src/ui/tui.dart' show jeanshTheme;
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
@@ -1080,5 +1081,161 @@ void main() {
       await tester.pump();
       expect(told, isEmpty);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  testWidgets('types only what is typed: no smart dashes or quotes', (
+    tester,
+  ) async {
+    await _pump(tester, 'a -- "b"\n');
+    final field = tester.widget<EditableText>(find.byType(EditableText));
+    expect(field.smartDashesType, SmartDashesType.disabled);
+    expect(field.smartQuotesType, SmartQuotesType.disabled);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
+  group('the selection menu, in termul', () {
+    test('every kind of row has its word', () {
+      expect(
+        {for (final t in ContextMenuButtonType.values) t: richMenuLabel(t)},
+        {
+          ContextMenuButtonType.cut: 'Cut',
+          ContextMenuButtonType.copy: 'Copy',
+          ContextMenuButtonType.paste: 'Paste',
+          ContextMenuButtonType.selectAll: 'Select all',
+          ContextMenuButtonType.delete: 'Delete',
+          ContextMenuButtonType.lookUp: 'Look up',
+          ContextMenuButtonType.searchWeb: 'Search web',
+          ContextMenuButtonType.share: 'Share',
+          ContextMenuButtonType.liveTextInput: 'Scan text',
+          ContextMenuButtonType.custom: '',
+        },
+      );
+    });
+
+    testWidgets('a right-click opens the panel with the keys and the '
+        'formatting, and Bold bolds the selection', (tester) async {
+      _mockClipboard(tester);
+      final host = await _pump(tester, 'one two three\n');
+      await _caret(tester, 0);
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 13,
+      );
+      await tester.pump();
+      await tester.tapAt(
+        tester.getTopLeft(find.byType(EditableText)) + const Offset(30, 10),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(TuiTextMenu), findsOneWidget);
+      expect(find.byType(DesktopTextSelectionToolbar), findsNothing);
+      expect(find.byType(TextSelectionToolbar), findsNothing);
+      for (final word in ['Copy', 'Select all', 'Bold', 'Italic', 'Code']) {
+        expect(find.text(word), findsOneWidget, reason: word);
+      }
+      expect(find.text('Ctrl+B'), findsOneWidget);
+      expect(find.text('Ctrl+C'), findsOneWidget);
+      await tester.tap(find.text('Bold'));
+      await tester.pumpAndSettle();
+      expect(host.text, '**one two three**\n');
+      expect(find.byType(TuiTextMenu), findsNothing);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('…with ⌘ on a Mac, and Copy copies', (tester) async {
+      _mockClipboard(tester);
+      await _pump(tester, 'one two three\n');
+      await _caret(tester, 0);
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 4,
+        extentOffset: 7,
+      );
+      await tester.pump();
+      await tester.tapAt(
+        tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('⌘B'), findsOneWidget);
+      final selected = _controller(tester).selection;
+      await tester.tap(find.text('Copy'));
+      await tester.pumpAndSettle();
+      expect(_clipboard, selected.textInside('one two three\n'));
+      expect(_clipboard, isNotEmpty);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('a long press on touch shows a row of words, with no '
+        'formatting in it: the bar over the keyboard has that', (tester) async {
+      _mockClipboard(tester);
+      await _pump(tester, 'one two three\n');
+      await tester.longPressAt(
+        tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(TuiTextMenu), findsOneWidget);
+      expect(find.byType(TextSelectionToolbar), findsNothing);
+      expect(find.text('Copy'), findsOneWidget);
+      expect(find.text('Bold'), findsNothing);
+      expect(find.textContaining('Ctrl+'), findsNothing);
+      await tester.tap(find.text('Select all'));
+      await tester.pumpAndSettle();
+      expect(
+        _controller(tester).selection.textInside('one two three\n'),
+        'one two three\n',
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    for (final scale in [1.0, 1.3]) {
+      testWidgets('on a 320 dp phone, at text scale $scale, the row fits: '
+          'nothing overflows and every word shows whole', (tester) async {
+        _clipboard = 'x';
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async => switch (call.method) {
+            'Clipboard.hasStrings' => {'value': true},
+            'Clipboard.getData' => {'text': _clipboard},
+            _ => null,
+          },
+        );
+        tester.platformDispatcher.textScaleFactorTestValue = scale;
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        await _pump(tester, 'one two three\n', size: const Size(320, 640));
+        await tester.longPressAt(
+          tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final words = find.descendant(
+          of: find.byType(TuiTextMenu),
+          matching: find.byType(Text),
+        );
+        final labels = [
+          for (final e in words.evaluate()) (e.widget as Text).data!,
+        ];
+        expect(labels, containsAll(['Cut', 'Copy', 'Paste', 'Select all']));
+        for (final e in words.evaluate()) {
+          final box = e.renderObject! as RenderBox;
+          final rect = box.localToGlobal(Offset.zero) & box.size;
+          final label = (e.widget as Text).data;
+          expect(rect.left, greaterThanOrEqualTo(0), reason: label);
+          expect(rect.right, lessThanOrEqualTo(320), reason: label);
+          final paragraph = box as RenderParagraph;
+          expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+          expect(
+            paragraph.size.width,
+            greaterThanOrEqualTo(
+              paragraph.getMaxIntrinsicWidth(double.infinity) - 0.5,
+            ),
+            reason: '$label is cut',
+          );
+        }
+        await tester.tap(find.text('Select all'));
+        await tester.pumpAndSettle();
+        expect(
+          _controller(tester).selection.textInside('one two three\n'),
+          'one two three\n',
+        );
+      }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+    }
   });
 }

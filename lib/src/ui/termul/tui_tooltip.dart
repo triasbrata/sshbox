@@ -6,6 +6,8 @@
 // A control's Semantics is its own node (container: true), so its word is
 // not merged into whatever is around it: a screen reader, an e2e flow and a
 // finder can each reach it by that word.
+// A TuiIconButton's glyph is not selectable, so a drag over the text beside
+// it in a SelectionArea does not copy the glyph along.
 
 import 'package:flutter/material.dart';
 
@@ -106,14 +108,18 @@ class TuiIconButton extends StatelessWidget {
             width: size,
             height: size,
             child: Center(
+              // A glyph, not words: a drag over the text beside it never
+              // takes it along.
               child: ExcludeSemantics(
-                child: Text(
-                  icon,
-                  style: TextStyle(
-                    fontFamily: TermulFonts.mono,
-                    fontSize: iconSize,
-                    height: 1,
-                    color: enabled ? p.text : p.dim,
+                child: SelectionContainer.disabled(
+                  child: Text(
+                    icon,
+                    style: TextStyle(
+                      fontFamily: TermulFonts.mono,
+                      fontSize: iconSize,
+                      height: 1,
+                      color: enabled ? p.text : p.dim,
+                    ),
                   ),
                 ),
               ),

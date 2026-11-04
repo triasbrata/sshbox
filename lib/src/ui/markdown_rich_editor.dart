@@ -13,6 +13,8 @@ import 'save_chord.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
 import 'termul/tui_checkbox.dart';
+import 'termul/tui_menu.dart';
+import 'termul/tui_tooltip.dart';
 
 export 'markdown_live.dart' show MdLink;
 
@@ -1187,8 +1189,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           // Prose: the keyboard may help as it does in a notes app.
           autocorrect: true,
           enableSuggestions: true,
+          // But never a character not typed: iOS would make `--` a dash and
+          // `"` a curly quote, which are other bytes in the file.
+          smartDashesType: SmartDashesType.disabled,
+          smartQuotesType: SmartQuotesType.disabled,
           cursorColor: p.accent,
           inputFormatters: [_Edits(_onEdit)],
+          contextMenuBuilder: _contextMenu,
           scrollPadding: const EdgeInsets.all(48),
           // A page, not a field: none of the app's field box, its fill or
           // the accent line it draws round a focused field.
@@ -1290,6 +1297,56 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           ),
         );
       },
+    );
+  }
+
+  /// The selection menu in termul's face: the field's own cut, copy, paste
+  /// and select all, and on a desktop, under a divider, the formatting the
+  /// floating bar and the chords give, with their keys.
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final mac =
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    String key(String k) => mac ? '⌘$k' : 'Ctrl+$k';
+    final desktop = MarkdownRichEditor.floatingBar;
+    TuiTextMenuItem format(String label, String k, VoidCallback run) =>
+        TuiTextMenuItem(
+          label: label,
+          shortcut: k.isEmpty ? null : key(k),
+          logName: label.toLowerCase(),
+          onPressed: () {
+            editable.hideToolbar();
+            run();
+          },
+        );
+    return TuiTextMenu(
+      anchors: editable.contextMenuAnchors,
+      panel: desktop,
+      items: [
+        for (final item in editable.contextMenuButtonItems)
+          TuiTextMenuItem(
+            label: item.label ?? richMenuLabel(item.type),
+            shortcut: switch (item.type) {
+              ContextMenuButtonType.cut => key('X'),
+              ContextMenuButtonType.copy => key('C'),
+              ContextMenuButtonType.paste => key('V'),
+              ContextMenuButtonType.selectAll => key('A'),
+              _ => null,
+            },
+            logName: item.type.name,
+            onPressed: item.onPressed ?? () {},
+          ),
+        if (desktop) ...[
+          null,
+          format('Bold', 'B', () => _toggleInline('**', MdMark.bold)),
+          format('Italic', 'I', () => _toggleInline('_', MdMark.italic)),
+          format('Code', 'E', () => _toggleInline('`', MdMark.code)),
+          format('Link', 'K', () => unawaited(_editLink())),
+          format('Heading 1', '', () => _toggleHeading(1)),
+          format('Heading 2', '', () => _toggleHeading(2)),
+          format('Quote', '', _toggleQuote),
+        ],
+      ],
     );
   }
 
@@ -1723,7 +1780,15 @@ TextEditingValue? toggleInline(
   final len = marker.length;
   // The span already round the selection, found by its hidden markers.
   for (final pair in _spans(live, bit)) {
-    final (open, close) = pair;
+    var (open, close) = pair;
+    // `***x***` is bold and italic in one pair of markers: taking one off
+    // takes its own part of them, one character for italic and two for
+    // bold, and leaves the other.
+    if (open.end - open.start == 3 && close.end - close.start == 3) {
+      final k = bit == MdMark.italic ? 1 : 2;
+      open = MdRange(open.start, open.start + k);
+      close = MdRange(close.end - k, close.end);
+    }
     if (open.start <= sel.start &&
         sel.end <= close.end &&
         (sel.isCollapsed ? true : sel.start >= open.start)) {
@@ -1762,6 +1827,7 @@ TextEditingValue? toggleInline(
   final edits = <(int, int)>[];
   for (final line in live.lines) {
     if (line.end < sel.start || line.start > sel.end) continue;
+    if (!_prose(line.kind)) continue;
     var s = sel.start > line.content ? sel.start : line.content;
     var e = sel.end < line.end ? sel.end : line.end;
     while (s < e && t[s].trim().isEmpty) {
@@ -1785,6 +1851,18 @@ TextEditingValue? toggleInline(
     selection: TextSelection(baseOffset: first + len, extentOffset: last),
   );
 }
+
+/// Whether a line of [kind] takes inline marks and a heading's `#`: not a
+/// fence's or an indented block's code, a table's row, HTML, front matter,
+/// a rule, a setext underline or a link definition, which a marker would
+/// break or change the meaning of.
+bool _prose(MdLineKind kind) => switch (kind) {
+  MdLineKind.paragraph ||
+  MdLineKind.heading ||
+  MdLineKind.listItem ||
+  MdLineKind.blank => true,
+  _ => false,
+};
 
 /// The open and close markers of every span carrying [bit].
 Iterable<(MdRange, MdRange)> _spans(MdLive live, int bit) sync* {
@@ -1815,7 +1893,7 @@ TextEditingValue toggleHeading(TextEditingValue value, MdLive live, int level) {
   final sel = value.selection;
   final lines = live.lines
       .where((l) => l.end >= sel.start && l.start <= sel.end)
-      .where((l) => l.kind != MdLineKind.blank)
+      .where((l) => l.kind != MdLineKind.blank && _prose(l.kind))
       .toList();
   if (lines.isEmpty) return value;
   final off = lines.every(
@@ -1846,8 +1924,11 @@ TextEditingValue toggleHeading(TextEditingValue value, MdLive live, int level) {
 TextEditingValue toggleQuote(TextEditingValue value, MdLive live) {
   final t = value.text;
   final sel = value.selection;
+  // A quote may hold a fence, a table or HTML, but front matter quoted is
+  // front matter no longer.
   final lines = live.lines
       .where((l) => l.end >= sel.start && l.start <= sel.end)
+      .where((l) => l.kind != MdLineKind.frontMatter)
       .toList();
   if (lines.isEmpty) return value;
   final off = lines.every((l) => l.quote != null);
@@ -1975,15 +2056,19 @@ class MarkdownRichBar extends StatelessWidget {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   children: [
-                    IconButton(
+                    TuiIconButton(
+                      icon: '↶',
                       tooltip: 'Undo',
+                      size: 44,
+                      iconSize: 18,
                       onPressed: canUndo() ? onUndo : null,
-                      icon: const Icon(Icons.undo),
                     ),
-                    IconButton(
+                    TuiIconButton(
+                      icon: '↷',
                       tooltip: 'Redo',
+                      size: 44,
+                      iconSize: 18,
                       onPressed: canRedo() ? onRedo : null,
-                      icon: const Icon(Icons.redo),
                     ),
                     const SizedBox(width: 6),
                     ..._formatButtons(controller),
@@ -1997,3 +2082,19 @@ class MarkdownRichBar extends StatelessWidget {
     );
   }
 }
+
+/// The word a selection menu row of [type] shows, where the field gives
+/// none of its own.
+@visibleForTesting
+String richMenuLabel(ContextMenuButtonType type) => switch (type) {
+  ContextMenuButtonType.cut => 'Cut',
+  ContextMenuButtonType.copy => 'Copy',
+  ContextMenuButtonType.paste => 'Paste',
+  ContextMenuButtonType.selectAll => 'Select all',
+  ContextMenuButtonType.delete => 'Delete',
+  ContextMenuButtonType.lookUp => 'Look up',
+  ContextMenuButtonType.searchWeb => 'Search web',
+  ContextMenuButtonType.share => 'Share',
+  ContextMenuButtonType.liveTextInput => 'Scan text',
+  ContextMenuButtonType.custom => '',
+};
