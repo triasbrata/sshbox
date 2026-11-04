@@ -386,6 +386,144 @@ void main() {
     expect(host.changes, isEmpty);
   });
 
+  testWidgets('on a 320 dp phone, a tap on a later row of a long paragraph '
+      'drawn apart, a fence above shown as source, stays under the finger', (
+    tester,
+  ) async {
+    // The e2e's own document: long paragraphs that wrap many rows.
+    final words =
+        ('amber basil cedar delta ember fjord garnet harbor indigo juniper '
+                'kestrel lilac maple nutmeg orchid pepper quartz rowan '
+                'saffron thistle umber violet willow yarrow zinnia')
+            .split(' ');
+    final lines = [
+      '# Caret e2e',
+      '',
+      '```sh',
+      for (var i = 0; i < 26; i++)
+        'echo "fence line ${'$i'.padLeft(2, '0')} ${words[i % words.length]}"',
+      '```',
+      '',
+      for (var i = 0; i < 60; i++) ...[
+        'Paragraph $i: ${[for (var k = 0; k < 9 * (1 + i % 4); k++) words[(i * 7 + k) % words.length]].join(' ')}.',
+        '',
+      ],
+    ];
+    final text = lines.join('\n');
+    const page = Size(320, 640);
+    await _pump(
+      tester,
+      text,
+      size: page,
+      blockBuilder: (context, md) {
+        final rows = md.split('\n');
+        return Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('RENDERED ${rows.first}'),
+              for (final l in rows.skip(1))
+                SizedBox(height: 29, child: Text(l, softWrap: false)),
+            ],
+          ),
+        );
+      },
+    );
+    final editable = tester.allRenderObjects.whereType<RenderEditable>().first;
+    final scroll = tester
+        .state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(EditableText),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        )
+        .position;
+
+    await tester.tapAt(Offset(60, page.height * 0.4));
+    await tester.pumpAndSettle();
+    expect(
+      _controller(tester).selection.extentOffset,
+      lessThan(text.indexOf('```\n\nParagraph')),
+    );
+
+    // The last row of Paragraph 7, which is drawn apart.
+    final from = text.indexOf('Paragraph 7:');
+    final end = text.indexOf('\n', from);
+    final target = text.lastIndexOf(' ', end) + 1;
+    final word = text.substring(target, end);
+    double? drawnApart() {
+      for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
+        final t = p.text.toPlainText();
+        final s = t.indexOf('Paragraph 7:');
+        if (s < 0) continue;
+        final i = s + (target - from);
+        final boxes = p.getBoxesForSelection(
+          TextSelection(baseOffset: i, extentOffset: i + 1),
+        );
+        if (boxes.isNotEmpty) {
+          return p.localToGlobal(boxes.first.toRect().topLeft).dy -
+              scroll.pixels;
+        }
+      }
+      return null;
+    }
+
+    double inField() {
+      final boxes = editable.getBoxesForSelection(
+        TextSelection(baseOffset: target, extentOffset: target + 1),
+      );
+      return editable.localToGlobal(boxes.first.toRect().topLeft).dy;
+    }
+
+    // The row about halfway down the page, as the e2e's band at 300 of
+    // 640; sections coming into view lay out at their own heights, so
+    // again until it holds.
+    for (var k = 0; k < 4; k++) {
+      final at = drawnApart();
+      if (at == null) break;
+      scroll.jumpTo(scroll.pixels + at - 300);
+      await tester.pump();
+    }
+    final before = drawnApart();
+    expect(before, isNotNull, reason: 'the paragraph is drawn apart');
+    expect(before, inInclusiveRange(200, 340));
+    // Its rows, drawn apart: the same, at the same width, as the field's.
+    int? rowsApart;
+    for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
+      final i = p.text.toPlainText().indexOf('Paragraph 7:');
+      if (i < 0) continue;
+      rowsApart = p
+          .getBoxesForSelection(
+            TextSelection(baseOffset: i, extentOffset: i + end - from),
+          )
+          .map((b) => b.top.round())
+          .toSet()
+          .length;
+    }
+
+    await tester.tapAt(Offset(40, before! + 8));
+    await tester.pumpAndSettle();
+    expect(find.text('RENDERED ```sh'), findsOneWidget);
+    expect(
+      _controller(tester).selection.extentOffset,
+      inInclusiveRange(from, end),
+      reason: word,
+    );
+    expect(inField(), closeTo(before, 5));
+    final rowsInField = editable
+        .getBoxesForSelection(
+          TextSelection(baseOffset: from, extentOffset: end),
+        )
+        .where((b) => b.bottom - b.top > 2)
+        .map((b) => b.top.round())
+        .toSet()
+        .length;
+    expect(rowsInField, rowsApart, reason: 'wrapped at the same width');
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
   testWidgets('on a phone, a tap on a paragraph drawn apart below a fence '
       'shown as source, the page swiped, stays under the finger', (
     tester,
