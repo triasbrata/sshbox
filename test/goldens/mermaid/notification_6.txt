@@ -1,0 +1,71 @@
+size 867x1050
+line lifeline dashed none-none (22,77) (22,983)
+line lifeline dashed none-none (202,77) (202,983)
+line lifeline dashed none-none (501,77) (501,983)
+line lifeline dashed none-none (796,77) (796,983)
+box frame 182,237 483x342
+box frameTab 182,237 37x24
+line separator dashed none-none (182,377) (665,377)
+box frame 481,775 335x188
+box frameTab 481,775 37x24
+line separator dashed none-none (481,853) (816,853)
+box actorFigure 10,8 24x34
+text actor 8,50 28x16 "User"
+box actorBox 157,41 90x36
+text actor 177.5,51 49x16 "Android"
+box actorBox 452,41 98x36
+text actor 466,51 70x16 "Jeansh app"
+box actorBox 733,41 126x36
+text actor 747,51 98x16 "SessionManager"
+box note 182,101 339x78
+text note 222,108 259x64 "Direct: host.id of the connection the port belongs to (_openNotifyPort).\nRelay: the host stored with the key at registration (entry.host)."
+text message 42,193 140x16 "tap the notification"
+line edge solid none-arrow (22,215) (202,215)
+box badge 13,206 18x18
+text number 18.5,207 7x16 "1"
+text message 222,285 259x64 "payload sshbox://host/hostId: onDidReceiveNotificationResponse,\nor getNotificationAppLaunchDetails on a cold start (NotificationGateway)"
+line edge solid none-arrow (202,355) (501,355)
+box badge 193,346 18x18
+text number 198.5,347 7x16 "2"
+text message 225.5,425 252x64 "RemoteMessage with data.hostId: onMessageOpenedApp,\nor getInitialMessage on a cold start (PushMessaging._routeFrom)"
+line edge solid none-arrow (202,495) (501,495)
+box badge 193,486 18x18
+text number 198.5,487 7x16 "3"
+text message 511,517 140x16 "sshbox://host/hostId"
+line edge solid none-arrow (501,539) (535,539) (535,557) (501,557)
+box badge 492,530 18x18
+text number 497.5,531 7x16 "4"
+text frameKind 190,241 21x16 "alt"
+text frameTitle 319.5,241 245x32 "[one the app posted (direct, or FCM in the foreground)]"
+text frameTitle 325.5,381 196x32 "[Android's own, from the FCM notification block]"
+text message 511,591 238x16 "_handleLink, then openHost(hostId)"
+line edge solid none-arrow (501,613) (535,613) (535,631) (501,631)
+box badge 492,604 18x18
+text number 497.5,605 7x16 "5"
+text message 511,653 252x32 "HostRepository.load(). No such host, a deleted one say: stop"
+line edge solid none-arrow (501,691) (535,691) (535,709) (501,709)
+box badge 492,682 18x18
+text number 497.5,683 7x16 "6"
+text message 599.5,731 98x16 "resume(hostId)"
+line edge solid none-arrow (501,753) (796,753)
+box badge 492,744 18x18
+text number 497.5,745 7x16 "7"
+text message 540,809 217x16 "that session, now the tab shown"
+line edge dashed none-arrow (796,831) (501,831)
+box badge 787,822 18x18
+text number 792.5,823 7x16 "8"
+text message 511,885 259x32 "openInSheet: the connect sheet, and a new session (diagram 2)"
+line edge solid none-arrow (501,923) (535,923) (535,941) (501,941)
+box badge 492,914 18x18
+text number 497.5,915 7x16 "9"
+text frameKind 489,779 21x16 "alt"
+text frameTitle 569,779 196x16 "[a tab on this host is open]"
+text frameTitle 627.5,857 42x16 "[none]"
+box actorFigure 10,984 24x34
+text actor 8,1026 28x16 "User"
+box actorBox 157,983 90x36
+text actor 177.5,993 49x16 "Android"
+box actorBox 452,983 98x36
+text actor 466,993 70x16 "Jeansh app"
+box actorBox 733,983 126x36
+text actor 747,993 98x16 "SessionManager"

@@ -3189,7 +3189,7 @@ void main() {
       );
 
       expect(
-        tester.widget<MermaidView>(find.byType(MermaidView)).source,
+        tester.widget<MermaidBlock>(find.byType(MermaidBlock)).source,
         'graph TD\n  A --> B\n',
       );
       expect(find.textContaining('A --> B'), findsNothing);
@@ -3203,7 +3203,7 @@ void main() {
     testWidgets('one not closed yet stays code', (tester) async {
       await pumpAnswer(tester, 'Drawing:\n\n```mermaid\ngraph TD\n  A --> B');
 
-      expect(find.byType(MermaidView), findsNothing);
+      expect(find.byType(MermaidBlock), findsNothing);
       expect(find.textContaining('A --> B'), findsOneWidget);
     });
   });
@@ -4294,9 +4294,9 @@ void main() {
 
       final diagram = find.descendant(
         of: find.byType(TuiChatBubble),
-        matching: find.byType(MermaidView),
+        matching: find.byType(MermaidBlock),
       );
-      expect(tester.widget<MermaidView>(diagram).source, 'graph TD\n  A --> B\n');
+      expect(tester.widget<MermaidBlock>(diagram).source, 'graph TD\n  A --> B\n');
     });
 
     testWidgets('stray stars and underscores read as written', (tester) async {

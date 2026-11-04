@@ -9,7 +9,8 @@ import 'package:xterm2/xterm.dart';
 
 import '../platform.dart';
 import 'ctrl_click.dart' show hyperlinkIn, selectedText;
-import 'mermaid_view.dart' show mermaidSource, showMermaidDialog;
+import 'mermaid_view.dart'
+    show canShowMermaid, mermaidSource, showMermaidDialog;
 import 'toast.dart';
 import 'tui.dart' show TermulFonts, TermulThemeData;
 import '../telemetry/tap_log.dart';
@@ -1268,8 +1269,9 @@ class _SwipeKeyPadState extends State<SwipeKeyPad> {
   /// see [mermaidSource].
   String? get _selectedDiagram {
     final range = widget.controller.selection;
-    if (!hasWebView || range == null) return null;
-    return mermaidSource(selectedText(widget.terminal.buffer, range));
+    if (range == null) return null;
+    final source = mermaidSource(selectedText(widget.terminal.buffer, range));
+    return source != null && canShowMermaid(source) ? source : null;
   }
 
   /// A hyperlink's label hides its address, and copying the label gives only
