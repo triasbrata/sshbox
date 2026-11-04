@@ -30,6 +30,7 @@ Future<_Host> _pump(
   WidgetTester tester,
   String text, {
   Size size = const Size(800, 600),
+  Widget Function(BuildContext, String)? blockBuilder,
 }) async {
   final host = _Host(text);
   tester.view.physicalSize = size;
@@ -49,10 +50,12 @@ Future<_Host> _pump(
                 host.changes.add((t, coalesce));
                 setState(() => host.text = t);
               },
-              blockBuilder: (context, md) => Text(
-                'RENDERED ${md.split('\n').first}',
-                key: ValueKey('rendered ${md.hashCode}'),
-              ),
+              blockBuilder:
+                  blockBuilder ??
+                  (context, md) => Text(
+                    'RENDERED ${md.split('\n').first}',
+                    key: ValueKey('rendered ${md.hashCode}'),
+                  ),
               onOpenLink: host.opened.add,
               onRefused: host.refused.add,
               askLink: (_) async => host.linkAnswer,
@@ -381,6 +384,112 @@ void main() {
     await tester.pump();
     expect(host.opened.single.href, 'https://e.x/a');
     expect(host.changes, isEmpty);
+  });
+
+  testWidgets('on a phone, a tap on a paragraph drawn apart below a fence '
+      'shown as source, the page swiped, stays under the finger', (
+    tester,
+  ) async {
+    final text = [
+      '```sh',
+      for (var k = 0; k < 26; k++) 'echo line $k',
+      '```',
+      '',
+      [for (var k = 0; k < 40; k++) 'Paragraph $k.'].join('\n\n'),
+    ].join('\n');
+    const page = Size(360, 640);
+    // A code block drawn, as the app draws one, a little taller than its
+    // source: a line each, with the block's padding round it.
+    await _pump(
+      tester,
+      text,
+      size: page,
+      blockBuilder: (context, md) {
+        final lines = md.split('\n');
+        return Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('RENDERED ${lines.first}'),
+              for (final l in lines.skip(1))
+                SizedBox(height: 29, child: Text(l)),
+            ],
+          ),
+        );
+      },
+    );
+    final editable = tester.allRenderObjects.whereType<RenderEditable>().first;
+    final scroll = tester
+        .state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(EditableText),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        )
+        .position;
+
+    // A tap at 40% of the page goes into the fence, which shows its source.
+    await tester.tapAt(Offset(60, page.height * 0.4));
+    await tester.pumpAndSettle();
+    final fenceEnd = text.indexOf('```\n\nParagraph');
+    expect(_controller(tester).selection.extentOffset, lessThan(fenceEnd));
+    expect(find.text('RENDERED ```sh'), findsNothing);
+
+    // The first paragraphs share the open section with the fence's end;
+    // from the fourth they are in a section drawn apart.
+    const word = 'Paragraph 7.';
+    final target = text.indexOf(word);
+    // Where it is drawn: in a section drawn apart, whose transform leaves
+    // out the field's scroll, or in the field.
+    double? drawnApart() {
+      for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
+        final i = p.text.toPlainText().indexOf(word);
+        if (i < 0) continue;
+        final boxes = p.getBoxesForSelection(
+          TextSelection(baseOffset: i, extentOffset: i + 1),
+        );
+        if (boxes.isNotEmpty) {
+          return p.localToGlobal(boxes.first.toRect().topLeft).dy -
+              scroll.pixels;
+        }
+      }
+      return null;
+    }
+
+    double inField() {
+      final boxes = editable.getBoxesForSelection(
+        TextSelection(baseOffset: target, extentOffset: target + 1),
+      );
+      return editable.localToGlobal(boxes.first.toRect().topLeft).dy;
+    }
+
+    // Swipes up the page, as a thumb does, until the paragraph is about a
+    // sixth of the way down it, with the start of its section above the page.
+    for (var k = 0; k < 30; k++) {
+      final at = drawnApart();
+      if (at != null && at < 110) break;
+      await tester.dragFrom(
+        Offset(180, page.height * 0.54),
+        Offset(0, -page.height * 0.08),
+      );
+      await tester.pumpAndSettle();
+    }
+    expect(scroll.pixels, greaterThan(0));
+    final before = drawnApart();
+    expect(before, isNotNull, reason: 'the paragraph is drawn apart');
+    expect(before, inInclusiveRange(20, 140));
+
+    await tester.tapAt(Offset(60, before! + 8));
+    await tester.pumpAndSettle();
+    expect(find.text('RENDERED ```sh'), findsOneWidget);
+    expect(
+      _controller(tester).selection.extentOffset,
+      inInclusiveRange(target - 2, target + word.length),
+    );
+    expect(inField(), closeTo(before, 5));
   });
 
   testWidgets('a tap below a block drawn as its source stays under the '
