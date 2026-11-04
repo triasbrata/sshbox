@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text editor_save file_editor text_size)
+  md_rich_text md_touch_scroll editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -776,6 +776,127 @@ md_rich_text() {
   # The flow's screenshots, the phone's Rich text, as evidence.
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-text-*.png' \
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
+
+# A long Markdown file in Rich text scrolls by a finger from anywhere on the
+# page (.maestro/md_touch_scroll.yaml), with the keyboard up. The page's
+# margins, its gutters and the space under the text, lay outside the field's
+# own scroller, so a swipe there scrolled nothing; on the 320x640 emulator
+# with the keyboard up, the middle of the screen is that space. The page is
+# the one EditText node Android has, its bounds the whole page; the text sits
+# 16 dp in from its sides and 48 dp up from its bottom. Whether the page moved
+# is read off the screen, as how many of the text area's pixel columns a
+# swipe changed: a scroll changes most of them, the caret a few. A 2x2:
+#   - a short sideways swipe from the gutter, mid-page, does not scroll;
+#   - an upward swipe in the space under the text scrolls the page, and so
+#     does one in the gutter;
+#   - an upward swipe over the text scrolls it, as it always did.
+# A mutation that takes the margins' drag out fails the second, the first and
+# the last staying green. Every swipe starts well away from the caret, which
+# a drag on would move rather than scroll.
+md_touch_scroll() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-scroll.md i dp box
+  local l t r b before after x y
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_touch_scroll: $what"
+      status=1
+    fi
+  }
+  {
+    printf 'Scroll e2e top.\n\n'
+    for i in $(seq 1 120); do printf 'Scroll line %d of a long note.\n\n' "$i"; done
+  } | sudo -u "$SSH_USER" tee "$file" >/dev/null
+  flow md_touch_scroll -e STEP=open || return 1
+  dp=$(adb shell wm density | grep -oE '[0-9]+' | tail -1)
+  # The page's box, as "l t r b".
+  page() {
+    code_ui | grep -o '<node [^>]*>' | grep 'EditText' |
+      head -1 | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' |
+      sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/'
+  }
+  px() { echo $(($1 * dp / 160)); }
+  box=$(page)
+  code_ui | grep -o '<node [^>]*>' | grep 'EditText' | head -1 | cut -c1-300
+  [ -n "$box" ] || { echo "::error::md_touch_scroll: no page on screen"; return 1; }
+  read -r l t r b <<<"$box"
+  # The caret on the first line, for the keyboard.
+  adb shell input tap $((l + $(px 60))) $((t + $(px 30)))
+  sleep 2
+  check 'the keyboard is up' ime_shown
+  box=$(page)
+  read -r l t r b <<<"$box"
+  echo "page with the keyboard up: [$l,$t][$r,$b] at density $dp"
+  # What a swipe did to the text, as the pixel columns that changed in a
+  # strip from 70 to 190 dp, the middle of each line, where its number is:
+  # a scroll changes most of them, while the caret, its handle and the
+  # keyboard's underline stay at a line's start or its end, outside it.
+  # "scrolled" past half the strip, "still" under a sixth, else "unclear".
+  local raw=$EVIDENCE/md-touch-scroll
+  grab() { adb exec-out screencap >"$raw-$1.raw" 2>/dev/null; }
+  moved() {
+    python3 - "$raw-before.raw" "$raw-after.raw" \
+      $((l + $(px 70))) $((t + $(px 20))) $((l + $(px 190))) $((b - $(px 48))) <<'PY'
+import struct, sys
+a, b = (open(p, 'rb').read() for p in sys.argv[1:3])
+w, h = struct.unpack('<II', a[:8])
+head = len(a) - w * h * 4
+x0, y0, x1, y1 = map(int, sys.argv[3:])
+cols = set()
+for y in range(y0, y1):
+    i = head + y * w * 4
+    for x in range(x0, x1):
+        if x not in cols and a[i + x * 4:i + x * 4 + 3] != b[i + x * 4:i + x * 4 + 3]:
+            cols.add(x)
+n, width = len(cols), x1 - x0
+word = 'scrolled' if n * 2 > width else 'still' if n * 6 < width else 'unclear'
+print(f'{word} {n}/{width}')
+PY
+  }
+  local seen
+  # swipe NAME X1 Y1 X2 Y2: what it did, in $seen.
+  swipe() {
+    local name=$1
+    shift
+    grab before
+    adb shell input swipe "$@" 400
+    sleep 2
+    grab after
+    seen=$(moved)
+    adb exec-out screencap -p >"$EVIDENCE/md-touch-scroll-$name.png" 2>/dev/null
+    echo "$name: swipe $* -- $seen columns changed"
+  }
+  # The space under the text: 24 dp up from the page's bottom, mid-page.
+  x=$(((l + r) / 2))
+  y=$((b - $(px 24)))
+  # A tap there first, at the right: it puts the caret at the end of the last
+  # line drawn, and the page keeps that line in view, so what comes after
+  # starts settled.
+  adb shell input tap $((r - $(px 24))) "$y"
+  sleep 2
+  # Sideways from the gutter, mid-page, a short way: the field's own drag
+  # takes the caret to that line's start, left of the strip, and nothing
+  # scrolls. (Sideways at the bottom edge the caret is carried past it, and
+  # the page follows: Flutter's, on every build, so not this negative.)
+  swipe gutter-sideways $((l + $(px 6))) $(((t + b) / 2)) $((l + $(px 60))) $(((t + b) / 2))
+  check 'a sideways swipe from the gutter does not scroll' [ "${seen%% *}" = still ]
+  swipe under-up "$x" "$y" "$x" $((t + $(px 60)))
+  check 'an upward swipe under the text scrolls the page' [ "${seen%% *}" = scrolled ]
+  check 'the keyboard is still up' ime_shown
+  # The gutter: 8 dp in from the page's left edge.
+  swipe gutter-up $((l + $(px 8))) $((b - $(px 80))) $((l + $(px 8))) $((t + $(px 60)))
+  check 'an upward swipe in the gutter scrolls the page' [ "${seen%% *}" = scrolled ]
+  # Over the text, mid-page: the field's own scrolling.
+  swipe text-up "$x" $(((t + b) / 2 + $(px 40))) "$x" $((t + $(px 60)))
+  check 'an upward swipe over the text scrolls the page' [ "${seen%% *}" = scrolled ]
+  rm -f "$raw-before.raw" "$raw-after.raw"
+  flow md_touch_scroll -e STEP=close || status=1
+  sudo rm -f "$file"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-touch-scroll-*.png' \
+    -not -path "$EVIDENCE/*" -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   return "$status"
 }
 
@@ -3487,6 +3608,7 @@ done
 # land, on main or in the redesign. It wants its checks moved to this host.
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
+u_md_touch_scroll() { report_bare md_touch_scroll md_touch_scroll; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.
