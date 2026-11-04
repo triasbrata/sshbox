@@ -823,14 +823,22 @@ PY
     adb exec-out screencap >"$EVIDENCE/md-rich-caret-$1.raw"
     adb exec-out screencap -p >"$EVIDENCE/md-rich-caret-$1.png"
   }
-  # The move of the band at y, from screenshot $1 to $2.
+  # The move of the band at y, from screenshot $1 to $2: 18 rows either side,
+  # looked for only inside the editor, rows $lo to $hi, so the header and
+  # the keyboard, which hold still, never match. A best match still poor
+  # (a mean difference over 6) means the text left the editor: "lost".
   moved() {
     local got
     got=$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-$1.raw" \
-      "$EVIDENCE/md-rich-caret-$2.raw" "$3" 35)
+      "$EVIDENCE/md-rich-caret-$2.raw" "$3" 18 "$lo" "$hi")
     echo "the band at y=$3, $1 to $2: shift, its diff, the diff unshifted: $got" >&2
-    echo "${got%% *}"
+    if awk -v d="$(cut -d' ' -f2 <<<"$got")" 'BEGIN { exit !(d > 6) }'; then
+      echo lost
+    else
+      echo "${got%% *}"
+    fi
   }
+  held() { [ "$1" != lost ] && [ "${1#-}" -le 5 ]; }
 
   flow md_rich_caret -e STEP=open || return 1
   # The fence, drawn rendered under the heading: tapped, its source shows.
@@ -847,7 +855,10 @@ PY
   done
   sleep 1
   shot before
-  local y1=$((h * 34 / 100)) y2=$((h * 48 / 100))
+  # Taps near the band's top, so the text tapped stays in the band if it
+  # moves down by a block's height, and can be found and measured.
+  local y1=$((h * 31 / 100)) y2=$((h * 40 / 100))
+  local lo=$((h * 28 / 100)) hi=$((h * 55 / 100))
   check 'the swipes scrolled the page' \
     [ "$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-fence-tapped.raw" \
       "$EVIDENCE/md-rich-caret-before.raw" "$y1" 35 | cut -d' ' -f3)" != 0.00 ]
@@ -856,13 +867,13 @@ PY
   shot after
   by=$(moved before after "$y1")
   check "a tap below the fence shown as source moved the line tapped ${by} px (5 at most)" \
-    [ "${by#-}" -le 5 ]
+    held "$by"
   # Nothing above changes height now: a second paragraph tapped holds still.
   adb shell input tap $((w / 2)) "$y2"
   shot again
   by=$(moved after again "$y2")
   check "a tap with the fence already rendered moved the line tapped ${by} px (5 at most)" \
-    [ "${by#-}" -le 5 ]
+    held "$by"
   rm -f "$EVIDENCE"/md-rich-caret-*.raw
   flow md_rich_caret -e STEP=close || status=1
   sudo rm -f "$file"
