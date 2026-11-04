@@ -552,6 +552,17 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _placeTaskNodes();
     final was = _was;
     _was = _text.value;
+    final tapped = _tapped;
+    if (tapped != null && was.text == _text.text) {
+      _tapped = null;
+      final sel = _text.selection;
+      if (sel.isValid && sel.isCollapsed && sel.baseOffset != tapped) {
+        // Set again from here, it comes back through [_onText] once more,
+        // and the line held is that one.
+        _text.selection = TextSelection.collapsed(offset: tapped);
+        return;
+      }
+    }
     if (was.text == _text.text && was.selection != _text.selection) {
       _holdLine(_text.selection);
     }
@@ -564,6 +575,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _lastAt = now;
     widget.onChanged(text, coalesce: coalesce);
   }
+
+  /// Where a tap on a section drawn apart really landed, for [_onText] to
+  /// put the caret the field's own tap sets.
+  int? _tapped;
+
+  /// The text as a press went down.
+  String? _textAtDown;
 
   /// The field's value as [_onText] last saw it.
   late TextEditingValue _was = _text.value;
@@ -614,15 +632,34 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         block = w.range.start;
       }
     }
-    Rect? place(RenderEditable e, int k) {
+    // Where on the screen offset [k] is drawn: in the field, or in the
+    // section drawn apart that holds it, whose transform leaves out the
+    // field's scroll.
+    double? place(RenderEditable e, int k) {
       if (k >= _text.text.length) return null;
       final boxes = e.getBoxesForSelection(
         TextSelection(baseOffset: k, extentOffset: k + 1),
       );
-      if (boxes.isEmpty) return null;
-      final r = boxes.first.toRect();
       // A hidden character is drawn a hundredth of a pixel high.
-      return r.height > 2 ? r : null;
+      if (boxes.isNotEmpty && boxes.first.toRect().height > 2) {
+        return e.localToGlobal(Offset(0, boxes.first.top)).dy;
+      }
+      for (final views in [..._sections.values, ..._sectionsNext.values]) {
+        for (final v in views) {
+          final start = v.handle.start;
+          if (k < start || k >= start + v.range.end - v.range.start) continue;
+          final para = v._paragraph.currentContext?.findRenderObject();
+          if (para is! RenderParagraph || !para.attached) continue;
+          final local = k - start;
+          final drawn = para.getBoxesForSelection(
+            TextSelection(baseOffset: local, extentOffset: local + 1),
+          );
+          if (drawn.isEmpty) continue;
+          return para.localToGlobal(Offset(0, drawn.first.top)).dy -
+              _scroll.offset;
+        }
+      }
+      return null;
     }
 
     var anchor = line;
@@ -631,16 +668,17 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
       anchor = block;
       before = place(editable, block);
     }
-    if (before == null || before.top < 0 || before.top > editable.size.height) {
-      return;
-    }
-    final top = before.top;
+    final page = context.findRenderObject() as RenderBox?;
+    if (before == null || page == null || !page.hasSize) return;
+    final pageTop = page.localToGlobal(Offset.zero).dy;
+    if (before < pageTop || before > pageTop + page.size.height) return;
+    final top = before;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       final e = _editable;
       if (!mounted || e == null || !e.attached || !_scroll.hasClients) return;
       final after = place(e, anchor);
       if (after == null) return;
-      final moved = after.top - top;
+      final moved = after - top;
       if (moved.abs() < 1) return;
       final pos = _scroll.position;
       _scroll.jumpTo(
@@ -952,6 +990,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
 
   void _onPointerDown(PointerDownEvent event) {
     _pointerDown = true;
+    _textAtDown = _text.text;
     _bar.value = null;
     final keys = HardwareKeyboard.instance;
     if (keys.isControlPressed || keys.isMetaPressed) {
@@ -987,8 +1026,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     }
     // The press landed on a section drawn apart, which the field only knows
     // as one character: once the tap has put the caret there, it goes where
-    // the press really was.
+    // the press really was. Straight away, as the field's tap sets its own
+    // caret, which [_onText] then moves; and after the frame, should the
+    // field have set none.
+    // Not when the press changed the text itself: a task box ticked.
+    if (identical(_text.text, _textAtDown)) _tapped = precise;
     SchedulerBinding.instance.addPostFrameCallback((_) {
+      _tapped = null;
       if (!mounted || precise > _text.text.length) return;
       final sel = _text.selection;
       if (sel.isValid && sel.isCollapsed && sel.baseOffset != precise) {
@@ -1090,6 +1134,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
             look: _text.look!,
             swapBuilder: _swap,
             onDown: _sectionDown,
+            scrolled: () => _scroll.hasClients ? _scroll.offset : 0.0,
           );
     view.handle.start = section.start;
     (_sectionsNext[source] ??= []).add(view);
@@ -1577,6 +1622,7 @@ class _SectionView extends StatelessWidget {
     required this.look,
     required this.swapBuilder,
     required this.onDown,
+    required this.scrolled,
   }) : handle = _SectionHandle(range.start);
 
   /// The reading the section was drawn from, and where it was then.
@@ -1588,6 +1634,11 @@ class _SectionView extends StatelessWidget {
 
   /// A press on it, at [offset] into it.
   final void Function(_SectionView view, int offset) onDown;
+
+  /// How far the field is scrolled: an inline widget's transform leaves it
+  /// out (RenderEditable's own), so where a press lands in the section is
+  /// found with it put back.
+  final double Function() scrolled;
 
   final _SectionHandle handle;
   final _paragraph = GlobalKey();
@@ -1622,7 +1673,7 @@ class _SectionView extends StatelessWidget {
             _paragraph.currentContext?.findRenderObject() as RenderParagraph?;
         if (paragraph == null) return;
         final position = paragraph.getPositionForOffset(
-          paragraph.globalToLocal(event.position),
+          paragraph.globalToLocal(event.position + Offset(0, scrolled())),
         );
         onDown(this, position.offset);
       },
