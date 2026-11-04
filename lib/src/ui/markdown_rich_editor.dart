@@ -662,8 +662,14 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
       return null;
     }
 
-    var anchor = line;
-    var before = place(editable, line);
+    // The caret's own row first: a long paragraph's start can be off the
+    // page while the row tapped in it is on it.
+    var anchor = at;
+    var before = place(editable, at);
+    if (before == null) {
+      anchor = line;
+      before = place(editable, line);
+    }
     if (before == null) {
       anchor = block;
       before = place(editable, block);
@@ -1650,6 +1656,10 @@ class _SectionHandle {
 ///
 /// The field holds the section's source as one hidden run behind this, so
 /// every offset still means what it means in the file.
+/// What RenderEditable keeps beside its text for the caret: a gap of one
+/// pixel and the caret's width, the field's default of two.
+const _caretMargin = 3.0;
+
 class _SectionView extends StatelessWidget {
   _SectionView({
     super.key,
@@ -1718,11 +1728,18 @@ class _SectionView extends StatelessWidget {
       child: RepaintBoundary(
         child: SizedBox(
           width: look.width,
-          child: RichText(
-            key: _paragraph,
-            text: span,
-            textScaler: MediaQuery.textScalerOf(context),
-            textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+          // The field lays its text out narrower than itself by room for
+          // the caret, and this the same: wrapped at another width, a
+          // paragraph can take a row more or less here than in the field,
+          // and the line tapped would move as its section is drawn there.
+          child: Padding(
+            padding: const EdgeInsets.only(right: _caretMargin),
+            child: RichText(
+              key: _paragraph,
+              text: span,
+              textScaler: MediaQuery.textScalerOf(context),
+              textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+            ),
           ),
         ),
       ),
