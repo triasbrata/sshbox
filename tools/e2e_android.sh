@@ -788,9 +788,9 @@ md_rich_text() {
 # 16 dp in from its sides and 48 dp up from its bottom. Whether the page moved
 # is read off the screen, as how many of the text area's pixel columns a
 # swipe changed: a scroll changes most of them, the caret a few. A 2x2:
-#   - a sideways swipe in the space under the text does not scroll (it may
-#     move the caret along its line, which is Flutter's own);
-#   - an upward swipe there scrolls the page, and so does one in the gutter;
+#   - a short sideways swipe from the gutter, mid-page, does not scroll;
+#   - an upward swipe in the space under the text scrolls the page, and so
+#     does one in the gutter;
 #   - an upward swipe over the text scrolls it, as it always did.
 # A mutation that takes the margins' drag out fails the second, the first and
 # the last staying green. Every swipe starts well away from the caret, which
@@ -873,12 +873,16 @@ PY
   x=$(((l + r) / 2))
   y=$((b - $(px 24)))
   # A tap there first, at the right: it puts the caret at the end of the last
-  # line drawn, and the
-  # page keeps that line in view, so what comes after starts settled.
+  # line drawn, and the page keeps that line in view, so what comes after
+  # starts settled.
   adb shell input tap $((r - $(px 24))) "$y"
   sleep 2
-  swipe under-sideways $((x - $(px 80))) "$y" $((x + $(px 80))) "$y"
-  check 'a sideways swipe under the text does not scroll' [ "${seen%% *}" = still ]
+  # Sideways from the gutter, mid-page, a short way: the field's own drag
+  # takes the caret to that line's start, left of the strip, and nothing
+  # scrolls. (Sideways at the bottom edge the caret is carried past it, and
+  # the page follows: Flutter's, on every build, so not this negative.)
+  swipe gutter-sideways $((l + $(px 6))) $(((t + b) / 2)) $((l + $(px 60))) $(((t + b) / 2))
+  check 'a sideways swipe from the gutter does not scroll' [ "${seen%% *}" = still ]
   swipe under-up "$x" "$y" "$x" $((t + $(px 60)))
   check 'an upward swipe under the text scrolls the page' [ "${seen%% *}" = scrolled ]
   check 'the keyboard is still up' ime_shown
