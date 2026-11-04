@@ -951,6 +951,16 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   Timer? _press;
   Offset? _down;
 
+  /// A finger's drag over the page's margins, which scrolls it as a drag
+  /// over the text does: the gutters and the space above and below the text
+  /// lie outside the field's own scroller, so nothing else would take it.
+  Drag? _marginDrag;
+
+  void _marginDragStart(DragStartDetails details) {
+    if (!_scroll.hasClients) return;
+    _marginDrag = _scroll.position.drag(details, () => _marginDrag = null);
+  }
+
   void _onPointerDown(PointerDownEvent event) {
     _pointerDown = true;
     _bar.value = null;
@@ -1299,64 +1309,90 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           },
           onPointerUp: (event) => _onPointerUp(event.position),
           onPointerCancel: (_) => _onPointerUp(Offset.infinite),
-          child: Stack(
-            key: _stackKey,
-            children: [
-              Positioned.fill(
-                child: Focus(
-                  canRequestFocus: false,
-                  skipTraversal: true,
-                  onKeyEvent: _onKey,
-                  child: Theme(
-                    data: theme.copyWith(
-                      textSelectionTheme: TextSelectionThemeData(
-                        selectionColor: p.selection,
-                        cursorColor: p.accent,
-                        selectionHandleColor: p.accent,
-                      ),
+          child: RawGestureDetector(
+            // A screen reader scrolls the field itself.
+            excludeFromSemantics: true,
+            // Over the text the field's own scroller is hit first and wins
+            // the drag; this takes only what nothing inside it wanted.
+            gestures: {
+              VerticalDragGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<
+                    VerticalDragGestureRecognizer
+                  >(
+                    () => VerticalDragGestureRecognizer(
+                      supportedDevices: const {
+                        PointerDeviceKind.touch,
+                        PointerDeviceKind.stylus,
+                        PointerDeviceKind.invertedStylus,
+                        PointerDeviceKind.unknown,
+                      },
                     ),
-                    child: field,
+                    (r) => r
+                      ..onStart = _marginDragStart
+                      ..onUpdate = ((d) => _marginDrag?.update(d))
+                      ..onEnd = ((d) => _marginDrag?.end(d))
+                      ..onCancel = (() => _marginDrag?.cancel()),
                   ),
-                ),
-              ),
-              // A checkbox node over each task box, for a screen reader. They
-              // take no pointer: a touch goes on to the box below.
-              Positioned.fill(
-                child: ValueListenableBuilder<List<_TaskNode>>(
-                  valueListenable: _taskNodes,
-                  builder: (context, nodes, _) => Stack(
-                    children: [
-                      for (final n in nodes)
-                        Positioned.fromRect(
-                          rect: n.rect,
-                          child: Semantics(
-                            container: true,
-                            checked: n.checked,
-                            label: n.label.isEmpty ? 'Task' : n.label,
-                            onTap: () => _toggleTask(n.start),
-                            child: const SizedBox.expand(),
-                          ),
+            },
+            child: Stack(
+              key: _stackKey,
+              children: [
+                Positioned.fill(
+                  child: Focus(
+                    canRequestFocus: false,
+                    skipTraversal: true,
+                    onKeyEvent: _onKey,
+                    child: Theme(
+                      data: theme.copyWith(
+                        textSelectionTheme: TextSelectionThemeData(
+                          selectionColor: p.selection,
+                          cursorColor: p.accent,
+                          selectionHandleColor: p.accent,
                         ),
-                    ],
+                      ),
+                      child: field,
+                    ),
                   ),
                 ),
-              ),
-              if (MarkdownRichEditor.floatingBar && widget.controller != null)
-                ValueListenableBuilder<Offset?>(
-                  valueListenable: _bar,
-                  // Positioned even while hidden: a Stack child that is not
-                  // takes a part in sizing the Stack, the field with it.
-                  builder: (context, at, _) => Positioned(
-                    left: at?.dx ?? 0,
-                    top: at == null
-                        ? 0
-                        : (at.dy - 44).clamp(0, double.infinity),
-                    child: at == null
-                        ? const SizedBox.shrink()
-                        : MarkdownFloatingBar(controller: widget.controller!),
+                // A checkbox node over each task box, for a screen reader. They
+                // take no pointer: a touch goes on to the box below.
+                Positioned.fill(
+                  child: ValueListenableBuilder<List<_TaskNode>>(
+                    valueListenable: _taskNodes,
+                    builder: (context, nodes, _) => Stack(
+                      children: [
+                        for (final n in nodes)
+                          Positioned.fromRect(
+                            rect: n.rect,
+                            child: Semantics(
+                              container: true,
+                              checked: n.checked,
+                              label: n.label.isEmpty ? 'Task' : n.label,
+                              onTap: () => _toggleTask(n.start),
+                              child: const SizedBox.expand(),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
-            ],
+                if (MarkdownRichEditor.floatingBar && widget.controller != null)
+                  ValueListenableBuilder<Offset?>(
+                    valueListenable: _bar,
+                    // Positioned even while hidden: a Stack child that is not
+                    // takes a part in sizing the Stack, the field with it.
+                    builder: (context, at, _) => Positioned(
+                      left: at?.dx ?? 0,
+                      top: at == null
+                          ? 0
+                          : (at.dy - 44).clamp(0, double.infinity),
+                      child: at == null
+                          ? const SizedBox.shrink()
+                          : MarkdownFloatingBar(controller: widget.controller!),
+                    ),
+                  ),
+              ],
+            ),
           ),
         );
       },
