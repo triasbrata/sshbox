@@ -550,6 +550,22 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     widget.controller?._changed();
     _placeBar();
     _placeTaskNodes();
+    final was = _was;
+    _was = _text.value;
+    final tapped = _tapped;
+    if (tapped != null && was.text == _text.text) {
+      _tapped = null;
+      final sel = _text.selection;
+      if (sel.isValid && sel.isCollapsed && sel.baseOffset != tapped) {
+        // Set again from here, it comes back through [_onText] once more,
+        // and the line held is that one.
+        _text.selection = TextSelection.collapsed(offset: tapped);
+        return;
+      }
+    }
+    if (was.text == _text.text && was.selection != _text.selection) {
+      _holdLine(_text.selection);
+    }
     final text = _text.text;
     if (text == _known) return;
     _known = text;
@@ -558,6 +574,123 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         _typing && now.difference(_lastAt) < const Duration(milliseconds: 1500);
     _lastAt = now;
     widget.onChanged(text, coalesce: coalesce);
+  }
+
+  /// Where a tap on a section drawn apart really landed, for [_onText] to
+  /// put the caret the field's own tap sets.
+  int? _tapped;
+
+  /// The text as a press went down.
+  String? _textAtDown;
+
+  /// The field's value as [_onText] last saw it.
+  late TextEditingValue _was = _text.value;
+
+  /// Keeps the line the caret has gone to where it was on the page.
+  ///
+  /// Moving the caret draws the block it left as rendered again and the
+  /// one it went to as its source, which are seldom the same height: when
+  /// the one left is above, everything below it moved, the place just
+  /// tapped or arrowed to with it. That place is measured before the frame
+  /// and after it, and the page scrolled by the difference, so it stays
+  /// under the finger. The place is the start of the caret's line, or,
+  /// where that line was not drawn as text before the frame, the start of
+  /// the block or section it was drawn apart in. Only a selection moved,
+  /// with no text changed, and only while that place is on the page.
+  void _holdLine(TextSelection sel) {
+    final editable = _editable;
+    if (!sel.isValid ||
+        editable == null ||
+        !editable.attached ||
+        !editable.hasSize ||
+        !_scroll.hasClients) {
+      return;
+    }
+    final live = _text.live;
+    final at = sel.extentOffset;
+    var line = 0;
+    for (final l in live.lines) {
+      if (l.start > at) break;
+      line = l.start;
+    }
+    // Where the line was drawn apart: the section, a widget whose top is
+    // where its first line is; or else a block drawn rendered.
+    var block = line;
+    for (final w in live.sections) {
+      if (w.start <= line && line < w.end) block = w.start;
+    }
+    for (final w in live.swaps) {
+      final whole = switch (w.kind) {
+        MdSwapKind.table ||
+        MdSwapKind.fence ||
+        MdSwapKind.image ||
+        MdSwapKind.frontMatter ||
+        MdSwapKind.details => true,
+        _ => false,
+      };
+      if (whole && w.range.start <= at && at < w.range.end) {
+        block = w.range.start;
+      }
+    }
+    // Where on the screen offset [k] is drawn: in the field, or in the
+    // section drawn apart that holds it, whose transform leaves out the
+    // field's scroll.
+    double? place(RenderEditable e, int k) {
+      if (k >= _text.text.length) return null;
+      final boxes = e.getBoxesForSelection(
+        TextSelection(baseOffset: k, extentOffset: k + 1),
+      );
+      // A hidden character is drawn a hundredth of a pixel high.
+      if (boxes.isNotEmpty && boxes.first.toRect().height > 2) {
+        return e.localToGlobal(Offset(0, boxes.first.top)).dy;
+      }
+      for (final views in [..._sections.values, ..._sectionsNext.values]) {
+        for (final v in views) {
+          final start = v.handle.start;
+          if (k < start || k >= start + v.range.end - v.range.start) continue;
+          final para = v._paragraph.currentContext?.findRenderObject();
+          if (para is! RenderParagraph || !para.attached) continue;
+          final local = k - start;
+          final drawn = para.getBoxesForSelection(
+            TextSelection(baseOffset: local, extentOffset: local + 1),
+          );
+          if (drawn.isEmpty) continue;
+          return para.localToGlobal(Offset(0, drawn.first.top)).dy -
+              _scroll.offset;
+        }
+      }
+      return null;
+    }
+
+    // The caret's own row first: a long paragraph's start can be off the
+    // page while the row tapped in it is on it.
+    var anchor = at;
+    var before = place(editable, at);
+    if (before == null) {
+      anchor = line;
+      before = place(editable, line);
+    }
+    if (before == null) {
+      anchor = block;
+      before = place(editable, block);
+    }
+    final page = context.findRenderObject() as RenderBox?;
+    if (before == null || page == null || !page.hasSize) return;
+    final pageTop = page.localToGlobal(Offset.zero).dy;
+    if (before < pageTop || before > pageTop + page.size.height) return;
+    final top = before;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      final e = _editable;
+      if (!mounted || e == null || !e.attached || !_scroll.hasClients) return;
+      final after = place(e, anchor);
+      if (after == null) return;
+      final moved = after - top;
+      if (moved.abs() < 1) return;
+      final pos = _scroll.position;
+      _scroll.jumpTo(
+        (pos.pixels + moved).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+      );
+    });
   }
 
   /// Sets the text from a command: one undo step of its own.
@@ -863,6 +996,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
 
   void _onPointerDown(PointerDownEvent event) {
     _pointerDown = true;
+    _textAtDown = _text.text;
     _bar.value = null;
     final keys = HardwareKeyboard.instance;
     if (keys.isControlPressed || keys.isMetaPressed) {
@@ -898,8 +1032,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     }
     // The press landed on a section drawn apart, which the field only knows
     // as one character: once the tap has put the caret there, it goes where
-    // the press really was.
+    // the press really was. Straight away, as the field's tap sets its own
+    // caret, which [_onText] then moves; and after the frame, should the
+    // field have set none.
+    // Not when the press changed the text itself: a task box ticked.
+    if (identical(_text.text, _textAtDown)) _tapped = precise;
     SchedulerBinding.instance.addPostFrameCallback((_) {
+      _tapped = null;
       if (!mounted || precise > _text.text.length) return;
       final sel = _text.selection;
       if (sel.isValid && sel.isCollapsed && sel.baseOffset != precise) {
@@ -1001,6 +1140,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
             look: _text.look!,
             swapBuilder: _swap,
             onDown: _sectionDown,
+            scrolled: () => _scroll.hasClients ? _scroll.offset : 0.0,
           );
     view.handle.start = section.start;
     (_sectionsNext[source] ??= []).add(view);
@@ -1480,6 +1620,10 @@ class _SectionHandle {
 ///
 /// The field holds the section's source as one hidden run behind this, so
 /// every offset still means what it means in the file.
+/// What RenderEditable keeps beside its text for the caret: a gap of one
+/// pixel and the caret's width, the field's default of two.
+const _caretMargin = 3.0;
+
 class _SectionView extends StatelessWidget {
   _SectionView({
     super.key,
@@ -1488,6 +1632,7 @@ class _SectionView extends StatelessWidget {
     required this.look,
     required this.swapBuilder,
     required this.onDown,
+    required this.scrolled,
   }) : handle = _SectionHandle(range.start);
 
   /// The reading the section was drawn from, and where it was then.
@@ -1499,6 +1644,11 @@ class _SectionView extends StatelessWidget {
 
   /// A press on it, at [offset] into it.
   final void Function(_SectionView view, int offset) onDown;
+
+  /// How far the field is scrolled: an inline widget's transform leaves it
+  /// out (RenderEditable's own), so where a press lands in the section is
+  /// found with it put back.
+  final double Function() scrolled;
 
   final _SectionHandle handle;
   final _paragraph = GlobalKey();
@@ -1533,7 +1683,7 @@ class _SectionView extends StatelessWidget {
             _paragraph.currentContext?.findRenderObject() as RenderParagraph?;
         if (paragraph == null) return;
         final position = paragraph.getPositionForOffset(
-          paragraph.globalToLocal(event.position),
+          paragraph.globalToLocal(event.position + Offset(0, scrolled())),
         );
         onDown(this, position.offset);
       },
@@ -1542,11 +1692,18 @@ class _SectionView extends StatelessWidget {
       child: RepaintBoundary(
         child: SizedBox(
           width: look.width,
-          child: RichText(
-            key: _paragraph,
-            text: span,
-            textScaler: MediaQuery.textScalerOf(context),
-            textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+          // The field lays its text out narrower than itself by room for
+          // the caret, and this the same: wrapped at another width, a
+          // paragraph can take a row more or less here than in the field,
+          // and the line tapped would move as its section is drawn there.
+          child: Padding(
+            padding: const EdgeInsets.only(right: _caretMargin),
+            child: RichText(
+              key: _paragraph,
+              text: span,
+              textScaler: MediaQuery.textScalerOf(context),
+              textHeightBehavior: DefaultTextHeightBehavior.maybeOf(context),
+            ),
           ),
         ),
       ),

@@ -38,7 +38,7 @@ UNITS=(smoke connect_and_keybar
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text editor_save file_editor text_size)
+  md_rich_text md_rich_caret editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -779,6 +779,112 @@ md_rich_text() {
   return "$status"
 }
 
+
+# #340: a tap below a code fence shown as its source draws the fence rendered
+# again, and the line tapped stays under the finger (.maestro/md_rich_caret.yaml).
+# The text is one field to the accessibility tree, so where a line is drawn
+# is read off the screen: the band of pixels around the tap is looked for in
+# a screenshot after it (tools/e2e_band_shift.py). A 2x2:
+#   - the fence tapped, so its source shows, scrolled off the top, and a
+#     paragraph below tapped: the fence goes back to rendered, and the
+#     paragraph moves 5 px at most;
+#   - then another paragraph tapped, nothing above changing height: it moves
+#     5 px at most either way.
+# A mutation that keeps no line moves the first by the fence's change of
+# height; the second holds still in it too.
+md_rich_caret() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-caret.md
+  local w h by
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_rich_caret: $what"
+      status=1
+    fi
+  }
+  python3 - <<'PY' | sudo -u "$SSH_USER" tee "$file" >/dev/null
+words = ('amber basil cedar delta ember fjord garnet harbor indigo juniper '
+         'kestrel lilac maple nutmeg orchid pepper quartz rowan saffron '
+         'thistle umber violet willow yarrow zinnia').split()
+out = ['# Caret e2e', '', '```sh']
+out += [f'echo "fence line {i:02d} {words[i % len(words)]}"' for i in range(26)]
+out += ['```', '']
+for i in range(60):
+    n = 1 + i % 4
+    w = [words[(i * 7 + k) % len(words)] for k in range(9 * n)]
+    out += [f'Paragraph {i}: ' + ' '.join(w) + '.', '']
+print('\n'.join(out))
+PY
+  read -r w h < <(adb shell wm size | sed -n 's/.*: \([0-9]*\)x\([0-9]*\).*/\1 \2/p' | tail -1)
+  echo "screen ${w}x${h}"
+  shot() {
+    sleep 2
+    adb exec-out screencap >"$EVIDENCE/md-rich-caret-$1.raw"
+    adb exec-out screencap -p >"$EVIDENCE/md-rich-caret-$1.png"
+  }
+  # The move of the band at y, from screenshot $1 to $2: 18 rows either side,
+  # looked for only inside the editor, rows $lo to $hi, so the header and
+  # the keyboard, which hold still, never match. A best match still poor
+  # (a mean difference over 8) means the text left the editor: "lost".
+  moved() {
+    local got
+    got=$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-$1.raw" \
+      "$EVIDENCE/md-rich-caret-$2.raw" "$3" 18 "$lo" "$hi")
+    echo "the band at y=$3, $1 to $2: shift, its diff, the diff unshifted: $got" >&2
+    if awk -v d="$(cut -d' ' -f2 <<<"$got")" 'BEGIN { exit !(d > 8) }'; then
+      echo lost
+    else
+      echo "${got%% *}"
+    fi
+  }
+  held() { [ "$1" != lost ] && [ "${1#-}" -le 5 ]; }
+
+  flow md_rich_caret -e STEP=open || return 1
+  # The fence, drawn rendered under the heading: tapped, its source shows.
+  adb shell input tap $((w / 2)) $((h * 40 / 100))
+  shot fence-tapped
+  # The editor is the band between the file's header and Gboard, up since
+  # the tap: about 28% to 55% down, and every tap stays in it. Scrolled by a
+  # finger from the band's foot, away from the caret: the text's bottom
+  # margin there, which scrolled nothing before #342 (run 41658674844), and a
+  # swipe begun on the text drags the caret instead (41661288629). Until the
+  # fence is well off the top.
+  for _ in 1 2 3 4 5 6; do
+    adb shell input swipe $((w / 2)) $((h * 54 / 100)) $((w / 2)) $((h * 29 / 100)) 300
+  done
+  sleep 1
+  shot before
+  # The first tap low in the band, so a line pushed up by the fence closing
+  # stays on show: one pushed off the top is scrolled back by the field's
+  # own caret, which held the line with no _holdLine at all when the tap
+  # was near the top (run 41759255035).
+  local y1=$((h * 47 / 100)) y2=$((h * 40 / 100))
+  local lo=$((h * 28 / 100)) hi=$((h * 55 / 100))
+  check 'the swipes scrolled the page' \
+    [ "$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-fence-tapped.raw" \
+      "$EVIDENCE/md-rich-caret-before.raw" "$y1" 35 | cut -d' ' -f3)" != 0.00 ]
+  # A paragraph below the fence, then another, both in the band.
+  adb shell input tap $((w / 2)) "$y1"
+  shot after
+  # The band at the tap itself: the line tapped, low enough in the band that
+  # it is found again after the tap (runs 41760769770, 41760783580).
+  by=$(moved before after "$y1")
+  check "a tap below the fence shown as source moved the line tapped ${by} px (5 at most)" \
+    held "$by"
+  # Nothing above changes height now: a second paragraph tapped holds still.
+  adb shell input tap $((w / 2)) "$y2"
+  shot again
+  by=$(moved after again "$y2")
+  check "a tap with the fence already rendered moved the line tapped ${by} px (5 at most)" \
+    held "$by"
+  rm -f "$EVIDENCE"/md-rich-caret-*.raw
+  flow md_rich_caret -e STEP=close || status=1
+  sudo rm -f "$file"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-caret-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
 # #253: an .html file opens rendered in a web tab, and a .txt file still opens
 # in the editor. Both files go in the login home, the root of the host's file
 # tree, and are gone with the runner.
@@ -3487,6 +3593,7 @@ done
 # land, on main or in the redesign. It wants its checks moved to this host.
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
+u_md_rich_caret() { report_bare md_rich_caret md_rich_caret; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.

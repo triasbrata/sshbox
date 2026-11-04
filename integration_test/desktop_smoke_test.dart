@@ -9428,6 +9428,176 @@ touch '${done.path}'
     },
   );
 
+  // #340: moving the caret out of a code fence shown as its source draws the
+  // fence rendered again, of another height, and the line moved to stays
+  // where it was on the page. A 2x2, by a click and by Down: a paragraph
+  // below the fence clicked, or reached by Down from the fence, moves 5 px at
+  // most; a second paragraph clicked, nothing above changing, holds still
+  // too. A mutation that keeps no line moves the first by the fence's change
+  // of height.
+  _test(
+    'rich text: leaving a fence shown as source by a click or Down keeps the '
+    'line where it was',
+    skip: editorSkip,
+    (tester) async {
+      const words =
+          'amber basil cedar delta ember fjord garnet harbor indigo juniper';
+      final text = [
+        '# Caret e2e',
+        '',
+        '```sh',
+        for (var i = 0; i < 26; i++) 'echo "fence line $i"',
+        '```',
+        '',
+        for (var i = 0; i < 30; i++) ...[
+          'Paragraph $i: ${List.filled(1 + i % 3, words).join(' ')}.',
+          '',
+        ],
+      ].join('\n');
+      final k = await _EditorSave.start(tester, 'caret.md', text: text);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      final controller = tester.widget<EditableText>(field).controller;
+      editable() => tester.state<EditableTextState>(field).renderEditable;
+      // The field's own scroller, which the page scrolls with: the first
+      // vertical one, a code block's own scrolling sideways.
+      final scroll = tester
+          .stateList<ScrollableState>(
+            find.descendant(of: field, matching: find.byType(Scrollable)),
+          )
+          .firstWhere((s) => s.position.axis == Axis.vertical)
+          .position;
+
+      // Where [line] starts on the page: in a section drawn apart, its own
+      // paragraph, placed as if the field were not scrolled (as the widget
+      // test reads it); otherwise the field's text, where it is drawn.
+      Offset at(String line) {
+        for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
+          final i = p.text.toPlainText().indexOf(line);
+          if (i < 0 || !p.attached || !p.hasSize) continue;
+          final boxes = p.getBoxesForSelection(
+            TextSelection(baseOffset: i, extentOffset: i + 1),
+          );
+          if (boxes.isEmpty) continue;
+          return p.localToGlobal(boxes.first.toRect().topLeft) -
+              Offset(0, scroll.pixels);
+        }
+        final i = text.indexOf(line);
+        final box = editable()
+            .getBoxesForSelection(
+              TextSelection(baseOffset: i, extentOffset: i + 1),
+            )
+            .first
+            .toRect();
+        return editable().localToGlobal(box.topLeft);
+      }
+
+      final view = tester.getRect(field);
+      final middle = view.top + view.height / 2;
+
+      // The caret on [inFence], so the fence shows its source, and [line]
+      // scrolled to the middle of the page: again until it holds, as
+      // sections coming into view lay out at their own heights.
+      Future<void> sourceShown(String inFence, String line) async {
+        await tester.showKeyboard(field);
+        controller.selection = TextSelection.collapsed(
+          offset: text.indexOf(inFence),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        for (var i = 0; i < 4; i++) {
+          scroll.jumpTo(
+            (scroll.pixels + at(line).dy - middle).clamp(
+              scroll.minScrollExtent,
+              scroll.maxScrollExtent,
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        debugPrint(
+          'rich text caret: "$line" at ${at(line).dy}, the page\'s middle '
+          '$middle, the page ${view.top} to ${view.bottom}',
+        );
+      }
+
+      // How far [line] moved on the page while [act] ran.
+      Future<double> moved(
+        String what,
+        String line,
+        Future<void> Function() act,
+      ) async {
+        final before = at(line).dy;
+        await act();
+        await tester.pump(const Duration(milliseconds: 300));
+        final by = at(line).dy - before;
+        debugPrint('rich text caret: $what moved "$line" by $by px');
+        return by;
+      }
+
+      Future<void> click(String line) => tester.tapAt(
+        at(line) + const Offset(30, 6),
+        kind: PointerDeviceKind.mouse,
+      );
+
+      final moves = <String, double>{};
+
+      // A click below the fence shown as its source.
+      await sourceShown('echo "fence line 3"', 'Paragraph 0:');
+      await _grab(tester, 'desktop-md-rich-caret-source');
+      final fenceSource = at('Paragraph 0:').dy - at('# Caret e2e').dy;
+      var by = await moved(
+        'a click below the fence',
+        'Paragraph 0:',
+        () => click('Paragraph 0:'),
+      );
+      await _grab(tester, 'desktop-md-rich-caret-clicked');
+      debugPrint(
+        'rich text caret: heading to Paragraph 0, source '
+        '$fenceSource px, rendered '
+        '${at('Paragraph 0:').dy - at('# Caret e2e').dy} px',
+      );
+      expect(
+        controller.selection.extentOffset,
+        // In it, or at the end of the blank line above it, where the click
+        // landed on CI (559 for 560): either way out of the fence.
+        inInclusiveRange(
+          text.indexOf('Paragraph 0:') - 1,
+          text.indexOf('Paragraph 1:') - 1,
+        ),
+        reason: 'the click did not put the caret in the paragraph',
+      );
+      moves['the line clicked'] = by;
+
+      // The fence already rendered: a click on another paragraph.
+      by = await moved(
+        'a click with the fence rendered',
+        'Paragraph 1:',
+        () => click('Paragraph 1:'),
+      );
+      moves['a still page'] = by;
+
+      // Down from the fence's closing line, out of the fence.
+      await sourceShown('```\n\nParagraph 0', 'Paragraph 0:');
+      by = await moved(
+        'Down out of the fence',
+        'Paragraph 0:',
+        () => k.press('Down', 'key code 125'),
+      );
+      expect(
+        controller.selection.extentOffset,
+        greaterThan(text.indexOf('```\n\nParagraph 0') + 3),
+        reason: 'Down did not leave the fence',
+      );
+      moves['Down out of the fence'] = by;
+      // Every move measured before any is held to, so a mutation shows
+      // each case's verdict.
+      for (final MapEntry(:key, :value) in moves.entries) {
+        expect(value.abs(), lessThanOrEqualTo(5), reason: '$key moved');
+      }
+      await _closeTabs(tester);
+    },
+  );
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
   // the engine reports them. Run it in profile to read a real number.
