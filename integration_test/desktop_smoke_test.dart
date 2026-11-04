@@ -9607,22 +9607,23 @@ pie title E2E pets
             // field-scroll below it (RenderEditable's paint transform leaves
             // its scroll offset out, which hit testing takes off), so the
             // field's own scroll is taken off here.
+            // The field's own scroll, as its RenderEditable is offset: not a
+            // Scrollable found under it, which may be a diagram's own.
             final scrolled = tester
-                .state<ScrollableState>(
-                  find
-                      .descendant(
-                        of: find.descendant(
-                          of: find.byType(MarkdownRichEditor),
-                          matching: find.byType(EditableText),
-                        ),
-                        matching: find.byType(Scrollable),
-                      )
-                      .first,
+                .state<EditableTextState>(
+                  find.descendant(
+                    of: find.byType(MarkdownRichEditor),
+                    matching: find.byType(EditableText),
+                  ),
                 )
-                .position
+                .renderEditable
+                .offset
                 .pixels;
             final at = tester.getCenter(button) - Offset(0, scrolled);
-            debugPrint('rich text: the field is scrolled $scrolled px');
+            debugPrint(
+              'rich text: the field is scrolled $scrolled px; the button '
+              'reported at ${tester.getCenter(button)}, clicked at $at',
+            );
             await _osMouse(tester, [
               'move ${at.dx} ${at.dy}',
               'down',
