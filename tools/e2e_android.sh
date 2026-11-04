@@ -830,15 +830,16 @@ md_touch_scroll() {
   box=$(page)
   read -r l t r b <<<"$box"
   echo "page with the keyboard up: [$l,$t][$r,$b] at density $dp"
-  # What a swipe did to the text area, as the pixel columns that changed:
-  # a scroll moves every line and changes most of them, while the caret,
-  # its blink and its handle change a few dozen at most. "scrolled" past
-  # half the width, "still" under a sixth, and "unclear" between.
+  # What a swipe did to the text, as the pixel columns that changed in a
+  # strip from 70 to 190 dp, the middle of each line, where its number is:
+  # a scroll changes most of them, while the caret, its handle and the
+  # keyboard's underline stay at a line's start or its end, outside it.
+  # "scrolled" past half the strip, "still" under a sixth, else "unclear".
   local raw=$EVIDENCE/md-touch-scroll
   grab() { adb exec-out screencap >"$raw-$1.raw" 2>/dev/null; }
   moved() {
     python3 - "$raw-before.raw" "$raw-after.raw" \
-      $((l + $(px 16))) $((t + $(px 20))) $((r - $(px 16))) $((b - $(px 48))) <<'PY'
+      $((l + $(px 70))) $((t + $(px 20))) $((l + $(px 190))) $((b - $(px 48))) <<'PY'
 import struct, sys
 a, b = (open(p, 'rb').read() for p in sys.argv[1:3])
 w, h = struct.unpack('<II', a[:8])
@@ -871,9 +872,10 @@ PY
   # The space under the text: 24 dp up from the page's bottom, mid-page.
   x=$(((l + r) / 2))
   y=$((b - $(px 24)))
-  # A tap there first: it puts the caret on the last line drawn, and the
+  # A tap there first, at the right: it puts the caret at the end of the last
+  # line drawn, and the
   # page keeps that line in view, so what comes after starts settled.
-  adb shell input tap "$x" "$y"
+  adb shell input tap $((r - $(px 24))) "$y"
   sleep 2
   swipe under-sideways $((x - $(px 80))) "$y" $((x + $(px 80))) "$y"
   check 'a sideways swipe under the text does not scroll' [ "${seen%% *}" = still ]
