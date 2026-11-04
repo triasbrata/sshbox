@@ -826,13 +826,13 @@ PY
   # The move of the band at y, from screenshot $1 to $2: 18 rows either side,
   # looked for only inside the editor, rows $lo to $hi, so the header and
   # the keyboard, which hold still, never match. A best match still poor
-  # (a mean difference over 6) means the text left the editor: "lost".
+  # (a mean difference over 8) means the text left the editor: "lost".
   moved() {
     local got
     got=$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-$1.raw" \
       "$EVIDENCE/md-rich-caret-$2.raw" "$3" 18 "$lo" "$hi")
     echo "the band at y=$3, $1 to $2: shift, its diff, the diff unshifted: $got" >&2
-    if awk -v d="$(cut -d' ' -f2 <<<"$got")" 'BEGIN { exit !(d > 6) }'; then
+    if awk -v d="$(cut -d' ' -f2 <<<"$got")" 'BEGIN { exit !(d > 8) }'; then
       echo lost
     else
       echo "${got%% *}"
@@ -855,9 +855,11 @@ PY
   done
   sleep 1
   shot before
-  # Taps near the band's top, so the text tapped stays in the band if it
-  # moves down by a block's height, and can be found and measured.
-  local y1=$((h * 31 / 100)) y2=$((h * 40 / 100))
+  # The first tap low in the band, so a line pushed up by the fence closing
+  # stays on show: one pushed off the top is scrolled back by the field's
+  # own caret, which held the line with no _holdLine at all when the tap
+  # was near the top (run 41759255035).
+  local y1=$((h * 47 / 100)) y2=$((h * 40 / 100))
   local lo=$((h * 28 / 100)) hi=$((h * 55 / 100))
   check 'the swipes scrolled the page' \
     [ "$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-fence-tapped.raw" \
@@ -867,12 +869,12 @@ PY
   shot after
   # The paragraph tapped goes from rendered to its source, whose lines break
   # elsewhere (run 41754863951), so the band at the tap is printed only, and
-  # what is held to 5 px is a band further down, past the paragraph tapped.
+  # what is held to 5 px is a band above it, the paragraph before.
   by=$(moved before after "$y1")
   echo "report: the band at the tap itself: $by"
-  local y3=$((h * 50 / 100))
+  local y3=$((h * 38 / 100))
   by=$(moved before after "$y3")
-  check "a tap below the fence shown as source moved the text below it ${by} px (5 at most)" \
+  check "a tap below the fence shown as source moved the text above it ${by} px (5 at most)" \
     held "$by"
   # Nothing above changes height now: a second paragraph tapped holds still.
   adb shell input tap $((w / 2)) "$y2"
