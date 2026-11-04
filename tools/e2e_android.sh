@@ -867,14 +867,10 @@ PY
   # A paragraph below the fence, then another, both in the band.
   adb shell input tap $((w / 2)) "$y1"
   shot after
-  # The paragraph tapped goes from rendered to its source, whose lines break
-  # elsewhere (run 41754863951), so the band at the tap is printed only, and
-  # what is held to 5 px is a band above it, the paragraph before.
+  # The band at the tap itself: the line tapped, low enough in the band that
+  # it is found again after the tap (runs 41760769770, 41760783580).
   by=$(moved before after "$y1")
-  echo "report: the band at the tap itself: $by"
-  local y3=$((h * 38 / 100))
-  by=$(moved before after "$y3")
-  check "a tap below the fence shown as source moved the text above it ${by} px (5 at most)" \
+  check "a tap below the fence shown as source moved the line tapped ${by} px (5 at most)" \
     held "$by"
   # Nothing above changes height now: a second paragraph tapped holds still.
   adb shell input tap $((w / 2)) "$y2"
