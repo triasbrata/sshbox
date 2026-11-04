@@ -12,6 +12,7 @@ import 'package:sshbox/src/mermaid/sequence.dart';
 import 'package:sshbox/src/ui/mermaid_canvas.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
+import 'package:sshbox/src/ui/tui.dart' show TuiDialog;
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 
 import 'fake_web_view.dart';
@@ -337,6 +338,37 @@ flowchart TB
       );
       expect(scene.items.whereType<MLine>(), hasLength(2));
     });
+
+    test(
+      'a second subgraph with an id already taken is a group of its own',
+      () {
+        final chart = Flowchart.parse('''
+flowchart TD
+  subgraph A
+    x
+  end
+  subgraph A
+    y
+  end
+''');
+        expect(chart.groups, hasLength(2));
+        final ids = chart.groups.keys.toList();
+        expect(ids.first, 'A');
+        expect(ids.last, startsWith('A#'));
+        expect(ids.last, isNot('A'));
+        expect(chart.groups[ids.last]!.label, 'A');
+        expect(chart.nodes['x']!.group, 'A');
+        expect(chart.nodes['y']!.group, ids.last);
+        expect(
+          chart
+              .layout(_measure)
+              .items
+              .whereType<MBox>()
+              .where((b) => b.shape == MShape.cluster),
+          hasLength(2),
+        );
+      },
+    );
 
     test('a link to itself is a loop beside the node', () {
       final scene = Flowchart.parse('graph TD\n  a -->|again| a')
@@ -708,6 +740,32 @@ sequenceDiagram
       expect(find.text('OPEN IN MERMAID'), findsNothing);
       expect(find.text('Open in Mermaid'), findsNothing);
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+    testWidgets('the diagram dialog closes with its Close button', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () =>
+                    showMermaidDialog(context, 'graph TD\n  A --> B\n'),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TuiDialog), findsOneWidget);
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      await tester.tap(find.text('CLOSE'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TuiDialog), findsNothing);
+      expect(find.byType(MermaidCanvas), findsNothing);
+    });
 
     test('canShowMermaid', () {
       debugDefaultTargetPlatformOverride = TargetPlatform.linux;
