@@ -9481,6 +9481,12 @@ touch '${done.path}'
 # Mermaid e2e
 
 ```mermaid
+pie title E2E pets
+  "Dogs" : 3
+  "Cats" : 2
+```
+
+```mermaid
 flowchart LR
   subgraph Tablet
     App["Jeansh app"]
@@ -9532,12 +9538,6 @@ sequenceDiagram
     App->>Store: save the key with fcmToken T2
   end
   Note over App,Relay: _register goes round again if the token changed meanwhile.<br/>Servers keep their LC_SSHBOX_KEY and carry on, with no reconnect.<br/>A failure keeps the T1 registration, tried again at the next connect, token or launch.
-```
-
-```mermaid
-pie title E2E pets
-  "Dogs" : 3
-  "Cats" : 2
 ```
 ''';
       final k = await _EditorSave.start(tester, 'diagrams.md', text: original);
