@@ -786,9 +786,10 @@ md_rich_text() {
 # with the keyboard up, the middle of the screen is that space. The page is
 # the one EditText node Android has, its bounds the whole page; the text sits
 # 16 dp in from its sides and 48 dp up from its bottom. Whether the page moved
-# is read off the screen: the lower half of the text area, well under the
-# caret on the first line, before and after each swipe. A 2x2:
-#   - a sideways swipe in the space under the text moves nothing;
+# is read off the screen, as how many of the text area's pixel columns a
+# swipe changed: a scroll changes most of them, the caret a few. A 2x2:
+#   - a sideways swipe in the space under the text does not scroll (it may
+#     move the caret along its line, which is Flutter's own);
 #   - an upward swipe there scrolls the page, and so does one in the gutter;
 #   - an upward swipe over the text scrolls it, as it always did.
 # A mutation that takes the margins' drag out fails the second, the first and
@@ -829,47 +830,63 @@ md_touch_scroll() {
   box=$(page)
   read -r l t r b <<<"$box"
   echo "page with the keyboard up: [$l,$t][$r,$b] at density $dp"
-  # The lower half of the text, as a hash of its pixels.
-  shown() {
-    adb exec-out screencap >"$EVIDENCE/md-touch-scroll.raw" 2>/dev/null
-    python3 - "$EVIDENCE/md-touch-scroll.raw" \
-      $((l + $(px 16))) $((t + (b - t) / 2)) $((r - $(px 16))) $((b - $(px 48))) <<'PY'
-import hashlib, struct, sys
-data = open(sys.argv[1], 'rb').read()
-w, h = struct.unpack('<II', data[:8])
-head = len(data) - w * h * 4
-x0, y0, x1, y1 = map(int, sys.argv[2:])
-rows = b''.join(data[head + (y * w + x0) * 4:head + (y * w + x1) * 4]
-                for y in range(y0, y1))
-print(hashlib.sha1(rows).hexdigest())
+  # What a swipe did to the text area, as the pixel columns that changed:
+  # a scroll moves every line and changes most of them, while the caret,
+  # its blink and its handle change a few dozen at most. "scrolled" past
+  # half the width, "still" under a sixth, and "unclear" between.
+  local raw=$EVIDENCE/md-touch-scroll
+  grab() { adb exec-out screencap >"$raw-$1.raw" 2>/dev/null; }
+  moved() {
+    python3 - "$raw-before.raw" "$raw-after.raw" \
+      $((l + $(px 16))) $((t + $(px 20))) $((r - $(px 16))) $((b - $(px 48))) <<'PY'
+import struct, sys
+a, b = (open(p, 'rb').read() for p in sys.argv[1:3])
+w, h = struct.unpack('<II', a[:8])
+head = len(a) - w * h * 4
+x0, y0, x1, y1 = map(int, sys.argv[3:])
+cols = set()
+for y in range(y0, y1):
+    i = head + y * w * 4
+    for x in range(x0, x1):
+        if x not in cols and a[i + x * 4:i + x * 4 + 3] != b[i + x * 4:i + x * 4 + 3]:
+            cols.add(x)
+n, width = len(cols), x1 - x0
+word = 'scrolled' if n * 2 > width else 'still' if n * 6 < width else 'unclear'
+print(f'{word} {n}/{width}')
 PY
   }
-  # swipe NAME X1 Y1 X2 Y2: the page's lower half before and after.
+  local seen
+  # swipe NAME X1 Y1 X2 Y2: what it did, in $seen.
   swipe() {
     local name=$1
     shift
-    before=$(shown)
+    grab before
     adb shell input swipe "$@" 400
     sleep 2
-    after=$(shown)
+    grab after
+    seen=$(moved)
     adb exec-out screencap -p >"$EVIDENCE/md-touch-scroll-$name.png" 2>/dev/null
-    echo "$name: swipe $* -- $before -> $after"
+    echo "$name: swipe $* -- $seen columns changed"
   }
   # The space under the text: 24 dp up from the page's bottom, mid-page.
   x=$(((l + r) / 2))
   y=$((b - $(px 24)))
+  # A tap there first: it puts the caret on the last line drawn, and the
+  # page keeps that line in view, so what comes after starts settled.
+  adb shell input tap "$x" "$y"
+  sleep 2
   swipe under-sideways $((x - $(px 80))) "$y" $((x + $(px 80))) "$y"
-  check 'a sideways swipe under the text moves nothing' [ "$before" = "$after" ]
+  check 'a sideways swipe under the text does not scroll' [ "${seen%% *}" = still ]
   swipe under-up "$x" "$y" "$x" $((t + $(px 60)))
-  check 'an upward swipe under the text scrolls the page' [ "$before" != "$after" ]
+  check 'an upward swipe under the text scrolls the page' [ "${seen%% *}" = scrolled ]
   check 'the keyboard is still up' ime_shown
   # The gutter: 8 dp in from the page's left edge.
   swipe gutter-up $((l + $(px 8))) $((b - $(px 80))) $((l + $(px 8))) $((t + $(px 60)))
-  check 'an upward swipe in the gutter scrolls the page' [ "$before" != "$after" ]
+  check 'an upward swipe in the gutter scrolls the page' [ "${seen%% *}" = scrolled ]
   # Over the text, mid-page: the field's own scrolling.
   swipe text-up "$x" $(((t + b) / 2 + $(px 40))) "$x" $((t + $(px 60)))
-  check 'an upward swipe over the text scrolls the page' [ "$before" != "$after" ]
-  rm -f "$EVIDENCE/md-touch-scroll.raw"
+  check 'an upward swipe over the text scrolls the page' [ "${seen%% *}" = scrolled ]
+  rm -f "$raw-before.raw" "$raw-after.raw"
   flow md_touch_scroll -e STEP=close || status=1
   sudo rm -f "$file"
   find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-touch-scroll-*.png' \
