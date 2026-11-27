@@ -4783,6 +4783,7 @@ touch '${done.path}'
     'and leaves B\'s tabs alone',
     skip: Platform.isLinux ? null : mwSkip,
     (tester) async {
+      fail('PROBE: this test body runs');
       addTearDown(() => uiTextSize.choose(1));
       await uiTextSize.choose(1);
       await _launch(tester);
@@ -4907,6 +4908,7 @@ touch '${done.path}'
     'it, Close window closes only it',
     skip: Platform.isLinux ? null : mwSkip,
     (tester) async {
+      fail('PROBE: this test body runs');
       await _launch(tester);
       var ids = await _mwWindows(tester, 1);
       await _xdo(['windowfocus', '--sync', ids.first]);
