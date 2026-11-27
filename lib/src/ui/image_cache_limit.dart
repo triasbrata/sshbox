@@ -4,7 +4,7 @@ import 'package:flutter/painting.dart';
 /// 1000 images, far more than chat's thumbnails, the image viewer and the
 /// Markdown preview ever need at once. A picture that falls out is decoded
 /// again when drawn.
-const imageCacheBytes = 32 * 1024 * 1024;
+const imageCacheBytes = 0;
 const imageCacheCount = 100;
 
 /// Sets the limits on [cache]. Called once in main, after the binding exists.
