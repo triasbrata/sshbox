@@ -703,6 +703,7 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
       }
     } else if (extra != nullptr) {
       gtk_widget_destroy(GTK_WIDGET(extra->window));
+      if (self->extras == nullptr) gtk_widget_hide(GTK_WIDGET(self->window));
     }
     fl_method_call_respond_success(call, nullptr, nullptr);
   } else if (strcmp(method, "place") == 0 && args != nullptr &&
