@@ -539,9 +539,11 @@ class WindowSet extends ChangeNotifier {
         if (window.id != 0 && window.id != heirId) window,
     ];
     _windows.clear();
+    // In the first window's view, whichever it is: 0 where the runner has an
+    // implicit view, and a Mac's first window has another.
     heir
       ..id = 0
-      ..viewId = 0;
+      ..viewId = closing.viewId;
     // First, so the first window saved is the first window the runner has.
     _windows[0] = heir;
     for (final window in rest) {

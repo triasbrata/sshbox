@@ -467,6 +467,8 @@ void main() {
       final set = _set(runner);
       await set.start();
       final first = set.windows.single;
+      // A runner whose first window draws in a view other than 0.
+      first.viewId = 7;
       final second = (await set.openNew())!;
       final third = (await set.openNew())!;
       await second.sessions.restoreTabs(hosts: [_other], databases: []);
@@ -484,7 +486,7 @@ void main() {
       // place the runner's first window has, with the tabs it had.
       expect(set.windows, [second, third]);
       expect(second.id, 0);
-      expect(second.viewId, 0);
+      expect(second.viewId, 7);
       expect([for (final s in second.sessions.sessions) s.host.id], ['other']);
       expect(runner.placed, [(0, place)]);
       // The view that was its own is what goes, and the first window's
