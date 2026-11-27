@@ -15,6 +15,7 @@ import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/markdown_rich_editor.dart';
+import 'package:sshbox/src/ui/mermaid_canvas.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/text_size.dart';
@@ -1173,6 +1174,35 @@ void main() {
     Finder rendered(Finder finder) =>
         find.descendant(of: find.byType(MarkdownBody), matching: finder);
 
+    testWidgets('a code block, a table and a quote draw in termul\'s palette, '
+        'not Material\'s greys', (tester) async {
+      await pumpReadme(
+        tester,
+        '```sh\necho hi\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+      );
+      final bodies = tester.widgetList<MarkdownBody>(find.byType(MarkdownBody));
+      expect(bodies, isNotEmpty);
+      final p = TermulThemeData.of(
+        tester.element(find.byType(MarkdownBody).first),
+      ).palette;
+      final theme = Theme.of(tester.element(find.byType(MarkdownBody).first));
+      expect(p.surface, isNot(theme.colorScheme.surfaceContainerHighest));
+      for (final body in bodies) {
+        final sheet = body.styleSheet!;
+        final code = sheet.codeblockDecoration! as BoxDecoration;
+        expect(code.color, p.surface);
+        expect((code.border! as Border).top.color, p.border);
+        expect(sheet.tableBorder!.top.color, p.border);
+        expect(sheet.code!.backgroundColor, p.surface);
+        expect(sheet.a!.color, p.accent);
+        expect(sheet.checkbox!.color, p.accent);
+        final quote = sheet.blockquoteDecoration! as BoxDecoration;
+        expect((quote.border! as Border).left.color, p.border);
+        final rule = sheet.horizontalRuleDecoration! as BoxDecoration;
+        expect((rule.border! as Border).top.color, p.border);
+      }
+    });
+
     testWidgets('only a Markdown file has rich text, and opens in it', (
       tester,
     ) async {
@@ -1777,14 +1807,14 @@ Run `make` first.
 ''');
 
         expect(
-          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          tester.widget<MermaidBlock>(find.byType(MermaidBlock)).source,
           'flowchart LR\n  A --> B\n',
         );
         expect(rendered(find.textContaining('A --> B')), findsNothing);
         expect(find.text('echo hello'), findsOneWidget);
 
         await toggle(tester, 'source');
-        expect(find.byType(MermaidView), findsNothing);
+        expect(find.byType(MermaidBlock), findsNothing);
         expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
       },
     );
@@ -1811,7 +1841,8 @@ Run `make` first.
 
       // The two fences, and neither the diagram nor `make`.
       expect(find.byTooltip('Copy code'), findsNWidgets(2));
-      expect(find.byType(MermaidView), findsOneWidget);
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      expect(find.byType(MermaidView), findsNothing);
     });
 
     testWidgets('the copy button copies the block, fences and all left out', (

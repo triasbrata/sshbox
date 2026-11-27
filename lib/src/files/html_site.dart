@@ -98,7 +98,7 @@ class HtmlSite {
     pathSegments: [token, _name],
   );
 
-  final _listings = <String, List<RemoteEntry>>{};
+  final _listings = <String, Future<List<RemoteEntry>>>{};
   final _seen = <String, int>{};
   var _total = 0;
   var _busy = 0;
@@ -113,11 +113,10 @@ class HtmlSite {
     ).join();
   }
 
-  /// Forgets what was listed, loaded and refused, for Reload: the files on
+  /// Forgets what was loaded and refused, for Reload: the files on
   /// the host may have changed, and a page that is loading again starts with
   /// a clean budget.
   void reset() {
-    _listings.clear();
     _seen.clear();
     _total = 0;
     problems.value = const {};
@@ -143,7 +142,18 @@ class HtmlSite {
       ..set('X-Content-Type-Options', 'nosniff')
       ..set('Referrer-Policy', 'no-referrer')
       ..set('Cache-Control', 'no-store')
-      ..set('Cross-Origin-Resource-Policy', 'same-origin');
+      ..set('Cross-Origin-Resource-Policy', 'same-origin')
+      // Remote styles, scripts, pictures and fonts load as in any browser,
+      // but no document from here — a page, an svg, anything a frame or a
+      // navigation opens — can reach the plain-http services of this device
+      // by fetch, XHR or WebSocket, nor post a form to one: connect-src keeps
+      // 'self' and https. Nothing else is restricted. On every response, as
+      // which of them is a document is the view's call, not the type's.
+      ..set(
+        'Content-Security-Policy',
+        "connect-src 'self' https: wss: data: blob:; "
+            "form-action 'self' https:",
+      );
     Future<void> refuse(int status, String text, [String? why]) async {
       if (why != null) _problem(request.uri.path, why);
       response.statusCode = status;
@@ -201,13 +211,13 @@ class HtmlSite {
       }
 
       final shown = rel.join('/');
+      Future<void> refuseKind(RemoteEntry? entry) =>
+          entry?.kind == RemoteEntryKind.symlink
+          ? refuse(403, 'Refused', 'a link, not followed')
+          : refuse(404, 'Not found', 'missing');
       final entry = await _find(rel);
-      if (entry == null) return await refuse(404, 'Not found', 'missing');
-      if (entry.kind == RemoteEntryKind.symlink) {
-        return await refuse(403, 'Refused', 'a link, not followed');
-      }
-      if (entry.kind != RemoteEntryKind.file) {
-        return await refuse(404, 'Not found', 'missing');
+      if (entry == null || entry.kind != RemoteEntryKind.file) {
+        return await refuseKind(entry);
       }
       final size = entry.size ?? 0;
       if (size > limits.fileBytes) {
@@ -241,20 +251,15 @@ class HtmlSite {
       if (bytes == null) {
         return await refuse(413, 'Too big', 'too big ($shown)');
       }
+      // The read follows a link, so the way there is looked at again once
+      // the bytes are in: a file made a link while it was read is refused.
+      final after = await _find(rel);
+      if (after == null || after.kind != RemoteEntryKind.file) {
+        return await refuseKind(after);
+      }
       final type = _contentType(entry.name);
       response.statusCode = 200;
       response.headers.set('Content-Type', type);
-      if (type.startsWith('text/html')) {
-        // Remote styles, scripts, pictures and fonts load as in any browser,
-        // but a page cannot reach the plain-http services of this device by
-        // fetch, XHR or WebSocket, nor post a form to one: connect-src keeps
-        // 'self' and https. Nothing else is restricted.
-        response.headers.set(
-          'Content-Security-Policy',
-          "connect-src 'self' https: wss: data: blob:; "
-              "form-action 'self' https:",
-        );
-      }
       response.contentLength = bytes.length;
       if (request.method != 'HEAD') response.add(bytes);
       await response.close();
@@ -290,8 +295,13 @@ class HtmlSite {
     return null;
   }
 
-  Future<List<RemoteEntry>> _list(String dir) async =>
-      _listings[dir] ??= await _browser.list(dir);
+  /// [dir] as it is now: each request lists afresh, as a file listed earlier
+  /// may be a link by now. Requests that ask while a listing is on its way
+  /// share it.
+  Future<List<RemoteEntry>> _list(String dir) =>
+      _listings[dir] ??= _browser.list(dir).whenComplete(() {
+        _listings.remove(dir);
+      });
 
   /// The file's bytes, or null when it came out bigger than the limit however
   /// small the listing said it was.
@@ -303,14 +313,15 @@ class HtmlSite {
     } else {
       _busy++;
     }
-    final scratch = await Directory.systemTemp.createTemp('jeansh-html-');
+    Directory? scratch;
     try {
+      scratch = await Directory.systemTemp.createTemp('jeansh-html-');
       final copy = File('${scratch.path}/f');
       await _browser.download(path, copy.path, length: limits.fileBytes + 1);
       final bytes = await copy.readAsBytes();
       return bytes.length > limits.fileBytes ? null : bytes;
     } finally {
-      await scratch.delete(recursive: true).catchError((_) => scratch);
+      await scratch?.delete(recursive: true).catchError((_) => scratch!);
       if (_waiting.isEmpty) {
         _busy--;
       } else {

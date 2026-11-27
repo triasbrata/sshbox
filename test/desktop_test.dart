@@ -32,6 +32,7 @@ import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/desktop_clipboard.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/magic_key.dart';
+import 'package:sshbox/src/ui/mermaid_canvas.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/terminal_page.dart';
 import 'package:sshbox/src/ui/terminal_paste.dart' show desktopClipboard;
@@ -459,8 +460,7 @@ void main() {
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   group('a Mermaid diagram', () {
-    const markdown = '```mermaid\ngraph TD\n  A --> B\n```\n';
-    Widget preview() => MaterialApp(
+    Widget preview(String markdown) => MaterialApp(
       home: Scaffold(
         body: MarkdownBody(
           data: markdown,
@@ -469,23 +469,38 @@ void main() {
       ),
     );
 
-    testWidgets('shows as its source where there is no web view to draw it', (
+    testWidgets('is drawn natively where there is no web view', (
       tester,
     ) async {
       // No web view platform set: a WebViewController here would throw, as
       // it does on a real Linux or Windows build.
-      await tester.pumpWidget(preview());
+      await tester.pumpWidget(preview('```mermaid\ngraph TD\n  A --> B\n```\n'));
 
+      expect(find.byType(MermaidCanvas), findsOneWidget);
       expect(find.byType(MermaidView), findsNothing);
-      expect(find.textContaining('A --> B'), findsOneWidget);
+      expect(find.textContaining('A --> B'), findsNothing);
       expect(tester.takeException(), isNull);
     }, variant: _noWebView);
 
-    testWidgets('is drawn wherever there is one', (tester) async {
-      WebViewPlatform.instance = FakeWebViewPlatform();
-      await tester.pumpWidget(preview());
+    testWidgets('a kind not drawn natively shows its source, and no button '
+        'for a web view there is none of', (tester) async {
+      await tester.pumpWidget(preview('```mermaid\npie\n  "a": 1\n```\n'));
 
-      expect(find.byType(MermaidView), findsOneWidget);
+      expect(find.byType(MermaidCanvas), findsNothing);
+      expect(find.text('pie is not drawn natively'), findsOneWidget);
+      expect(find.textContaining('"a": 1'), findsOneWidget);
+      expect(find.text('Open in Mermaid'), findsNothing);
+      expect(tester.takeException(), isNull);
+    }, variant: _noWebView);
+
+    testWidgets('is drawn natively on a Mac too, with no web view', (
+      tester,
+    ) async {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      await tester.pumpWidget(preview('```mermaid\ngraph TD\n  A --> B\n```\n'));
+
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      expect(find.byType(MermaidView), findsNothing);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
   });
 

@@ -26,7 +26,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show DropdownButton, IconButton, Icons, InkWell, TextField, Tooltip;
-import 'package:flutter/rendering.dart' show OffsetLayer, RenderParagraph;
+import 'package:flutter/rendering.dart'
+    show OffsetLayer, RenderParagraph, SemanticsBinding;
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -36,6 +37,8 @@ import 'package:sshbox/main.dart' as app;
 import 'package:sshbox/src/chat/claude_chat.dart' show ChatNotice, ChatSaid;
 import 'package:sshbox/src/data/host_repository.dart';
 import 'package:sshbox/src/data/secret_store.dart';
+import 'package:sshbox/src/files/file_browser.dart'
+    show FileBrowser, RemoteEntry, RemoteEntryKind;
 import 'package:sshbox/src/files/local_file_browser.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:sshbox/src/ui/file_browser_page.dart' show FileBrowserPage;
@@ -62,7 +65,8 @@ import 'package:sshbox/src/ui/file_editor_page.dart' show FileEditorPage;
 import 'package:sshbox/src/ui/git_diff_page.dart' show GitDiffPage;
 import 'package:sshbox/src/ui/markdown_rich_editor.dart'
     show MarkdownRichEditor;
-import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidView;
+import 'package:sshbox/src/ui/mermaid_canvas.dart' show MermaidCanvas;
+import 'package:sshbox/src/ui/mermaid_view.dart' show MermaidBlock, MermaidView;
 import 'package:sshbox/src/ui/termul/tui_chat.dart'
     show TuiChatBubble, TuiChatSessionList;
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart' show TuiCheckbox;
@@ -162,7 +166,10 @@ const _settleStep = Duration(milliseconds: 100);
 /// A generous settle: this is a real app doing real work at launch — reading
 /// preferences off disk, asking the keychain, starting notifications — not a
 /// widget tree pumped in memory.
-Future<void> _launch(WidgetTester tester) async {
+Future<void> _launch(WidgetTester tester) =>
+    _timed('launch', () => _launchTimed(tester));
+
+Future<void> _launchTimed(WidgetTester tester) async {
   await app.main();
   // A fresh install opens on the redesign's first-run slides, which animate,
   // so nothing settles until they are skipped; main has none and opens on
@@ -183,6 +190,13 @@ Future<void> _launch(WidgetTester tester) async {
 /// terminal never settles — its cursor blinks — so pumpAndSettle cannot wait
 /// on one.
 Future<void> _until(
+  WidgetTester tester,
+  FutureOr<bool> Function() done,
+  String what, {
+  Duration timeout = const Duration(seconds: 20),
+}) => _timed('until', () => _untilTimed(tester, done, what, timeout: timeout));
+
+Future<void> _untilTimed(
   WidgetTester tester,
   FutureOr<bool> Function() done,
   String what, {
@@ -621,11 +635,17 @@ Future<void> _drag(
 }
 
 /// Opens the Git panel from a Local shell and picks [repo] in it.
-///
-/// On a runner the home holds this repository alone and it is picked
-/// already; on a machine with others it is picked from the list.
 Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
   await tester.tap(find.byTooltip('Git'));
+  await _pickRepo(tester, repo);
+}
+
+/// Picks [repo] in the Git panel on screen.
+///
+/// Where the home holds this repository alone it is picked already; where it
+/// holds others it is picked from the list. A runner's home holds ~/.nvm, a
+/// git checkout, which sorts first and so is picked first.
+Future<void> _pickRepo(WidgetTester tester, Directory repo) async {
   final name = repo.path.split('/').last;
   bool ours(String? root) => root != null && root.endsWith('/$name');
   // Material's DropdownButton on main, the redesign's TuiDropdown: both
@@ -645,6 +665,9 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
     "the Git panel to find this test's repository",
   );
   if (!ours(shown().value as String?)) {
+    debugPrint(
+      'Git panel picked ${shown().value} first, of ${choices().join(', ')}',
+    );
     // Picked through the picker's own onChanged, which is what choosing it
     // from the list calls: a long list in a small menu is its own fight.
     final root = choices().firstWhere(ours);
@@ -660,11 +683,64 @@ Future<void> _gitPanelOn(WidgetTester tester, Directory repo) async {
 /// testWidgets, with a skip that says why in the log: flutter test prints only
 /// a skipped test's name, and a skip is no coverage, so it has to be read as
 /// one.
-void _test(String name, WidgetTesterCallback body, {String? skip}) {
+void _test(
+  String name,
+  WidgetTesterCallback body, {
+  String? skip,
+  bool semantics = true,
+}) {
+  final mine = _inShard(_declared++);
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(
+    name,
+    (tester) async {
+      _spent.clear();
+      final watch = Stopwatch()..start();
+      try {
+        await body(tester);
+      } finally {
+        debugPrint(
+          'time: ${(watch.elapsedMilliseconds / 1000).toStringAsFixed(1)}s '
+          '${_spent.entries.map((e) => '${e.key} ${(e.value / 1000).toStringAsFixed(1)}s').join(', ')}'
+          ' | $name',
+        );
+      }
+    },
+    skip: skip != null || !mine,
+    semanticsEnabled: semantics,
+  );
+}
+
+/// How many tests have been declared, for the shard each belongs to.
+var _declared = 0;
+
+/// JEANSH_E2E_SHARD=i/n runs the tests whose place in this file is i modulo n,
+/// the others skipped, so one runner's share of the file fits its step: the
+/// whole file took 31 min 50 s of a 32 minute step on Linux, 93 tests of which
+/// 11 minutes were waits for a screen and the rest taps, pumps and checks,
+/// each test starting from a cold app of its own and none leaning on another.
+/// Unset, every test runs.
+bool _inShard(int index) {
+  final shard = Platform.environment['JEANSH_E2E_SHARD'];
+  if (shard == null || shard.isEmpty) return true;
+  final parts = shard.split('/').map(int.parse).toList();
+  return index % parts[1] == parts[0];
+}
+
+/// Where a test's time went, by step, printed after it as `time:`: a Linux
+/// run of the whole file had passed its 32 minutes, and the log said only
+/// when each test ended.
+final _spent = <String, int>{};
+
+Future<T> _timed<T>(String step, Future<T> Function() body) async {
+  final watch = Stopwatch()..start();
+  try {
+    return await body();
+  } finally {
+    _spent[step] = (_spent[step] ?? 0) + watch.elapsedMilliseconds;
+  }
 }
 
 const _powershell =
@@ -1952,6 +2028,162 @@ Future<void> _macWidenWindow(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 500));
 }
 
+// ---- Packed scrollback (#351): helpers -----------------------------------
+
+/// What line [n] of the packed-scrollback tests' output reads. A colour for
+/// the line, a background behind the wide characters, bold and underline on
+/// the last word, and [pad] after it where a line is to wrap.
+String _packedLine(int n, String pad) =>
+    '\x1b[3${n % 7 + 1}mline $n \x1b[4${n % 5 + 1}m日本語\x1b[49m '
+    '\x1b[1;4mbold\x1b[0m${pad.isEmpty ? '' : ' $pad'}';
+
+/// What [_packedLine] reads once drawn, escapes gone.
+String _packedText(int n, String pad) =>
+    'line $n 日本語 bold${pad.isEmpty ? '' : ' $pad'}';
+
+/// A file holding [count] lines of [_packedLine], for the shell to `cat`.
+File _packedFile(int count, String pad) {
+  final file = File('${_scratch().path}/out.txt');
+  file.writeAsStringSync(
+    '${[for (var n = 0; n < count; n++) _packedLine(n, pad)].join('\n')}\n',
+  );
+  return file;
+}
+
+/// A terminal that packs nothing, given the same output: what a line should
+/// read cell by cell, the packed one's twin. Packing is switched off for as
+/// long as it is written to or resized, which is synchronous, so the app's
+/// own terminals are not caught in it.
+class _Twin {
+  _Twin(int count, String pad, int cols, int rows) {
+    _unpacked(() {
+      terminal = Terminal(maxLines: 10000)..resize(cols, rows);
+      terminal.write(
+        '${[for (var n = 0; n < count; n++) _packedLine(n, pad)].join('\r\n')}'
+        '\r\n',
+      );
+    });
+  }
+
+  late final Terminal terminal;
+
+  void resize(int cols, int rows) =>
+      _unpacked(() => terminal.resize(cols, rows));
+
+  static void _unpacked(void Function() body) {
+    Buffer.compactionEnabled = false;
+    try {
+      body();
+    } finally {
+      Buffer.compactionEnabled = true;
+    }
+  }
+}
+
+/// The row of [terminal]'s main buffer that starts line [n] of the output.
+int _rowOfLine(Terminal terminal, int n) {
+  final lines = terminal.buffer.lines;
+  final start = RegExp('^line $n ');
+  for (var i = 0; i < lines.length; i++) {
+    if (!lines[i].isWrapped && start.hasMatch(lines[i].getText())) return i;
+  }
+  return -1;
+}
+
+/// How many lines of [terminal]'s buffer are held packed, read off without
+/// unpacking any of them.
+int _packedCount(Terminal terminal) {
+  final lines = terminal.buffer.lines;
+  var packed = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].isPacked) packed++;
+  }
+  return packed;
+}
+
+/// Where two lines differ, cell by cell over [cols], or null where they read
+/// the same: the character, its width, both colours and its attributes.
+String? _lineDiff(BufferLine a, BufferLine b, int cols) {
+  if (a.isWrapped != b.isWrapped) {
+    return 'wrapped ${a.isWrapped} v ${b.isWrapped}';
+  }
+  for (var i = 0; i < cols && i < a.length && i < b.length; i++) {
+    if (a.getCodePoint(i) != b.getCodePoint(i) ||
+        a.getWidth(i) != b.getWidth(i) ||
+        a.getForeground(i) != b.getForeground(i) ||
+        a.getBackground(i) != b.getBackground(i) ||
+        a.getAttributes(i) != b.getAttributes(i)) {
+      return 'col $i: '
+          'char ${a.getCodePoint(i)} v ${b.getCodePoint(i)}, '
+          'width ${a.getWidth(i)} v ${b.getWidth(i)}, '
+          'fg ${a.getForeground(i)} v ${b.getForeground(i)}, '
+          'bg ${a.getBackground(i)} v ${b.getBackground(i)}, '
+          'attrs ${a.getAttributes(i)} v ${b.getAttributes(i)}';
+    }
+  }
+  return null;
+}
+
+/// The rows from line 0 to line [last] of [view] against [twin]'s: every cell
+/// alike. Returns what differed first, as a line, or null.
+String? _packedAgainstTwin(Terminal view, Terminal twin, int last, int cols) {
+  final at = _rowOfLine(view, 0);
+  final twinAt = _rowOfLine(twin, 0);
+  final end = _rowOfLine(twin, last);
+  if (at < 0 || twinAt < 0 || end < 0) {
+    return 'no line 0 or line $last found ($at, $twinAt, $end)';
+  }
+  for (var k = 0; k <= end - twinAt; k++) {
+    final diff = _lineDiff(
+      view.buffer.lines[at + k],
+      twin.buffer.lines[twinAt + k],
+      cols,
+    );
+    if (diff != null) return 'row $k from line 0: $diff';
+  }
+  return null;
+}
+
+/// The viewport's rows as one string per row, every cell's character and
+/// look in it, so two takings of it can be compared whole.
+List<String> _viewportLook(Terminal terminal) {
+  final lines = terminal.buffer.lines;
+  final top = lines.length - terminal.viewHeight;
+  return [
+    for (var i = top; i < lines.length; i++)
+      [
+        for (var c = 0; c < terminal.viewWidth && c < lines[i].length; c++)
+          '${lines[i].getCodePoint(c)}/${lines[i].getForeground(c)}/'
+              '${lines[i].getBackground(c)}/${lines[i].getAttributes(c)}',
+      ].join(' '),
+  ];
+}
+
+/// [view]'s shell made to `cat` [file], and waited for until the last of its
+/// [count] lines is drawn.
+Future<void> _catPacked(
+  WidgetTester tester,
+  TerminalView view,
+  File file,
+  int count,
+) async {
+  _run(view, 'cat ${file.path}');
+  final last = RegExp('^line ${count - 1} ');
+  await _until(
+    tester,
+    () {
+      final lines = view.terminal.buffer.lines;
+      for (var i = lines.length - 1; i >= 0 && i > lines.length - 60; i--) {
+        if (last.hasMatch(lines[i].getText())) return true;
+      }
+      return false;
+    },
+    'the last line of the output to be drawn',
+    timeout: const Duration(seconds: 60),
+  );
+  await tester.pump(const Duration(seconds: 1));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2264,11 +2496,14 @@ touch '${done.path}'
     },
   );
 
-  // #131: a terminal selection holding Mermaid is shown as a diagram, where
-  // a web view draws one — the Mac — from the right-click menu, and not
-  // offered at all where none does.
+  // #131, then #333: a terminal selection holding Mermaid is shown as a
+  // diagram from the right-click menu. A flowchart is drawn natively, so it
+  // is offered on every desktop; a pie only Mermaid in a web view draws, so
+  // it is offered only where there is one, the Mac, whose dialog shows its
+  // source and Open in Mermaid. Real OS input: the drag and the right-click
+  // go through xdotool or CoreGraphics.
   _test(
-    'a selection holding Mermaid is shown as a diagram',
+    'a selection holding Mermaid is shown as a diagram, drawn natively',
     skip: Platform.isWindows ? _powershell : null,
     (tester) async {
       await _launch(tester);
@@ -2276,21 +2511,30 @@ touch '${done.path}'
       final script = File('${_scratch().path}/diagram.sh')
         ..writeAsStringSync(
           "printf '  \\140\\140\\140mermaid\\n  graph TD\\n    A --> B\\n"
-          "  \\140\\140\\140\\n'\n",
+          "  \\140\\140\\140\\n'\n"
+          "printf '  \\140\\140\\140mermaid\\n  pie title Pets\\n"
+          "    Dogs : 3\\n  \\140\\140\\140\\n'\n",
         );
       _run(view, 'sh ${script.path}');
 
       final lines = view.terminal.buffer.lines;
-      var open = -1;
-      await _until(tester, () {
-        for (var i = 0; i + 3 < lines.length; i++) {
+      // The fence opening the block whose first line starts with [kind].
+      int open(String kind) {
+        for (var i = lines.length - 4; i >= 0; i--) {
           if (lines[i].getText().trim() == '```mermaid' &&
+              lines[i + 1].getText().trim().startsWith(kind) &&
               lines[i + 3].getText().trim() == '```') {
-            open = i;
+            return i;
           }
         }
-        return open >= 0;
-      }, 'the mermaid block to be drawn');
+        return -1;
+      }
+
+      await _until(
+        tester,
+        () => open('graph TD') >= 0 && open('pie') >= 0,
+        'the two mermaid blocks to be drawn',
+      );
 
       final render = tester
           .state<TerminalViewState>(find.byType(TerminalView))
@@ -2299,58 +2543,103 @@ touch '${done.path}'
         render.getOffset(CellOffset(col, row)) +
             Offset(render.cellSize.width / 2, render.lineHeight / 2),
       );
-      final mouse = await tester.startGesture(
-        cell(0, open),
-        kind: PointerDeviceKind.mouse,
-      );
-      for (final (col, row) in [(6, open + 1), (10, open + 2), (5, open + 3)]) {
-        await mouse.moveTo(cell(col, row));
-        await tester.pump();
+      // The block at [at] selected with a real drag, and the menu opened on
+      // it with a real right-click.
+      Future<void> menuOn(int at) async {
+        await _realPointer(() async {
+          final from = cell(0, at);
+          await _osMouse(tester, [
+            'move ${from.dx} ${from.dy}',
+            'down',
+            'sleep 60',
+            for (final (col, row) in [
+              (6, at + 1),
+              (10, at + 2),
+              (5, at + 3),
+            ]) ...[
+              'move ${cell(col, row).dx} ${cell(col, row).dy}',
+              'sleep 60',
+            ],
+            'up',
+          ]);
+          await _until(
+            tester,
+            () => find.byType(TuiToastCard).evaluate().isEmpty,
+            'the toasts to go',
+          );
+          await _realRightClick(tester, cell(4, at + 1));
+        });
+        await _until(
+          tester,
+          () => _label('Copy').evaluate().isNotEmpty,
+          'the menu to open',
+        );
       }
-      await mouse.up();
-      await tester.pump(const Duration(milliseconds: 300));
+
+      // The flowchart: offered, and drawn natively in the dialog.
+      await menuOn(open('graph TD'));
+      expect(
+        _label('Show as diagram'),
+        findsOneWidget,
+        reason: 'a flowchart is drawn natively, yet Show as diagram is missing',
+      );
+      await _pick(tester, 'Show as diagram');
       await _until(
         tester,
-        () => find.byType(TuiToastCard).evaluate().isEmpty,
-        'the toasts to go',
+        () => find.byType(MermaidBlock).evaluate().isNotEmpty,
+        'the diagram dialog',
       );
-      await tester.tapAt(
-        cell(4, open + 1),
-        kind: PointerDeviceKind.mouse,
-        buttons: kSecondaryMouseButton,
+      expect(
+        tester.widget<MermaidBlock>(find.byType(MermaidBlock)).source,
+        'graph TD\n  A --> B\n',
       );
+      final semantics = tester.ensureSemantics();
+      await tester.pump();
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      expect(
+        tester.getSemantics(find.byType(MermaidCanvas)).label,
+        startsWith('Flowchart: A, B'),
+      );
+      semantics.dispose();
+      expect(find.byType(MermaidView), findsNothing);
+      expect(find.textContaining('not drawn natively'), findsNothing);
+      debugPrint(
+        '✅ terminal: graph TD selected, Show as diagram drew it natively',
+      );
+      await _grab(tester, 'desktop-mermaid-terminal-flowchart');
+      await tester.tap(find.text('CLOSE'));
       await _until(
         tester,
-        () => _label('Copy').evaluate().isNotEmpty,
-        'the menu to open',
+        () => find.byType(MermaidBlock).evaluate().isEmpty,
+        'the dialog to close',
       );
+
+      // The pie: no native drawing. With no web view it is not offered at
+      // all; on the Mac it is, and shows its source.
+      await menuOn(open('pie'));
       if (!hasWebView) {
-        expect(_label('Show as diagram'), findsNothing);
+        expect(
+          _label('Show as diagram'),
+          findsNothing,
+          reason: 'a pie with no web view to draw it was offered',
+        );
+        debugPrint('✅ terminal: a pie selection offers no Show as diagram');
         await _escape(tester);
       } else {
         await _pick(tester, 'Show as diagram');
         await _until(
           tester,
-          () => find.byType(MermaidView).evaluate().isNotEmpty,
+          () => find.byType(MermaidBlock).evaluate().isNotEmpty,
           'the diagram dialog',
         );
-        expect(
-          tester.widget<MermaidView>(find.byType(MermaidView)).source,
-          'graph TD\n  A --> B\n',
+        expect(find.byType(MermaidCanvas), findsNothing);
+        expect(find.text('pie is not drawn natively'), findsOneWidget);
+        expect(_label('Open in Mermaid'), findsOneWidget);
+        debugPrint(
+          '✅ terminal: a pie shows its source and Open in Mermaid, no canvas',
         );
-        await _until(
-          tester,
-          () => find
-              .descendant(
-                of: find.byType(MermaidView),
-                matching: find.byIcon(Icons.account_tree_outlined),
-              )
-              .evaluate()
-              .isEmpty,
-          'the diagram to be drawn',
-          timeout: const Duration(seconds: 30),
-        );
-        await tester.tap(_label('Close'));
+        await _grab(tester, 'desktop-mermaid-terminal-pie');
+        await tester.tap(find.text('CLOSE'));
         await tester.pump(const Duration(milliseconds: 600));
       }
       await _closeTabs(tester);
@@ -2771,15 +3060,43 @@ touch '${done.path}'
       await git(['branch', 'e2e-other']);
       final first = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
 
+      // Another repository, picked and read first: picking this test's own
+      // after it is what left the header naming the decoy's branch, which
+      // the home's ~/.nvm did on a runner only when its read won the race.
+      final decoy = Directory(Platform.environment['HOME']!)
+          .createTempSync('jeansh-e2e-decoy-');
+      addTearDown(() => decoy.deleteSync(recursive: true));
+      for (final args in [
+        ['init', '-q', '-b', 'e2e-decoy'],
+        [
+          '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', //
+          'commit', '-q', '--allow-empty', '-m', 'e2e',
+        ],
+      ]) {
+        final done = await Process.run('git', ['-C', decoy.path, ...args]);
+        expect(done.exitCode, 0, reason: '${done.stderr}');
+      }
+
       await _launch(tester);
       await _localShell(tester);
-      await _gitPanelOn(tester, repo);
+      await _gitPanelOn(tester, decoy);
+      await _until(
+        tester,
+        () => find.text('e2e-decoy').evaluate().isNotEmpty,
+        "the decoy's branch in the header",
+      );
+      await _pickRepo(tester, repo);
       await _until(
         tester,
         () => find.byTooltip('Switch branch').evaluate().isNotEmpty,
         'the branch in the header',
       );
       expect(find.text(first), findsWidgets);
+      expect(
+        find.text('e2e-decoy'),
+        findsNothing,
+        reason: 'the header still names the last repository picked',
+      );
       // Every toast gone first: toasts sit over every menu, and the header's
       // opens at the top of the window, where they are.
       await _until(
@@ -3437,6 +3754,348 @@ touch '${done.path}'
     },
   );
 
+  // #335, H3: a temp folder named with a slash at its end, as macOS names
+  // $TMPDIR. The archive script printed a path holding //, which was refused:
+  // Download as zip failed on every Mac Local shell and left its archive
+  // behind. The drawer is the real FileBrowserPage over a real
+  // LocalFileBrowser whose TMPDIR the test sets, so the case is the same on
+  // any runner; the save is answered through the OS's own dialog.
+  _test(
+    'Download as zip works where TMPDIR ends in a slash, and a cancel there '
+    'leaves nothing',
+    skip: Platform.isWindows || Platform.environment['CI'] != 'true'
+        ? "a real zip and sh under a TMPDIR of the test's own are macOS and "
+              'Linux CI only'
+        : null,
+    (tester) async {
+      final home = Platform.environment['HOME']!;
+      final dir = Directory(home).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final src = Directory('${dir.path}/dev')..createSync();
+      File('${src.path}/a b.txt').writeAsStringSync('slash\n');
+      // Big enough to be cancelled while it compresses, and made before the
+      // page lists the folder.
+      final big = Directory('${dir.path}/big')..createSync();
+      for (var i = 0; i < 3; i++) {
+        final made = await Process.run('dd', [
+          'if=/dev/urandom',
+          'of=${big.path}/chunk$i.bin',
+          'bs=1048576',
+          'count=100',
+        ]);
+        expect(made.exitCode, 0, reason: '${made.stderr}');
+      }
+      final tmp = _scratch();
+      List<String> leftovers() => tmp
+          .listSync()
+          .map((e) => e.path.split('/').last)
+          .where((n) => n.startsWith('jeansh-zip.'))
+          .toList();
+      // The real environment, but for TMPDIR, given a slash at its end.
+      Future<Process> slashed(String c) => Process.start(
+        '/bin/sh',
+        ['-c', c],
+        workingDirectory: home,
+        environment: {...Platform.environment, 'TMPDIR': '${tmp.path}/'},
+        includeParentEnvironment: false,
+      );
+      debugPrint('TMPDIR for the host: ${tmp.path}/');
+
+      await _launch(tester);
+      final navigator = Navigator.of(
+        tester.element(find.byTooltip('Settings')),
+        rootNavigator: true,
+      );
+      unawaited(
+        navigator.push(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, _, _) => FileBrowserPage(
+              browser: LocalFileBrowser(
+                process: slashed,
+                home: () async => home,
+              ),
+              title: 'slashed host',
+              initialRoot: dir.path,
+            ),
+          ),
+        ),
+      );
+      Future<void> menu(String row, String item) async {
+        final target = find.text(row);
+        await _until(
+          tester,
+          () => target.evaluate().isNotEmpty,
+          'the page to list $row',
+        );
+        await tester.tapAt(
+          tester.getCenter(target),
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await _pick(tester, item);
+      }
+
+      Transfer? mine(String name, Set<Transfer> before) => transfers.items
+          .where((t) => !before.contains(t) && t.name == name)
+          .firstOrNull;
+
+      // (+) The zip is made, saved and listed, and nothing stays in TMPDIR.
+      final out = _scratch();
+      var before = transfers.items.toSet();
+      ProcessResult? answer;
+      await menu('dev', 'Download as zip');
+      unawaited(
+        _answerSaveDialog('${out.path}/dev.zip').then((r) => answer = r),
+      );
+      await _until(
+        tester,
+        () =>
+            mine('dev.zip', before) != null &&
+            mine('dev.zip', before)!.state != TransferState.running,
+        'the zip to end',
+        timeout: const Duration(seconds: 90),
+      );
+      final zipped = mine('dev.zip', before)!;
+      if (zipped.state != TransferState.done) {
+        fail('❌ zip under a slashed TMPDIR: ${zipped.state} ${zipped.error}');
+      }
+      await _until(tester, () => answer != null, 'the dialog answered');
+      final saved = Uri.parse(zipped.saved!).toFilePath();
+      addTearDown(() {
+        if (File(saved).existsSync()) File(saved).deleteSync();
+      });
+      final listing = await Process.run('unzip', ['-Z1', saved]);
+      expect(listing.exitCode, 0, reason: '${listing.stderr}');
+      expect('${listing.stdout}', contains('dev/a b.txt'));
+      await _until(
+        tester,
+        () => leftovers().isEmpty,
+        'TMPDIR to hold no jeansh-zip folder',
+      );
+      expect(find.textContaining('made no archive'), findsNothing);
+      debugPrint('✅ zip under a slashed TMPDIR: saved, listed, no leftover');
+
+      // (−) A cancel while compressing: no file, no folder, no process.
+      Future<bool> zipRunning() async =>
+          (await Process.run('pgrep', ['-f', r'jeansh-zip\.'])).exitCode == 0;
+      before = transfers.items.toSet();
+      await menu('big', 'Download as zip');
+      await _until(
+        tester,
+        () =>
+            mine('big.zip', before)?.phase?.startsWith('Compressing') ?? false,
+        'the row to say Compressing',
+      );
+      await _until(
+        tester,
+        () async => leftovers().isNotEmpty && await zipRunning(),
+        'the host to have its archive folder and a zip process',
+      );
+      transfers.cancel(mine('big.zip', before)!);
+      await _until(
+        tester,
+        () => mine('big.zip', before)!.state != TransferState.running,
+        'the cancelled transfer to end',
+        timeout: const Duration(seconds: 30),
+      );
+      expect(mine('big.zip', before)!.state, TransferState.cancelled);
+      await _until(
+        tester,
+        () async => leftovers().isEmpty && !await zipRunning(),
+        'TMPDIR to hold no jeansh-zip folder and no zip process',
+      );
+      expect(find.textContaining('made no archive'), findsNothing);
+      debugPrint('✅ cancel under a slashed TMPDIR: nothing left');
+      navigator.pop();
+      await tester.pump(const Duration(seconds: 1));
+      await _closeTabs(tester);
+    },
+  );
+
+  // #335, M6: names that differ only in case, and on Windows a name with a
+  // colon, written into a real case-folding volume (APFS, NTFS). The host is
+  // held in memory, since such a pair cannot be made on this machine; the
+  // download writes to the real disk through the real page, a right-click
+  // and the menu.
+  // Each case a test of its own, from a fresh launch, so the first
+  // case's page, toast and dialog are gone before the second.
+  for (final pair in [true, false]) {
+    _test(
+      pair
+          ? 'Download folder skips a name this computer would fold onto '
+                'another, and saves the rest'
+          : 'Download folder with no name to fold saves every file',
+      skip: !Platform.isMacOS && !Platform.isWindows
+          ? 'names fold onto each other on macOS and Windows only'
+          : null,
+      (tester) async {
+        final picker = _PickFolder.install();
+        await _launch(tester);
+        final navigator = Navigator.of(
+          tester.element(find.byTooltip('Settings')),
+          rootNavigator: true,
+        );
+        Future<void> run(_MemoryHost host, String out) async {
+          picker.directory = out;
+          unawaited(
+            navigator.push(
+              PageRouteBuilder<void>(
+                pageBuilder: (_, _, _) => FileBrowserPage(
+                  browser: host,
+                  title: 'memory host',
+                  initialRoot: '/home/me',
+                ),
+              ),
+            ),
+          );
+          final dev = find.text('dev');
+          await _until(
+            tester,
+            () => dev.evaluate().isNotEmpty,
+            'the page to list dev',
+          );
+          // A toast from the run before lies over the top rows, and the page
+          // slides in: both gone before the right-click.
+          await _until(
+            tester,
+            () => find.byType(TuiToastCard).evaluate().isEmpty,
+            'the last toast to go',
+            timeout: const Duration(seconds: 30),
+          );
+          await tester.pump(const Duration(milliseconds: 600));
+          final before = transfers.items.toSet();
+          await tester.tapAt(
+            tester.getCenter(dev.last),
+            kind: PointerDeviceKind.mouse,
+            buttons: kSecondaryMouseButton,
+          );
+          await _pick(tester, 'Download folder');
+          await _until(
+            tester,
+            () => transfers.items.any(
+              (t) =>
+                  !before.contains(t) &&
+                  t.name == 'dev' &&
+                  t.state != TransferState.running,
+            ),
+            'the folder download to end',
+            timeout: const Duration(seconds: 60),
+          );
+          await tester.pump(const Duration(seconds: 1));
+        }
+
+        final sep = Platform.pathSeparator;
+        List<String> names(String dir) =>
+            Directory(dir)
+                .listSync()
+                .map((e) => e.path.split(sep).last)
+                .toList()
+              ..sort();
+        if (pair) {
+          // (+) README and readme, and on Windows notes:v2.
+          final out = _scratch();
+          await run(
+            _MemoryHost({
+              'README': [1, 1],
+              'readme': [2, 2, 2],
+              if (Platform.isWindows) 'notes:v2': [3],
+            }),
+            out.path,
+          );
+          final dev = '${out.path}${sep}dev';
+          if (Platform.isWindows) {
+            // Every stream of everything in the folder, as NTFS has them: a
+            // notes:v2 written as named would be stream v2 of a file notes.
+            final streams = await Process.run(
+              'powershell',
+              [
+                '-NoProfile',
+                '-Command',
+                r'Get-ChildItem -LiteralPath $env:JEANSH_DIR -Force | '
+                    r'ForEach-Object { Get-Item -LiteralPath $_.FullName -Stream * } '
+                    r'| ForEach-Object { "$($_.FileName)|$($_.Stream)" }',
+              ],
+              environment: {'JEANSH_DIR': dev},
+            );
+            final lines = '${streams.stdout}'
+                .split('\n')
+                .map((l) => l.trim())
+                .where((l) => l.isNotEmpty)
+                .map((l) => l.split(sep).last)
+                .toList();
+            debugPrint('streams in dev: $lines');
+            expect(streams.exitCode, 0, reason: '${streams.stderr}');
+            expect(
+              // The file itself, and the mark every download gets on Windows.
+              lines.where(
+                (l) =>
+                    !l.endsWith(r'|:$DATA') && !l.endsWith('|Zone.Identifier'),
+              ),
+              isEmpty,
+              reason: '❌ notes:v2 was written into a stream: $lines',
+            );
+            expect(
+              File('$dev${sep}notes').existsSync(),
+              isFalse,
+              reason: '❌ notes:v2 made a file notes: $lines',
+            );
+            debugPrint('✅ notes:v2 skipped: no file notes and no stream v2');
+          }
+          expect(File('$dev${sep}README').readAsBytesSync(), [
+            1,
+            1,
+          ], reason: '❌ readme was written over README');
+          expect(names(dev), [
+            'README',
+          ], reason: '❌ the folder holds ${names(dev)}');
+          await _until(
+            tester,
+            () => find
+                .textContaining(
+                  'readme (would overwrite README on this computer)',
+                )
+                .evaluate()
+                .isNotEmpty,
+            'the end dialog to name the skipped readme',
+          );
+          if (Platform.isWindows) {
+            expect(
+              find.textContaining(
+                'notes:v2 (a character Windows does not allow)',
+              ),
+              findsOneWidget,
+            );
+          }
+          expect(find.text('Saved dev'), findsNothing);
+          debugPrint('✅ a folded pair: README kept, readme skipped and named');
+          await tester.tap(_label('OK'));
+          await tester.pump(const Duration(seconds: 1));
+        } else {
+          // (−) No pair: every file comes down and nothing is skipped.
+          final plain = _scratch();
+          await run(
+            _MemoryHost({
+              'README': [1, 1],
+              'other.txt': [4],
+            }),
+            plain.path,
+          );
+          expect(names('${plain.path}${sep}dev'), ['README', 'other.txt']);
+          expect(find.textContaining('would overwrite'), findsNothing);
+          expect(find.textContaining('Windows does not allow'), findsNothing);
+          // The toast is gone within a second; the row says the same.
+          final row = transfers.items.firstWhere((t) => t.name == 'dev');
+          expect(row.state, TransferState.done, reason: '${row.error}');
+          expect(row.note, '2 files', reason: '❌ not every file came down');
+          debugPrint('✅ no pair: every file saved, nothing skipped');
+        }
+        navigator.popUntil((route) => route.isFirst);
+        await tester.pump(const Duration(seconds: 1));
+        await _closeTabs(tester);
+      },
+    );
+  }
+
   // #272, every desktop: the site an HTML file is served from. Over real
   // sockets: its folder's files to a request that is right, and a refusal to
   // `..`, a wrong token, another Host and a link, and nothing listening once
@@ -3761,6 +4420,256 @@ touch '${done.path}'
       await tester.pump(const Duration(seconds: 1));
     },
   );
+  // #351: scrollback held packed. 3200 lines of colour, bold, underline, a
+  // background and wide characters go through a real Local shell's pty; once
+  // they have left the viewport the buffer holds them packed (read off
+  // without unpacking any). A twin terminal that packs nothing is given the
+  // same output and is the truth, cell by cell: character, width, both
+  // colours, attributes. Positive: every old line is the twin's, a mouse
+  // selection across old lines copies their text, and the buffer really did
+  // hold them packed. Negative: the viewport's rows, never packed, look the
+  // same after the view was taken to the top and back, and are not packed.
+  // Mutation: a pack that writes no colour or attributes (line.dart).
+  _test(
+    'scrollback held packed keeps its colours, attributes and wide '
+    'characters, and the bottom rows never change',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      const count = 3200;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final file = _packedFile(count, '');
+      await _catPacked(tester, view, file, count);
+
+      final terminal = view.terminal;
+      final lines = terminal.buffer.lines;
+      final packed = _packedCount(terminal);
+      debugPrint(
+        'packed scrollback: $packed of ${lines.length} lines packed, '
+        'viewport ${terminal.viewHeight} rows',
+      );
+      expect(
+        packed,
+        greaterThan(lines.length - terminal.viewHeight - 100),
+        reason: 'scrollback was not held packed: $packed of ${lines.length}',
+      );
+      for (var i = lines.length - terminal.viewHeight; i < lines.length; i++) {
+        expect(lines[i].isPacked, isFalse, reason: 'viewport row $i is packed');
+      }
+      final bottom = _viewportLook(terminal);
+
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      final diff = _packedAgainstTwin(
+        terminal,
+        twin.terminal,
+        count - 20,
+        terminal.viewWidth,
+      );
+      expect(
+        diff,
+        isNull,
+        reason: 'a packed line differs from the unpacked twin: $diff',
+      );
+      debugPrint(
+        'packed scrollback: all ${count - 20} old lines equal the twin',
+      );
+
+      // To the top, as a scroll does, and what is drawn there.
+      final scrollable = tester.state<ScrollableState>(
+        find
+            .descendant(
+              of: find.byType(TerminalView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      scrollable.position.jumpTo(scrollable.position.minScrollExtent);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(scrollable.position.pixels, 0, reason: 'not scrolled to the top');
+
+      final first = _rowOfLine(terminal, 0);
+      expect(first, greaterThanOrEqualTo(0));
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col, int row) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      final mouse = await tester.startGesture(
+        cell(0, first),
+        kind: PointerDeviceKind.mouse,
+      );
+      // Down the old lines, then along the last one to the end of its text:
+      // "line 4 日本語 bold" is 18 cells.
+      for (var row = first + 1; row <= first + 4; row++) {
+        await mouse.moveTo(cell(0, row));
+        await tester.pump();
+      }
+      for (var col = 1; col < 18; col++) {
+        await mouse.moveTo(cell(col, first + 4));
+        await tester.pump();
+      }
+      await mouse.up();
+      String? copied;
+      await _until(
+        tester,
+        () async => (copied = await _clipboard()) != 'untouched',
+        'the selection of old lines to be copied',
+      );
+      expect(
+        copied,
+        [for (var n = 0; n < 5; n++) _packedText(n, '')].join('\n'),
+        reason: 'a selection across old lines did not copy their text',
+      );
+
+      // And back down: the bottom rows as they were, never packed.
+      scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        _viewportLook(terminal),
+        bottom,
+        reason: 'the visible bottom rows changed after a trip to the top',
+      );
+      for (var i = lines.length - terminal.viewHeight; i < lines.length; i++) {
+        expect(lines[i].isPacked, isFalse, reason: 'viewport row $i is packed');
+      }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #351, step b: long scrollback re-wrapped by a real window resize. 3200
+  // lines of 120 cells wrap on either width; the window is made narrower, so
+  // the terminal has fewer columns, then wider than it began, and each time
+  // every old line is the twin's, which is resized the same, cell by cell,
+  // with the scrollback packed again after each reflow. Negative: the lines
+  // do not change when nothing resizes (the first check, before it).
+  _test(
+    'long packed scrollback re-wraps as it did when the window is made '
+    'narrower, then wider',
+    skip: Platform.isLinux ? null : 'a window is resized here through xdotool',
+    (tester) async {
+      const count = 3200;
+      final pad = 'x' * 100;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await _catPacked(tester, view, _packedFile(count, pad), count);
+      final terminal = view.terminal;
+      final cols = terminal.viewWidth;
+      final rows = terminal.viewHeight;
+      final twin = _Twin(count, pad, cols, rows);
+
+      String? same(int width) =>
+          _packedAgainstTwin(terminal, twin.terminal, count - 40, width);
+      expect(same(cols), isNull, reason: 'before any resize, at $cols columns');
+
+      final window = await _window();
+      final rect = await _windowRect();
+      addTearDown(
+        () => _xdo([
+          'windowsize',
+          '--sync',
+          window,
+          '${rect.width.round()}',
+          '${rect.height.round()}',
+        ]),
+      );
+      Future<void> resizeTo(double width) async {
+        await _xdo([
+          'windowsize',
+          '--sync',
+          window,
+          '${width.round()}',
+          '${rect.height.round()}',
+        ]);
+        await _until(
+          tester,
+          () => terminal.viewWidth != cols || width >= rect.width,
+          "the terminal to take the window's new width",
+        );
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      await resizeTo(rect.width * 0.6);
+      final narrow = terminal.viewWidth;
+      expect(narrow, lessThan(cols), reason: 'the window did not narrow');
+      twin.resize(narrow, terminal.viewHeight);
+      debugPrint(
+        'packed scrollback: narrowed $cols -> $narrow columns, '
+        '${_packedCount(terminal)} of ${terminal.buffer.lines.length} packed',
+      );
+      expect(
+        _packedCount(terminal),
+        greaterThan(terminal.buffer.lines.length ~/ 2),
+        reason: 'a reflow left the scrollback unpacked',
+      );
+      expect(same(narrow), isNull, reason: 'narrow, at $narrow columns');
+
+      await resizeTo(rect.width * 1.3);
+      final wide = terminal.viewWidth;
+      expect(wide, greaterThan(cols), reason: 'the window did not widen');
+      twin.resize(wide, terminal.viewHeight);
+      expect(same(wide), isNull, reason: 'wide, at $wide columns');
+      debugPrint(
+        'packed scrollback: re-wrapped at $narrow and $wide columns, '
+        'equal to the twin',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #351, step c: a tmux tab's attach fill. 300 lines are written in a tmux
+  // pane, the tab is cut and reconnected, and the new terminal is drawn from
+  // tmux's capture: the history is there, with its colours, as the twin
+  // reads it, and the scrollback in it is held packed.
+  _test(
+    'a reattached tmux tab still shows its history, in colour, packed',
+    skip: Platform.isLinux
+        ? null
+        : "tmux on the run's private server is the Linux run's",
+    (tester) async {
+      const count = 300;
+      addTearDown(_killSshboxTmux);
+      await _launch(tester);
+      var view = await _localShell(tester, tmux: true);
+      await _catPacked(tester, view, _packedFile(count, ''), count);
+      view = await _reattach(tester, view);
+      final terminal = view.terminal;
+      // The tail only, so nothing old is read, and so unpacked, before the
+      // packed ones are counted.
+      final lastLine = RegExp('^line ${count - 1} ');
+      await _until(tester, () {
+        final lines = terminal.buffer.lines;
+        for (var i = lines.length - 1; i >= 0 && i > lines.length - 60; i--) {
+          if (lastLine.hasMatch(lines[i].getText())) return true;
+        }
+        return false;
+      }, 'the capture to bring back the last line');
+      await tester.pump(const Duration(seconds: 1));
+      final packed = _packedCount(terminal);
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      debugPrint(
+        'packed scrollback: tmux fill $packed of '
+        '${terminal.buffer.lines.length} lines packed',
+      );
+      expect(
+        packed,
+        greaterThan(100),
+        reason: 'the attach fill was not packed',
+      );
+      // The 18 cells of the shortest line's text: tmux's capture also draws
+      // the blanks after it as spaces, which has nothing to do with packing.
+      final diff = _packedAgainstTwin(terminal, twin.terminal, count - 20, 18);
+      expect(
+        diff,
+        isNull,
+        reason: 'the attach fill differs from the twin: $diff',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #274, 1: a picture pasted into a tmux tab after a reconnect. The tab's
   // terminal is rebuilt from a capture, which holds no modes, so its own
   // bracketed-paste flag is false however the program in the pane is set; the
@@ -4407,7 +5316,7 @@ touch '${done.path}'
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       expect(find.byTooltip('Expand the sessions'), findsNothing);
       expect(_collapse, findsNothing);
       // No sessions button in the composer: the ⋮ menu's item opens the
@@ -4419,7 +5328,7 @@ touch '${done.path}'
       await tester.tap(find.byTooltip('Chat settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Sessions on this host').last);
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       expect(list, findsOneWidget);
       // A drawer has no «, folding being a wide window's.
       expect(_collapse, findsNothing);
@@ -4427,7 +5336,7 @@ touch '${done.path}'
       await tester.pumpAndSettle();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       await _closeTabs(tester);
     },
   );
@@ -4578,42 +5487,22 @@ touch '${done.path}'
         reason: 'the composer',
       );
 
-      // #131: its mermaid fences are diagrams where a web view draws them,
-      // the Mac, and their source as code where none does.
-      final diagrams = find.byType(MermaidView);
-      if (!hasWebView) {
-        expect(diagrams, findsNothing);
-        expect(
-          find.textContaining('E2E1 --> Done1', findRichText: true),
-          findsWidgets,
-        );
-      } else {
-        // Drawn: the placeholder a view shows until the page says its height.
-        Finder waiting() => find.descendant(
-          of: diagrams,
-          matching: find.byIcon(Icons.account_tree_outlined),
-        );
-        expect(diagrams, findsWidgets);
-        expect(
-          find.textContaining('E2E1 --> Done1', findRichText: true),
-          findsNothing,
-          reason: 'a diagram shown as its source',
-        );
-        await _until(
-          tester,
-          () => waiting().evaluate().length < diagrams.evaluate().length,
-          'a diagram in the reply to be drawn',
-          timeout: const Duration(seconds: 60),
-        );
-        // Given the time, how many of those built came to be drawn, and none
-        // as the grey of a widget that threw.
-        await tester.pump(const Duration(seconds: 5));
-        debugPrint(
-          'Diagrams built ${diagrams.evaluate().length}, '
-          'still waiting ${waiting().evaluate().length}',
-        );
-        expect(find.byType(ErrorWidget), findsNothing);
-      }
+      // #131, then #333: its mermaid fences are flowcharts, drawn natively
+      // on every desktop, web view or none, never as their source.
+      final diagrams = find.byType(MermaidCanvas);
+      expect(diagrams, findsWidgets);
+      expect(find.byType(MermaidView), findsNothing);
+      expect(
+        find.textContaining('E2E1 --> Done1', findRichText: true),
+        findsNothing,
+        reason: 'a diagram shown as its source',
+      );
+      expect(find.byTooltip('Copy diagram source'), findsWidgets);
+      expect(find.byType(ErrorWidget), findsNothing);
+      debugPrint(
+        '✅ chat: ${diagrams.evaluate().length} mermaid fences drawn '
+        'natively, none as source',
+      );
       await _closeTabs(tester);
     },
   );
@@ -6320,6 +7209,110 @@ touch '${done.path}'
         reason: 'Ctrl+wheel over the picture zoomed the UI text',
       );
       expect(find.byType(InteractiveViewer), findsOneWidget);
+      await _closeTabs(tester);
+    },
+  );
+
+  // #350: the picture cache is capped at 32 MB and 100 images where Flutter's
+  // own is 100 MB and 1000. 150 pictures of 400x400, 640 KB decoded each, are
+  // run through the app's real image cache from files on disk. Positive: the
+  // cache holds pictures, some tens of them (so it is on, which a cap of 0
+  // would break) and no more than 100 images or 32 MB (so it is capped, which
+  // the default breaks, holding all 150, 96 MB). Negative:
+  // one of the first, long since pushed out, still opens in the image tab and
+  // draws, decoded again. A cap of 0 bytes draws the same and so fails the
+  // first, which is the only thing a flicker could be read from here.
+  // Mutation: imageCacheBytes of 0.
+  _test(
+    'the picture cache holds pictures, within 32 MB and 100 images, and one '
+    'pushed out still draws',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      const total = 150;
+      const bytes = 32 * 1024 * 1024;
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawRect(
+        const Rect.fromLTWH(0, 0, 400, 400),
+        Paint()..color = const Color(0xFF3366CC),
+      );
+      final drawn = await recorder.endRecording().toImage(400, 400);
+      final png = (await drawn.toByteData(format: ui.ImageByteFormat.png))!;
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      String name(int i) => 'e2e-pic-${'$i'.padLeft(3, '0')}.png';
+      for (var i = 0; i < total; i++) {
+        File('${dir.path}/${name(i)}')
+            .writeAsBytesSync(png.buffer.asUint8List());
+      }
+
+      await _launch(tester);
+      final cache = PaintingBinding.instance.imageCache;
+      debugPrint(
+        'image cache limits: ${cache.maximumSize} images, '
+        '${cache.maximumSizeBytes} bytes',
+      );
+      expect(cache.maximumSizeBytes, bytes, reason: 'the cache is not capped');
+      expect(cache.maximumSize, 100, reason: 'the cache is not capped');
+
+      final context = tester.element(find.byType(Navigator).first);
+      cache.clear();
+      for (var i = 0; i < total; i++) {
+        await tester.runAsync(
+          () =>
+              precacheImage(FileImage(File('${dir.path}/${name(i)}')), context),
+        );
+      }
+      debugPrint(
+        'image cache after $total pictures: ${cache.currentSize} images, '
+        '${cache.currentSizeBytes} bytes',
+      );
+      expect(
+        cache.currentSize,
+        greaterThanOrEqualTo(20),
+        reason: 'the cache kept almost nothing of $total pictures',
+      );
+      expect(cache.currentSize, lessThanOrEqualTo(100));
+      expect(
+        cache.currentSizeBytes,
+        lessThanOrEqualTo(bytes),
+        reason: 'the cache holds more than its cap of bytes',
+      );
+      expect(
+        cache.containsKey(FileImage(File('${dir.path}/${name(0)}'))),
+        isFalse,
+        reason: 'the first picture is still held after $total others',
+      );
+
+      // The first of them, pushed out long ago, opened as a person opens one.
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name(0)).evaluate().isNotEmpty,
+        'the drawer to show the first picture',
+      );
+      await tester.tap(find.text(name(0)));
+      await _until(
+        tester,
+        () =>
+            find.byType(InteractiveViewer).evaluate().isNotEmpty &&
+            find
+                .descendant(
+                  of: find.byType(InteractiveViewer),
+                  matching: find.byType(RawImage),
+                )
+                .evaluate()
+                .any((e) => (e.widget as RawImage).image != null),
+        'the picture to draw in its tab',
+      );
       await _closeTabs(tester);
     },
   );
@@ -8626,6 +9619,135 @@ touch '${done.path}'
     },
   );
 
+  // #349: what a chat holds of a tool's input is cut at 32 KB a string. A
+  // stand-in session Writes a file of 60,000 characters and a small one. 2x2:
+  // positive, the big Write's opened row ends in "… N more characters" with N
+  // what was cut, its early lines are there and its late ones are not, and
+  // its Copy code copies the cut text; negative, the small Write is whole,
+  // with its last line, and carries no note, and the note is on exactly one
+  // row. Mutation: trimToolInput's call taken out, which fails the note.
+  _test(
+    'a tool input over 32 KB is cut with a note, a small one is whole',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, and this stand-in is sh'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      String big() => [
+        for (var i = 0; i < 1200; i++)
+          'line ${'$i'.padLeft(4, '0')}: ${'x' * 38}',
+      ].join('\n');
+      final bigContent = big();
+      const limit = 32 * 1024;
+      final cut = bigContent.length - limit;
+      final note = '… $cut more characters';
+      const smallContent = 'small first\nsmall last';
+      final answer = File('$home/.claude/e2e-answer.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Echo from the stand-in.'},
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_big',
+                  'name': 'Write',
+                  'input': {'file_path': '/tmp/big-file.txt', 'content': bigContent},
+                },
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_small',
+                  'name': 'Write',
+                  'input': {'file_path': '/tmp/small-file.txt', 'content': smallContent},
+                },
+              ],
+            },
+          })}\n'
+          '${jsonEncode({
+            'type': 'user',
+            'message': {
+              'role': 'user',
+              'content': [
+                {'type': 'tool_result', 'tool_use_id': 'toolu_big', 'content': 'written'},
+                {'type': 'tool_result', 'tool_use_id': 'toolu_small', 'content': 'written'},
+              ],
+            },
+          })}',
+        );
+      addTearDown(() {
+        if (answer.existsSync()) answer.deleteSync();
+      });
+
+      await _launch(tester);
+      await _chatAnswered(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      Finder body(String text) => find.textContaining(text, findRichText: true);
+
+      Future<void> open(String path) async {
+        final row = find.textContaining(path);
+        await tester.pump();
+        await _scrollsStill(tester);
+        await tester.ensureVisible(row.first);
+        await tester.pump();
+        await tester.tap(row.first);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      await open('small-file.txt');
+      expect(body('small last'), findsOneWidget);
+      await open('big-file.txt');
+      expect(body('line 0000:'), findsOneWidget);
+
+      // The cut: early lines in, late ones out, the note where it was cut.
+      expect(body('line 0600:'), findsOneWidget);
+      expect(body('line 0700:'), findsNothing, reason: 'past 32 KB, held');
+      expect(body('line 1199:'), findsNothing, reason: 'the last line, held');
+      expect(
+        body(note),
+        findsOneWidget,
+        reason: 'no "$note" at the end of the big Write\'s content',
+      );
+      // Negative: the note is on that row alone, the small one whole.
+      expect(body('more characters'), findsOneWidget);
+      expect(body('small first\nsmall last'), findsOneWidget);
+
+      // What Copy code takes from each block is what is held.
+      final copies = <String>[];
+      for (final button in find.byTooltip('Copy code').evaluate().toList()) {
+        await tester.ensureVisible(find.byWidget(button.widget));
+        await tester.pump();
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await tester.tap(find.byWidget(button.widget));
+        await _until(
+          tester,
+          () async => (await _clipboard()) != 'untouched',
+          'Copy code to put its block on the clipboard',
+        );
+        copies.add((await _clipboard())!);
+      }
+      expect(
+        copies,
+        contains(smallContent),
+        reason: 'the small Write was not copied whole: $copies',
+      );
+      final held = copies.where((c) => c.endsWith(note)).toList();
+      expect(held, hasLength(1), reason: 'no copy ends in the note');
+      expect(
+        held.single.length,
+        limit + '\n$note'.length,
+        reason: 'the big Write was held at 32 KB and the note',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // Copying code out of a chat reply, with the real pointer and the real
   // keyboard, read back off the system clipboard: a code line wider than the
   // chat wraps rather than scrolling sideways, the Copy icon gives it
@@ -9598,6 +10720,505 @@ touch '${done.path}'
       await _closeTabs(tester);
     },
   );
+
+  // A README-like file of about [kb] KB for Rich text, ending in a section of
+  // words found nowhere else.
+  String readme(int kb) {
+    final parts = ['# Jeansh e2e speed\n\nA README-like file for Rich text.\n'];
+    var size = parts.first.length;
+    for (var i = 0; size < kb * 1024; i++) {
+      final s = StringBuffer(
+        '## Section $i\n\nSome **bold** text, _italic_, `code` and a '
+        '[link](https://example.com/$i) in a paragraph long enough to wrap '
+        'onto a second line, word${i}x.\n\n- one $i\n- [ ] task $i\n',
+      );
+      if (i % 5 == 0) s.write('\n```sh\necho $i\n```\n');
+      if (i % 7 == 0) s.write('\n| a | b |\n|---|---|\n| $i | x |\n');
+      parts.add('$s');
+      size += s.length + 1;
+    }
+    parts.add('## Far section\n\n$_far\n');
+    return parts.join('\n');
+  }
+
+  // The Rich text limit, 240 KB: a 200 KB file opens in Rich text, where it
+  // used to say it was too large and show Source; a 250 KB file still says
+  // so. A mutation with the limit back at 160 KB opens 200 KB in Source.
+  _test(
+    'rich text: a 200 KB file opens in Rich text, and a 250 KB one in Source '
+    'with the toast',
+    skip: editorSkip,
+    (tester) async {
+      final rich = find.byType(MarkdownRichEditor);
+      final tooLarge = find.textContaining('Too large for Rich text');
+      var k = await _EditorSave.start(tester, 'big200.md', text: readme(200));
+      debugPrint('rich text limit: 200 KB file is ${k.initial.length} chars');
+      await _grab(tester, 'desktop-md-rich-speed-200kb');
+      expect(rich, findsOneWidget, reason: '200 KB not opened in Rich text');
+      expect(tooLarge, findsNothing, reason: '200 KB said too large');
+      await _closeTabs(tester);
+
+      k = await _EditorSave.start(tester, 'big250.md', text: readme(250));
+      debugPrint('rich text limit: 250 KB file is ${k.initial.length} chars');
+      expect(rich, findsNothing, reason: '250 KB opened in Rich text');
+      // The toast is up for a second from the open; asked again, it says so
+      // again and Source stays.
+      await tester.tap(_label('rich text'));
+      await _until(
+        tester,
+        () => find
+            .textContaining('Too large for Rich text (over 240 KB)')
+            .evaluate()
+            .isNotEmpty,
+        'the 250 KB file to say it is too large for Rich text',
+      );
+      await _grab(tester, 'desktop-md-rich-speed-250kb');
+      expect(rich, findsNothing, reason: '250 KB went to Rich text');
+      await _closeTabs(tester);
+    },
+  );
+
+  // A copy across sections shaped as blanks, with real keys: select all and
+  // copy in an 83 KB file, the far section drawn as spaces in the field
+  // while no screen reader is on, and the clipboard holds the file's own
+  // text, its words. Then a screen reader on (semantics): the field's text
+  // holds the far section's words, not spaces; off again, the blanks.
+  _test(
+    'rich text: a copy across a far section shaped as blanks copies its '
+    'words, and a screen reader reads them',
+    skip: editorSkip,
+    // No screen reader of the test's own: testWidgets turns semantics on
+    // unless told not to, and with it on nothing is blanked.
+    semantics: false,
+    (tester) async {
+      final original = readme(83);
+      final k = await _EditorSave.start(tester, 'speed.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      String drawn() => tester
+          .widget<EditableText>(field)
+          .controller
+          .buildTextSpan(context: tester.element(field), withComposing: false)
+          .toPlainText(includeSemanticsLabels: false);
+      int longestBlank(String s) =>
+          RegExp(r' +')
+              .allMatches(s)
+              .fold(0, (m, r) => r[0]!.length > m ? r[0]!.length : m);
+
+      await tester.showKeyboard(field);
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      final reader = SemanticsBinding.instance.semanticsEnabled;
+      var shown = drawn();
+      debugPrint(
+        'rich text blanks: screen reader $reader, the field draws the far '
+        'words: ${shown.contains(_far)}, longest blank ${longestBlank(shown)}',
+      );
+      // The platform's own accessibility on, as on CI's Mac: the field is
+      // drawn for a screen reader from the start, and nothing is blanked.
+      if (reader) {
+        expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      } else {
+        expect(shown.contains(_far), isFalse, reason: 'far not blanked');
+        expect(longestBlank(shown), greaterThan(40), reason: 'no blanks');
+      }
+
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await k.press('ctrl+a', 'keystroke "a" using command down');
+      await k.press('ctrl+c', 'keystroke "c" using command down');
+      String? copied;
+      await _until(tester, () {
+        _clipboard().then((t) => copied = t);
+        return copied != null && copied != 'untouched';
+      }, 'the copy to reach the clipboard');
+      debugPrint(
+        'rich text copy: ${copied!.length} chars of ${original.length}, '
+        'far words ${copied!.contains(_far)}, longest blank '
+        '${longestBlank(copied!)}',
+      );
+      expect(copied, original, reason: 'the copy is not the file');
+
+      // The selection back to a caret at the top, as before the copy, so
+      // what follows is the reader's doing alone.
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, caret back at the top: far words drawn '
+        '${drawn().contains(_far)}',
+      );
+
+      // A screen reader on: the far section's own words in the field's text.
+      final semantics = tester.ensureSemantics();
+      await tester.pump(const Duration(milliseconds: 300));
+      shown = drawn();
+      debugPrint(
+        'rich text, screen reader on: far words ${shown.contains(_far)}, '
+        'longest blank ${longestBlank(shown)}',
+      );
+      expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      expect(longestBlank(shown), lessThan(4), reason: 'reader on: blanks');
+      semantics.dispose();
+      // The reader let go: blanks again, as at the start. The binding may
+      // drop semantics a frame or two later.
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, reader let go: semantics '
+        '${SemanticsBinding.instance.semanticsEnabled}, far words drawn '
+        '${drawn().contains(_far)}',
+      );
+      await _until(
+        tester,
+        () => drawn().contains(_far) == reader,
+        'the reader let go: the far section drawn as at the start',
+        timeout: const Duration(seconds: 5),
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #333: a Markdown file's flowchart and sequence diagram, the first and
+  // the last of docs/notification-architecture.md, are drawn natively in
+  // Rich text on every desktop, web view or none, never as their source;
+  // a pie, which has no native drawing, shows its source under a line
+  // saying so, and Open in Mermaid only where a web view is (the Mac).
+  // Opened and looked at, the file is not written.
+  _test(
+    'rich text: a flowchart and a sequence diagram draw natively, and a pie '
+    'shows its source',
+    skip: editorSkip,
+    (tester) async {
+      const original = r'''
+# Mermaid e2e
+
+```mermaid
+pie title E2E pets
+  "Dogs" : 3
+  "Cats" : 2
+```
+
+```mermaid
+flowchart LR
+  subgraph Tablet
+    App["Jeansh app"]
+    Store[("Secret store<br/>sshbox.notify.keys<br/>sshbox.notify.revoke")]
+  end
+  subgraph Server["SSH server"]
+    SSHD["sshd or Tailscale SSH"]
+    Shell["shell or tmux"]
+    Notify["sshbox-notify<br/>(notify.sh)"]
+  end
+  subgraph Cloudflare
+    Relay["jeansh-notify Worker<br/>jeansh-notify.brata.cloud"]
+    KV[("Workers KV<br/>KEYS")]
+  end
+  subgraph Google
+    OAuth["OAuth token endpoint"]
+    FCM["FCM HTTP v1"]
+  end
+
+  App --- Store
+  App <-->|"SSH connection: shell, LC_SSHBOX_* variables,<br/>remote forward on 127.0.0.1:0"| SSHD
+  SSHD --> Shell --> Notify
+  Notify -->|"1 direct: HTTP to 127.0.0.1:port,<br/>down the SSH connection"| SSHD
+  Notify -->|"2 fallback: signed POST /v1/send"| Relay
+  App -->|"signed POST /v1/register<br/>and DELETE /v1/key"| Relay
+  Relay --- KV
+  Relay -->|"service-account JWT"| OAuth
+  Relay -->|"messages:send"| FCM
+  FCM -->|"push"| App
+```
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant FCM as FCM SDK on the tablet
+  participant App as Jeansh app
+  participant Store as Secret store
+  participant Relay as jeansh-notify relay
+  participant KV as Workers KV
+
+  Note over FCM,App: PushMessaging.initialize: getToken() at launch, then every onTokenRefresh
+  FCM->>App: token T2, replacing T1
+  App->>App: NotifyKeys.useFcmToken(T2): _fcmToken = T2,<br/>and the keys waiting for a revoke are tried again (diagram 6)
+  loop every host with a key, all at once (Future.wait)
+    App->>App: _sync(hostId): registered for T1, not T2
+    App->>Relay: POST /v1/register {token: T2, publicKey: the same SPKI, host: hostId},<br/>signed with that key (diagram 1)
+    Relay->>KV: put k:keyId, the same keyId, now with token T2
+    Relay-->>App: 200 {keyId}, the same id
+    App->>Store: save the key with fcmToken T2
+  end
+  Note over App,Relay: _register goes round again if the token changed meanwhile.<br/>Servers keep their LC_SSHBOX_KEY and carry on, with no reconnect.<br/>A failure keeps the T1 registration, tried again at the next connect, token or launch.
+```
+''';
+      final k = await _EditorSave.start(tester, 'diagrams.md', text: original);
+      final canvases = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(MermaidCanvas),
+      );
+      await _until(
+        tester,
+        () => canvases.evaluate().length == 2,
+        'the flowchart and the sequence diagram to be drawn',
+      );
+      final semantics = tester.ensureSemantics();
+      await tester.pump();
+      expect(
+        tester.getSemantics(canvases.at(0)).label,
+        startsWith('Flowchart: '),
+      );
+      expect(
+        tester.getSemantics(canvases.at(1)).label,
+        startsWith(
+          'Sequence diagram between FCM SDK on the tablet, Jeansh app',
+        ),
+      );
+      semantics.dispose();
+      // What a diagram's block draws as text: no diagram's source. (The
+      // field's own text holds every source, drawn or not.)
+      Finder drawn(String text) => find.descendant(
+        of: find.byType(MermaidBlock),
+        matching: find.byWidgetPredicate(
+          (w) => w is RichText && w.text.toPlainText().contains(text),
+        ),
+      );
+      expect(drawn('flowchart LR'), findsNothing);
+      expect(drawn('sequenceDiagram'), findsNothing);
+      debugPrint(
+        '✅ rich text: flowchart and sequence diagram drawn natively, '
+        'no source shown',
+      );
+
+      // The pie: its source, the word, and Open in Mermaid where a web view
+      // can draw it.
+      expect(find.text('pie is not drawn natively'), findsOneWidget);
+      expect(drawn('pie title E2E pets'), findsWidgets);
+      expect(
+        _label('Open in Mermaid'),
+        hasWebView ? findsOneWidget : findsNothing,
+      );
+      debugPrint(
+        '✅ rich text: a pie shows its source, '
+        '${hasWebView ? 'with' : 'and no'} Open in Mermaid',
+      );
+      await _grab(tester, 'desktop-md-mermaid');
+
+      // Where it is offered, a real click on it opens Mermaid's own dialog,
+      // and does not put the caret in the block instead. Bounded, so a hang
+      // fails here rather than running into the job's own time limit, which
+      // cancels the job and keeps no log.
+      if (hasWebView) {
+        Future<void> openIt() async {
+          final button = _label('Open in Mermaid');
+          await tester.ensureVisible(button);
+          await tester.pump(const Duration(milliseconds: 300));
+          debugPrint('rich text: clicking Open in Mermaid');
+          await _realPointer(() async {
+            // Where it is drawn: an inline block's reported centre sits one
+            // field-scroll below it (RenderEditable's paint transform leaves
+            // its scroll offset out, which hit testing takes off), so the
+            // field's own scroll is taken off here.
+            // The field's own scroll, as its RenderEditable is offset: not a
+            // Scrollable found under it, which may be a diagram's own.
+            final scrolled = tester
+                .state<EditableTextState>(
+                  find.descendant(
+                    of: find.byType(MarkdownRichEditor),
+                    matching: find.byType(EditableText),
+                  ),
+                )
+                .renderEditable
+                .offset
+                .pixels;
+            final at = tester.getCenter(button) - Offset(0, scrolled);
+            debugPrint(
+              'rich text: the field is scrolled $scrolled px; the button '
+              'reported at ${tester.getCenter(button)}, clicked at $at',
+            );
+            await _osMouse(tester, [
+              'move ${at.dx} ${at.dy}',
+              'down',
+              'sleep 40',
+              'up',
+            ]);
+          });
+          debugPrint('rich text: clicked Open in Mermaid');
+          await _until(
+            tester,
+            () => find.byType(MermaidView).evaluate().isNotEmpty,
+            'Open in Mermaid to open its dialog',
+          );
+          expect(find.text('COPY SOURCE'), findsOneWidget);
+          expect(
+            tester.widget<MermaidView>(find.byType(MermaidView)).source,
+            startsWith('pie title E2E pets'),
+          );
+          debugPrint(
+            '✅ rich text: a click on Open in Mermaid opens its dialog',
+          );
+          await tester.tap(find.text('CLOSE'));
+          await _until(
+            tester,
+            () => find.byType(MermaidView).evaluate().isEmpty,
+            'the dialog to close',
+          );
+          debugPrint('rich text: the dialog closed');
+        }
+
+        await openIt().timeout(const Duration(minutes: 2));
+      }
+      expect(k.file.readAsStringSync(), original, reason: 'looking wrote it');
+      await _closeTabs(tester);
+    },
+  );
+
+  // D: Rich text's selection menu in termul's face. A real right-click on a
+  // selection opens the panel with the field's own rows and, under them,
+  // the formatting with its keys (Ctrl+B, or ⌘B on a Mac); its Bold wraps
+  // the selection, which saved is the file. With no selection, a right-click
+  // opens the panel with no Cut. A mutation with the panel taken out leaves
+  // Flutter's own menu, which has no Ctrl+B.
+  _test(
+    'rich text: a right-click on a selection shows termul\'s panel with its '
+    'keys, and its Bold wraps the selection; with none, no Cut',
+    skip: editorSkip,
+    (tester) async {
+      const original = 'one two three\n';
+      final k = await _EditorSave.start(tester, 'chrome.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      final editable = tester.state<EditableTextState>(field);
+      Offset at(int offset) {
+        final render = editable.renderEditable;
+        return render.localToGlobal(
+          render.getLocalRectForCaret(TextPosition(offset: offset)).center,
+        );
+      }
+
+      final bold = Platform.isMacOS ? '⌘B' : 'Ctrl+B';
+      Future<void> click(Offset p, {bool right = false}) => _realPointer(
+        () => right
+            ? _realRightClick(tester, p)
+            : _osMouse(tester, [
+                'move ${p.dx} ${p.dy}',
+                'down',
+                'sleep 40',
+                'up',
+              ]),
+      );
+
+      // The whole line selected, and a right-click inside it.
+      await tester.showKeyboard(field);
+      editable.userUpdateTextEditingValue(
+        editable.textEditingValue.copyWith(
+          selection: const TextSelection(baseOffset: 0, extentOffset: 13),
+        ),
+        SelectionChangedCause.keyboard,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await click(at(5), right: true);
+      await _until(
+        tester,
+        () => find.text(bold).evaluate().isNotEmpty,
+        "the panel, with Bold's $bold",
+      );
+      expect(find.text('Cut'), findsOneWidget);
+      expect(find.text('Copy'), findsWidgets);
+      debugPrint(
+        "✅ rich text: a right-click on a selection shows termul's "
+        'panel, Cut, Copy and Bold $bold',
+      );
+      await _grab(tester, 'desktop-md-chrome-panel');
+      await click(tester.getCenter(find.text('Bold')));
+      await _until(
+        tester,
+        () => k.text() == '**one two three**\n',
+        'Bold to wrap the selection',
+      );
+      debugPrint('✅ rich text: the panel\'s Bold wrapped the selection');
+      await k.chord(save);
+      await _until(
+        tester,
+        () => k.file.readAsStringSync() == '**one two three**\n',
+        'the save to write the bold alone',
+        timeout: const Duration(seconds: 8),
+      );
+
+      // No selection: the one Bold left collapsed to the end, and a
+      // right-click there, on the empty last line, where no word is for a
+      // Mac to select.
+      editable.userUpdateTextEditingValue(
+        editable.textEditingValue.copyWith(
+          selection: TextSelection.collapsed(offset: k.text().length),
+        ),
+        SelectionChangedCause.keyboard,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(editable.textEditingValue.selection.isCollapsed, isTrue);
+      await click(at(k.text().length), right: true);
+      await _until(
+        tester,
+        () => find.text(bold).evaluate().isNotEmpty,
+        'the panel with no selection',
+      );
+      expect(
+        find.text('Cut'),
+        findsNothing,
+        reason: 'Cut offered with nothing selected',
+      );
+      debugPrint('✅ rich text: with no selection the panel has no Cut');
+      await _escape(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // D: italic off `***x***`, bold and italic in one pair of markers, takes
+  // italic's own star and leaves **x**. A real Ctrl+I (⌘I on a Mac). A
+  // mutation without the three-marker branch leaves `x`.
+  _test('rich text: italic off ***x*** leaves **x**', skip: editorSkip, (
+    tester,
+  ) async {
+    const original = '***x***\n';
+    final k = await _EditorSave.start(tester, 'triple.md', text: original);
+    final field = find.descendant(
+      of: find.byType(MarkdownRichEditor),
+      matching: find.byType(EditableText),
+    );
+    final editable = tester.state<EditableTextState>(field);
+    await tester.showKeyboard(field);
+    editable.userUpdateTextEditingValue(
+      editable.textEditingValue.copyWith(
+        selection: const TextSelection(baseOffset: 3, extentOffset: 4),
+      ),
+      SelectionChangedCause.keyboard,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await k.press('ctrl+i', 'keystroke "i" using command down');
+    await _until(
+      tester,
+      () => k.text() != original,
+      'the italic chord to change the text',
+    );
+    expect(k.text(), '**x**\n');
+    debugPrint(
+      '✅ rich text: ${Platform.isMacOS ? '⌘I' : 'Ctrl+I'} on ***x*** '
+      'left **x**',
+    );
+    await k.chord(save);
+    await _until(
+      tester,
+      () => k.file.readAsStringSync() == '**x**\n',
+      'the save to write **x**',
+      timeout: const Duration(seconds: 8),
+    );
+    await _closeTabs(tester);
+  });
+
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
   // the engine reports them. Run it in profile to read a real number.
@@ -9842,4 +11463,61 @@ class _EditorSave {
     );
     expect(this.text(), text, reason: '$when: the text changed');
   }
+}
+
+const _far = 'quokkafar marmalade zephyr lantern.';
+
+/// A host held in memory: `/home/me/dev` holding [files], name to bytes. For
+/// names this machine's own disk could not hold side by side.
+class _MemoryHost extends Fake implements FileBrowser {
+  _MemoryHost(this.files);
+
+  final Map<String, List<int>> files;
+
+  @override
+  Future<String> resolveHome() async => '/home/me';
+
+  @override
+  Future<RemoteEntryKind?> stat(String path) async =>
+      path.startsWith('/home/me/dev/')
+      ? RemoteEntryKind.file
+      : RemoteEntryKind.directory;
+
+  @override
+  Future<List<RemoteEntry>> list(String path) async => switch (path) {
+    '/home/me' || '/home/me/' => const [
+      RemoteEntry(
+        name: 'dev',
+        path: '/home/me/dev',
+        kind: RemoteEntryKind.directory,
+      ),
+    ],
+    '/home/me/dev' => [
+      for (final MapEntry(:key, :value) in files.entries)
+        RemoteEntry(
+          name: key,
+          path: '/home/me/dev/$key',
+          kind: RemoteEntryKind.file,
+          size: value.length,
+        ),
+    ],
+    _ => const [],
+  };
+
+  @override
+  Future<void> download(
+    String path,
+    String localPath, {
+    int offset = 0,
+    int? length,
+    void Function(int received, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    final bytes = files[path.substring('/home/me/dev/'.length)]!;
+    File(localPath).writeAsBytesSync(bytes);
+    onProgress?.call(bytes.length, bytes.length);
+  }
+
+  @override
+  Future<void> close() async {}
 }

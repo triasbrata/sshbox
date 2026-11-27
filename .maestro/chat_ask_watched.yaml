@@ -17,6 +17,7 @@
 #   other   words with $(touch x) arrive as text
 #   perm    the session waits for a permission prompt, not an answer: refused
 #   pane    the same as single, into a tmux pane
+#   closes  two questions whose dialog closes at the first key: typing stops
 #
 # KIND and SESSION come from -e alone: Maestro 2.10 lets a flow's own env:
 # block win over -e (see tools/e2e_android.sh), so they have no default.
@@ -186,6 +187,43 @@ env:
       - assertNotVisible: "(?s)Small.*"
       - assertNotVisible: "(?s).*Not answered.*"
       - takeScreenshot: chat-ask-watched-two
+
+# closes: two questions, the dialog closing as the first key reaches it and a
+# permission prompt coming up in its place. Typing stops there, and the card
+# says so; the runner reads that the prompt got no key.
+- runFlow:
+    when:
+      true: ${KIND == 'closes'}
+    commands:
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 30000
+      - scrollUntilVisible:
+          element: "Which tier\\?"
+          direction: UP
+      - waitForAnimationToEnd
+      - tapOn: "Gold"
+      - takeScreenshot: chat-ask-watched-picked-Gold
+      - scrollUntilVisible:
+          element: "Cool"
+      - waitForAnimationToEnd
+      - tapOn: "Cool"
+      - scrollUntilVisible:
+          element: "Send answers"
+      - waitForAnimationToEnd
+      - extendedWaitUntil:
+          visible: "Send answers"
+          timeout: 10000
+      - tapOn:
+          text: "Send answers"
+          retryTapIfNoChange: false
+      - extendedWaitUntil:
+          visible: "(?s).*dialog closed while the answer was typed.*"
+          timeout: 60000
+      - assertVisible: "(?s).*after 1 key,.*"
+      - assertVisible: "(?s).*claude attach e2eask07.*"
+      - assertNotVisible: "Continuing after your answer\\."
+      - takeScreenshot: chat-ask-watched-closes
 
 # other: the user's words, shell syntax and all, go in as text.
 - runFlow:

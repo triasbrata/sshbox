@@ -40,6 +40,9 @@ tests=${E2E_TESTS:-integration_test/desktop_smoke_test.dart}
 phases=1
 [ -n "${JEANSH_E2E_NO_PORTAL:-}" ] && phases=
 [ -n "${E2E_TESTS:-}" ] && phases=
+# One share of the tests (JEANSH_E2E_SHARD=i/n): the window phases follow
+# share 0 alone, so a split run still has them once.
+case "${JEANSH_E2E_SHARD:-0/1}" in 0/*) ;; *) phases= ;; esac
 for arg in "$@"; do
   case "$arg" in --plain-name* | --name* | -n) phases= ;; esac
 done

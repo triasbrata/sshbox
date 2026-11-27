@@ -366,6 +366,16 @@ void main() {
     expect(ChatModel.logName('claude-opus-5-5-hostname'), 'other');
   });
 
+  test('the chat send log names only the model families it offers', () {
+    expect(ChatModel.logName('claude-acmeinternal-1'), 'other');
+    expect(ChatModel.logName('claude-default-5'), 'other');
+    expect(ChatModel.logName('claude-haiku-4-5-20251001'), 'Haiku 4.5');
+    expect(ChatModel.logName('claude-sonnet-5-5[1m]'), 'Sonnet 5.5');
+    expect(ChatModel.logName('claude-fable-5-1'), 'Fable 5.1');
+    expect(ChatModel.logName('opus'), 'Opus');
+    expect(ChatModel.logName('default'), 'Default');
+  });
+
   test('a scroll run to the program says how many wheel reports left, and '
       'where the last landed', () {
     log = AppLog(maxLines: 50);

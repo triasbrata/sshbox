@@ -28,17 +28,17 @@ cd "$ROOT"
 UNITS=(smoke connect_and_keybar
   tabs file_browser logs duplicate_session dotfiles card_tap_reconnect
   port_forward_no_host terminal_selection
-  single_instance jeansh_open2 jeansh_open share_text share_chat chat_continue_cwd
+  single_instance jeansh_open2 jeansh_open open_notify_hardening share_text share_chat chat_continue_cwd
   chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
   html_tab html_site tab_close_narrow chat_session_status chat_progress
   chat_working_backstop
   chat_images chat_attach_deliver chat_subagents chat_usage chat_compact chat_model
   chat_effort chat_cwd
-  folder_zip chat_outbox chat_outbox_reconnect
+  folder_zip chat_outbox chat_outbox_reconnect chat_fixes
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
   chat_tasks bug_button tmux_mouse_reattach text_size_home soft_backspace
   # Near the end, since they leave their session's tab open; text_size last.
-  md_rich_text md_rich_caret editor_save file_editor text_size)
+  md_rich_text md_rich_caret md_rich_speed md_touch_scroll md_mermaid md_chrome editor_save file_editor text_size)
 if [ "${E2E_UNITS:-}" = list ]; then
   printf '%s\n' "${UNITS[@]}"
   exit 0
@@ -885,6 +885,433 @@ PY
     -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
   return "$status"
 }
+
+# Rich text on a long file, sections away from the caret shaped as blanks
+# while no screen reader is on (.maestro/md_rich_speed.yaml): a 200 KB
+# README-like file, read off the host. Maestro reads the app through
+# Android's accessibility, which turns Flutter's semantics on, so here the
+# field is drawn for a screen reader. Asserted:
+#   - opened in Rich text, not refused to Source (200 KB is past the 160 KB
+#     limit before the blanks, under the 240 KB after them: a limit put back
+#     to 160 KB refuses it), and nothing written;
+#   - the far section's own words are in the accessibility text, not spaces
+#     (Maestro turns semantics on, so a check of the tree: it holds even with
+#     blanking forced on, run 41615231879; the desktop tests guard the blanks);
+#   - 20 characters typed mid-document and saved: the file is the original
+#     with exactly those 20 inserted, at one place in its middle;
+#   - the far section tapped shows its words;
+#   - the whole document selected and copied, pasted over the one word of a
+#     plain .txt and saved: the .txt holds the document's own text, the far
+#     section's words included and no run of spaces the document lacks.
+md_rich_speed() {
+  local status=0 home=/home/$SSH_USER old=1577836800
+  local file=$home/jeansh-e2e-speed.md paste=$home/jeansh-e2e-paste.txt
+  local typed=abcdefghijklmnopqrst verdict
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_rich_speed: $what"
+      status=1
+    fi
+  }
+  local orig
+  orig=$(mktemp)
+  python3 - "$orig" <<'PY'
+import sys
+parts = ['# Jeansh e2e speed\n\nA README-like file for Rich text.\n']
+i = 0
+while sum(map(len, parts)) < 200 * 1024:
+    s = (f'## Section {i}\n\nSome **bold** text, _italic_, `code` and a '
+         f'[link](https://example.com/{i}) in a paragraph long enough to wrap '
+         f'onto a second line, word{i}x.\n\n- one {i}\n- [ ] task {i}\n')
+    if i % 5 == 0:
+        s += f'\n```sh\necho {i}\n```\n'
+    if i % 7 == 0:
+        s += f'\n| a | b |\n|---|---|\n| {i} | x |\n'
+    parts.append(s)
+    i += 1
+parts.append('## Far section\n\nquokkafar marmalade zephyr lantern.\n')
+open(sys.argv[1], 'w').write('\n'.join(parts))
+PY
+  echo "the document: $(wc -c <"$orig") bytes, $(wc -l <"$orig") lines"
+  sudo install -o "$SSH_USER" -m 644 "$orig" "$file"
+  sudo touch -d "@$old" "$file"
+  printf 'pastehere\n' | sudo -u "$SSH_USER" tee "$paste" >/dev/null
+
+  flow md_rich_speed -e STEP=open || { rm -f "$orig"; return 1; }
+  sleep 2
+  check 'opened in Rich text, nothing was written' \
+    [ "$(sudo stat -c %Y "$file")" = "$old" ]
+  check "the far section's words are in the accessibility text" \
+    flow md_rich_speed -e STEP=far
+
+  flow md_rich_speed -e STEP=mid || status=1
+  # Down 600 lines with the arrow key, from the top: touch flings left the
+  # page at its top on CI (run 41658674844).
+  local _
+  for _ in 1 2 3 4 5 6; do
+    # shellcheck disable=SC2046
+    adb shell input keyevent $(printf 'KEYCODE_DPAD_DOWN %.0s' $(seq 100))
+  done
+  sleep 1
+  adb shell input text "$typed"
+  sleep 2
+  flow md_rich_speed -e STEP=save || status=1
+  sleep 2
+  verdict=$(sudo cat "$file" | python3 -c '
+import sys
+a = open(sys.argv[1]).read()
+b = sys.stdin.read()
+p = 0
+while p < min(len(a), len(b)) and a[p] == b[p]:
+    p += 1
+s = 0
+while s < min(len(a), len(b)) - p and a[-1 - s] == b[-1 - s]:
+    s += 1
+print(f"{len(b) - len(a)} {b[p:len(b) - s]!r} {a[p:len(a) - s]!r} {p / len(a):.2f}")
+' "$orig")
+  echo "the save, against the original: grew by, inserted, removed, at: $verdict"
+  check 'the save is the original with exactly the 20 typed characters' \
+    [ "${verdict% *}" = "20 '$typed' ''" ]
+  check 'typed mid-document' \
+    awk -v f="${verdict##* }" 'BEGIN { exit !(f > 0.05 && f < 0.95) }'
+
+  # To the end with Ctrl+End, the keyboard up from a tap first.
+  flow md_rich_speed -e STEP=focus || status=1
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_MOVE_END
+  sleep 2
+  check "the far section tapped shows its words" \
+    flow md_rich_speed -e STEP=bottom
+  flow md_rich_speed -e STEP=copy || status=1
+  flow md_rich_speed -e STEP=paste || status=1
+  flow md_rich_speed -e STEP=save || status=1
+  sleep 2
+  verdict=$(sudo cat "$paste" | python3 -c '
+import re, sys
+doc = open(sys.argv[1]).read()
+got = sys.stdin.read()
+runs = max((len(m) for m in re.findall(" +", got)), default=0)
+print("same" if got.rstrip("\n") == doc.rstrip("\n") else "differs",
+      "far" if "quokkafar marmalade zephyr lantern." in got else "nofar",
+      "word200x" if "word200x" in got else "nomid",
+      runs, len(got), len(doc))
+' "$file")
+  echo "the pasted .txt against the saved document: $verdict"
+  check "the paste holds the far section's words" grep -q ' far ' <<<" $verdict "
+  check 'the paste holds a middle section' grep -q ' word200x ' <<<" $verdict "
+  check 'the paste has no run of spaces the document lacks' \
+    awk -v r="$(cut -d' ' -f4 <<<"$verdict")" 'BEGIN { exit !(r < 4) }'
+  check 'the paste is the document, byte for byte' grep -q '^same ' <<<"$verdict"
+
+  flow md_rich_speed -e STEP=close || status=1
+  sudo rm -f "$file" "$paste"
+  rm -f "$orig"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-rich-speed-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
+
+# #333: Mermaid drawn natively, in a Markdown file's Rich text
+# (.maestro/md_mermaid.yaml) and in a chat reply (.maestro/chat_mermaid.yaml).
+# A 2x2:
+#   - the flowchart and the last sequence diagram of
+#     docs/notification-architecture.md are drawn, each a node labelled
+#     "Flowchart: …" or "Sequence diagram between …", and neither's source
+#     is shown; the flowchart, 2248 wide, moves under a swipe to the left and
+#     comes back as it was under one to the right (the screen between the
+#     status and navigation bars compared); a tap on it puts the caret in
+#     and the drawing goes;
+#   - a pie, which has no native drawing, shows "pie is not drawn natively"
+#     and its source, with no diagram's node; Open in Mermaid opens a dialog.
+# Then chat: a reply's ```mermaid graph is drawn, "Flowchart: E2EA, E2EB",
+# with Copy diagram source and no source. A mutation in which readMermaid
+# draws no kind fails at the first file's "Flowchart:".
+md_mermaid() {
+  local status=0 home=/home/$SSH_USER before swiped back
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_mermaid: $what"
+      status=1
+    fi
+  }
+  # The screen between the status and the navigation bar, as a hash.
+  screen_sum() {
+    adb exec-out screencap | python3 -c '
+import hashlib, sys
+d = sys.stdin.buffer.read()
+w = int.from_bytes(d[0:4], "little")
+h = int.from_bytes(d[4:8], "little")
+px = d[len(d) - w * h * 4:]
+row = w * 4
+print(hashlib.sha256(px[row * (h // 10):row * (h * 9 // 10)]).hexdigest())'
+  }
+  {
+    printf '# Mermaid e2e\n\n'
+    awk '/^```mermaid/{n++; p=1}
+      p && (n == 1 || n == 8) {print}
+      /^```$/ {if (p && (n == 1 || n == 8)) print ""; p=0}' \
+      "$ROOT/docs/notification-architecture.md"
+  } | sudo -u "$SSH_USER" tee "$home/jeansh-e2e-mermaid.md" >/dev/null
+  printf '# Pie e2e\n\n```mermaid\npie title E2E pets\n  "Dogs" : 3\n  "Cats" : 2\n```\n' |
+    sudo -u "$SSH_USER" tee "$home/jeansh-e2e-pie.md" >/dev/null
+  echo "The diagrams file:"
+  sudo sed 's/^/  | /' "$home/jeansh-e2e-mermaid.md"
+
+  app_fresh
+  check 'the flowchart and the sequence diagram are drawn, no source shown' \
+    flow md_mermaid -e STEP=open
+  if [ "$status" = 0 ]; then
+    sleep 3
+    before=$(screen_sum)
+    check 'a swipe to the left on the flowchart' flow md_mermaid -e STEP=swipe-left
+    sleep 3
+    swiped=$(screen_sum)
+    check 'and one to the right' flow md_mermaid -e STEP=swipe-right
+    sleep 3
+    back=$(screen_sum)
+    echo "screen: opened $before, swiped $swiped, back $back"
+    check 'the flowchart moved sideways under the swipe' [ "$swiped" != "$before" ]
+    check 'swiped back, it is where it opened' [ "$back" = "$before" ]
+    check 'a tap on the flowchart puts the caret in, and the drawing goes' \
+      flow md_mermaid -e STEP=tap
+  fi
+  check 'a pie shows its source and no diagram; Open in Mermaid opens a dialog' \
+    flow md_mermaid -e STEP=pie
+  keep_shots 'md-mermaid-*.png'
+  sudo rm -f "$home/jeansh-e2e-mermaid.md" "$home/jeansh-e2e-pie.md"
+
+  check 'a chat reply draws its mermaid graph, with Copy diagram source' \
+    chat_mermaid
+  return "$status"
+}
+
+# Rich text in termul's chrome (.maestro/md_chrome.yaml), read off the host.
+# A 2x2 for each half:
+#   - the menu: a long press on a word shows termul's row, Copy and Select
+#     all, with no Bold, which is the desktop panel's; its Copy holds the
+#     word, which pasted in Source and saved ends the file with "zebra";
+#   - bold over blocks (M13): Select all and B on a file of front matter, a
+#     ```sh fence and a paragraph bolds the paragraph alone, the front
+#     matter and the fence byte for byte as they were; on a file that is a
+#     fence alone, nothing changes and there is nothing to save.
+# A mutation in which bold takes every line, code and front matter
+# included, fails both of the second.
+md_chrome() {
+  local status=0 home=/home/$SSH_USER m13 m13_bold fence got
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_chrome: $what"
+      status=1
+    fi
+  }
+  put() { printf '%s' "$2" | sudo -u "$SSH_USER" tee "$home/$1.md" >/dev/null; }
+  read_back() { sudo cat "$home/$1.md"; echo x; }
+  local zebra
+  zebra="$(printf 'zebra %.0s' $(seq 40))"
+  zebra="${zebra% }"$'\n'
+  m13=$'---\ntitle: E2E chrome\ntags: [e2e]\n---\n\n```sh\necho fence-one\necho fence-two\n```\n\n'
+  m13+="$(printf 'Plain paragraph words here %.0s' $(seq 12))"
+  m13="${m13% }."$'\n'
+  m13_bold=${m13/Plain paragraph/**Plain paragraph}
+  m13_bold=${m13_bold/here./here.**}
+  fence=$'```sh\necho fence-only\n```\n'
+  put jeansh-e2e-zebra "$zebra"
+  put jeansh-e2e-m13 "$m13"
+  put jeansh-e2e-fence "$fence"
+
+  app_fresh
+  adb logcat -c 2>/dev/null
+  # The menu: Copy, then Paste from Source's own menu.
+  check 'the zebra file opens in Rich text' \
+    flow md_chrome -e STEP=open -e FIRST=yes -e FILE=jeansh-e2e-zebra
+  check "a long press shows termul's row: Copy, Select all, no Bold" \
+    flow md_chrome -e STEP=press -e FIRST=no -e FILE=x
+  flow md_chrome -e STEP=source -e FIRST=no -e FILE=x || status=1
+  flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
+  sleep 2
+  got=$(read_back jeansh-e2e-zebra)
+  echo "The zebra file on the host after the paste:"
+  printf '%s' "${got%x}" | sed 's/^/  | /'
+  # Wherever the caret was, the paste added one "zebra" and nothing else:
+  # the file is the original's words with one more, five bytes longer.
+  one_more() {
+    [ "$(printf '%s' "${got%x}" | grep -o zebra | wc -l)" = 41 ] &&
+      [ "${#got}" = $(( ${#zebra} + 6 )) ]
+  }
+  check 'Copy held the word: pasted in Source, the file has one more zebra' one_more
+  flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
+
+  # Select all, then B: where the bar is depends on the keyboard, read here.
+  bold_all() {
+    flow md_chrome -e STEP=all-select -e FIRST=no -e FILE="$1" -e AT="$2" ||
+      return 1
+    sleep 1
+    local kb=down
+    ime_shown && kb=up
+    echo "bold_all: the keyboard is $kb"
+    flow md_chrome -e STEP=all-b -e FIRST=no -e FILE="$1" -e KB=$kb
+  }
+
+  # M13: Select all and B.
+  flow md_chrome -e STEP=open -e FIRST=no -e FILE=jeansh-e2e-m13 || status=1
+  check 'Select all and B on front matter, a fence and a paragraph' \
+    bold_all jeansh-e2e-m13 80%
+  flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
+  sleep 2
+  got=$(read_back jeansh-e2e-m13)
+  echo "The m13 file on the host after the save:"
+  printf '%s' "${got%x}" | sed 's/^/  | /'
+  check 'the paragraph alone is bold' [ "${got%x}" = "$m13_bold" ]
+  check 'the front matter and the fence are byte for byte as they were' \
+    [ "$(printf '%s' "${got%x}" | head -n 9)" = "$(printf '%s' "$m13" | head -n 9)" ]
+  flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
+
+  # A fence alone: Select all and B change nothing.
+  flow md_chrome -e STEP=open -e FIRST=no -e FILE=jeansh-e2e-fence || status=1
+  bold_all jeansh-e2e-fence 36% ||
+    status=1
+  check 'B on a selection inside a fence leaves nothing to save' \
+    flow md_chrome -e STEP=unchanged -e FIRST=no -e FILE=x
+  check 'and the fence file is as it was' \
+    [ "$(read_back jeansh-e2e-fence)" = "${fence}x" ]
+  flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
+
+  # The touch row fits a 320 dp phone: Flutter said nothing overflowed.
+  local overflow
+  overflow=$(adb logcat -d 2>/dev/null | grep -i 'overflowed' | head -3)
+  echo "overflow in the log: ${overflow:-(none)}"
+  check 'nothing overflowed on the 320 dp phone' [ -z "$overflow" ]
+  keep_shots 'md-chrome-*.png'
+  sudo rm -f "$home"/jeansh-e2e-{zebra,m13,fence}.md
+  return "$status"
+}
+
+# A long Markdown file in Rich text scrolls by a finger from anywhere on the
+# page (.maestro/md_touch_scroll.yaml), with the keyboard up. The page's
+# margins, its gutters and the space under the text, lay outside the field's
+# own scroller, so a swipe there scrolled nothing; on the 320x640 emulator
+# with the keyboard up, the middle of the screen is that space. The page is
+# the one EditText node Android has, its bounds the whole page; the text sits
+# 16 dp in from its sides and 48 dp up from its bottom. Whether the page moved
+# is read off the screen, as how many of the text area's pixel columns a
+# swipe changed: a scroll changes most of them, the caret a few. A 2x2:
+#   - a short sideways swipe from the gutter, mid-page, does not scroll;
+#   - an upward swipe in the space under the text scrolls the page, and so
+#     does one in the gutter;
+#   - an upward swipe over the text scrolls it, as it always did.
+# A mutation that takes the margins' drag out fails the second, the first and
+# the last staying green. Every swipe starts well away from the caret, which
+# a drag on would move rather than scroll.
+md_touch_scroll() {
+  local status=0 file=/home/$SSH_USER/jeansh-e2e-scroll.md i dp box
+  local l t r b before after x y
+  check() {
+    local what=$1
+    shift
+    if "$@"; then echo "ok: $what"; else
+      echo "::error::md_touch_scroll: $what"
+      status=1
+    fi
+  }
+  {
+    printf 'Scroll e2e top.\n\n'
+    for i in $(seq 1 120); do printf 'Scroll line %d of a long note.\n\n' "$i"; done
+  } | sudo -u "$SSH_USER" tee "$file" >/dev/null
+  flow md_touch_scroll -e STEP=open || return 1
+  dp=$(adb shell wm density | grep -oE '[0-9]+' | tail -1)
+  # The page's box, as "l t r b".
+  page() {
+    code_ui | grep -o '<node [^>]*>' | grep 'EditText' |
+      head -1 | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' |
+      sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/'
+  }
+  px() { echo $(($1 * dp / 160)); }
+  box=$(page)
+  code_ui | grep -o '<node [^>]*>' | grep 'EditText' | head -1 | cut -c1-300
+  [ -n "$box" ] || { echo "::error::md_touch_scroll: no page on screen"; return 1; }
+  read -r l t r b <<<"$box"
+  # The caret on the first line, for the keyboard.
+  adb shell input tap $((l + $(px 60))) $((t + $(px 30)))
+  sleep 2
+  check 'the keyboard is up' ime_shown
+  box=$(page)
+  read -r l t r b <<<"$box"
+  echo "page with the keyboard up: [$l,$t][$r,$b] at density $dp"
+  # What a swipe did to the text, as the pixel columns that changed in a
+  # strip from 70 to 190 dp, the middle of each line, where its number is:
+  # a scroll changes most of them, while the caret, its handle and the
+  # keyboard's underline stay at a line's start or its end, outside it.
+  # "scrolled" past half the strip, "still" under a sixth, else "unclear".
+  local raw=$EVIDENCE/md-touch-scroll
+  grab() { adb exec-out screencap >"$raw-$1.raw" 2>/dev/null; }
+  moved() {
+    python3 - "$raw-before.raw" "$raw-after.raw" \
+      $((l + $(px 70))) $((t + $(px 20))) $((l + $(px 190))) $((b - $(px 48))) <<'PY'
+import struct, sys
+a, b = (open(p, 'rb').read() for p in sys.argv[1:3])
+w, h = struct.unpack('<II', a[:8])
+head = len(a) - w * h * 4
+x0, y0, x1, y1 = map(int, sys.argv[3:])
+cols = set()
+for y in range(y0, y1):
+    i = head + y * w * 4
+    for x in range(x0, x1):
+        if x not in cols and a[i + x * 4:i + x * 4 + 3] != b[i + x * 4:i + x * 4 + 3]:
+            cols.add(x)
+n, width = len(cols), x1 - x0
+word = 'scrolled' if n * 2 > width else 'still' if n * 6 < width else 'unclear'
+print(f'{word} {n}/{width}')
+PY
+  }
+  local seen
+  # swipe NAME X1 Y1 X2 Y2: what it did, in $seen.
+  swipe() {
+    local name=$1
+    shift
+    grab before
+    adb shell input swipe "$@" 400
+    sleep 2
+    grab after
+    seen=$(moved)
+    adb exec-out screencap -p >"$EVIDENCE/md-touch-scroll-$name.png" 2>/dev/null
+    echo "$name: swipe $* -- $seen columns changed"
+  }
+  # The space under the text: 24 dp up from the page's bottom, mid-page.
+  x=$(((l + r) / 2))
+  y=$((b - $(px 24)))
+  # A tap there first, at the right: it puts the caret at the end of the last
+  # line drawn, and the page keeps that line in view, so what comes after
+  # starts settled.
+  adb shell input tap $((r - $(px 24))) "$y"
+  sleep 2
+  # Sideways from the gutter, mid-page, a short way: the field's own drag
+  # takes the caret to that line's start, left of the strip, and nothing
+  # scrolls. (Sideways at the bottom edge the caret is carried past it, and
+  # the page follows: Flutter's, on every build, so not this negative.)
+  swipe gutter-sideways $((l + $(px 6))) $(((t + b) / 2)) $((l + $(px 60))) $(((t + b) / 2))
+  check 'a sideways swipe from the gutter does not scroll' [ "${seen%% *}" = still ]
+  swipe under-up "$x" "$y" "$x" $((t + $(px 60)))
+  check 'an upward swipe under the text scrolls the page' [ "${seen%% *}" = scrolled ]
+  check 'the keyboard is still up' ime_shown
+  # The gutter: 8 dp in from the page's left edge.
+  swipe gutter-up $((l + $(px 8))) $((b - $(px 80))) $((l + $(px 8))) $((t + $(px 60)))
+  check 'an upward swipe in the gutter scrolls the page' [ "${seen%% *}" = scrolled ]
+  # Over the text, mid-page: the field's own scrolling.
+  swipe text-up "$x" $(((t + b) / 2 + $(px 40))) "$x" $((t + $(px 60)))
+  check 'an upward swipe over the text scrolls the page' [ "${seen%% *}" = scrolled ]
+  rm -f "$raw-before.raw" "$raw-after.raw"
+  flow md_touch_scroll -e STEP=close || status=1
+  sudo rm -f "$file"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'md-touch-scroll-*.png' \
+    -not -path "$EVIDENCE/*" -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  return "$status"
+}
+
 # #253: an .html file opens rendered in a web tab, and a .txt file still opens
 # in the editor. Both files go in the login home, the root of the host's file
 # tree, and are gone with the runner.
@@ -1066,17 +1493,80 @@ ln -s /etc/hostname leak.png
 printf '%s' '<!doctype html><meta charset=utf-8><p id=x>link</p><img src=leak.png><script>fetch("leak.png").then(function(r){return r.ok?r.text():""}).then(function(t){document.getElementById("x").textContent+=" "+t}).catch(function(){})</script>' >link.html
 printf 'plain text\n' >plain.txt
 printf '%s' '<!doctype html><meta charset=utf-8><meta http-equiv=refresh content="0;url=mailto:a@b.c"><p>gate page</p>' >gate.html
+printf '%s' '<!doctype html><meta charset=utf-8><p>csp page</p><script>location.href="x.svg"</script>' >csp.html
+printf '%s' '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="40"><text x="4" y="20">svg doc</text><image href="http://127.0.0.1:18080/svg-image-get" xlink:href="http://127.0.0.1:18080/svg-image-get" width="2" height="2"/><script><![CDATA[fetch("http://127.0.0.1:18080/svg-post",{method:"POST",mode:"no-cors",body:"x"}).catch(function(){});fetch("svg-self-marker.css").catch(function(){});]]></script></svg>' >x.svg
+printf '%s' '<!doctype html><meta charset=utf-8><p id=f>first waiting</p><p id=s>swap waiting</p><p id=k>stay waiting</p><script>var told=false;function rd(n,id){return fetch(n,{cache:"no-store"}).then(function(r){return r.ok?r.text().then(function(t){return "read "+t}):"refused "+r.status}).then(function(t){document.getElementById(id).textContent=n.split(".")[0]+" "+t})}function go(){Promise.all([rd("swap.css","s"),rd("stay.css","k")]).then(function(){if(!told){told=true;document.getElementById("f").textContent="first "+document.getElementById("s").textContent;new Image().src="http://127.0.0.1:18080/first-read"}}).catch(function(){})}go();setInterval(go,1500)</script>' >swap.html
+printf 'ORIGINAL-CSS' >swap.css
+printf 'STAY-CSS' >stay.css
 EOS
+  # A listener on the device's own 127.0.0.1:18080, reached through adb
+  # reverse: it stands for a plain-http service on the phone, and records
+  # every request. /first-read, which swap.html asks for once it has read its
+  # files, turns swap.css into a link to the secret file beside the folder.
+  local listen_log listener
+  listen_log=$(mktemp)
+  python3 - "$listen_log" "$SSH_USER" <<'PY' &
+import http.server, subprocess, sys
+log, user = sys.argv[1], sys.argv[2]
+home = '/home/' + user
+class Listener(http.server.BaseHTTPRequestHandler):
+    def answer(self):
+        length = int(self.headers.get('Content-Length') or 0)
+        if length:
+            self.rfile.read(length)
+        with open(log, 'a') as f:
+            f.write(f'{self.command} {self.path}\n')
+        if self.path.startswith('/first-read'):
+            subprocess.run(['sudo', '-u', user, 'ln', '-sfn',
+                            home + '/jeansh-e2e-secret.txt',
+                            home + '/jeansh-e2e-site/swap.css'])
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+    do_GET = do_POST = do_HEAD = answer
+    def log_message(self, *args):
+        pass
+http.server.ThreadingHTTPServer(('127.0.0.1', 18080), Listener).serve_forever()
+PY
+  listener=$!
+  adb reverse tcp:18080 tcp:18080 >/dev/null
   leak=$(tr -d '\n' </etc/hostname)
   [ -n "$leak" ] || leak=hostname-unknown-e2e
   echo "the link's target holds: $leak"
   local step
-  for step in page plaintext evil big link gate; do
+  for step in page plaintext evil big link gate svgcsp swap; do
     echo "::group::html_site: $step"
-    flow html_site -e "STEP=$step" -e "LEAK=$leak" || {
+    : >"$listen_log"
+    if flow html_site -e "STEP=$step" -e "LEAK=$leak"; then
+      echo "✅ html_site $step"
+    else
       status=1
-      echo "::error::html_site $step failed"
-    }
+      echo "::error::❌ html_site $step failed"
+    fi
+    if [ "$step" = svgcsp ]; then
+      sleep 3
+      echo "the listener saw: $(tr '\n' ' ' <"$listen_log")"
+      if grep -q '^GET /svg-image-get' "$listen_log"; then
+        echo "✅ html_site svgcsp: the svg's picture reached the listener"
+      else
+        echo "::error::html_site svgcsp: the svg's picture never reached the listener"
+        status=1
+      fi
+      if grep -q '^POST /svg-post' "$listen_log"; then
+        echo "::error::html_site svgcsp: ❌ the svg's script reached the listener with a POST"
+        status=1
+      else
+        echo "✅ html_site svgcsp: no POST from the svg reached the listener"
+      fi
+    fi
+    if [ "$step" = swap ]; then
+      if grep -q '^GET /first-read' "$listen_log"; then
+        echo "✅ html_site swap: swap.css was made a link after the first read"
+      else
+        echo "::error::html_site swap: the page never said it had read its files"
+        status=1
+      fi
+    fi
     if [ "$step" = gate ]; then
       # No page navigation reached another app: Jeansh is still the one in front.
       local front
@@ -1089,6 +1579,9 @@ EOS
     fi
     echo "::endgroup::"
   done
+  adb reverse --remove tcp:18080 >/dev/null 2>&1
+  kill "$listener" 2>/dev/null
+  rm -f "$listen_log"
   keep_shots 'html-site-*.png'
   sudo -u "$SSH_USER" -H sh -c 'cd "$HOME" && rm -rf jeansh-e2e-site jeansh-e2e-secret.txt'
   return "$status"
@@ -2262,7 +2755,8 @@ ask_check() { # KIND
 import json, os, sys
 home, kind = sys.argv[1:3]
 events = [json.loads(l) for l in open(os.path.join(home, '.e2e-ask.log')) if l.strip()]
-n = {'single': 1, 'multi': 2, 'two': 3, 'other': 4, 'perm': 5, 'pane': 6}[kind]
+n = {'single': 1, 'multi': 2, 'two': 3, 'other': 4, 'perm': 5, 'pane': 6,
+     'closes': 7}[kind]
 sid = 'e2e00000-0000-4000-8000-00000000a%03d' % n
 keys = []
 for e in events:
@@ -2296,6 +2790,9 @@ want = {
     'perm': ([], 0, [], 'permission prompt'),
     # The pane is not an attach: its keys came through tmux.
     'pane': (['down', 'enter'], 0, [{'Which drink?': 'Coffee'}], None),
+    # The dialog closed as the first key reached it: that key alone, nothing
+    # after it on the permission prompt that came up, nothing recorded.
+    'closes': (['down'], 1, [], 'permission prompt'),
 }[kind]
 problems = []
 if keys != want[0]:
@@ -2318,7 +2815,15 @@ sys.exit(1 if problems else 0)
 PY
 }
 
-chat_ask_watched() {
+chat_ask_watched() { ask_watched_kinds single multi two other perm pane; }
+
+# M1 of the v1.0.120 review (.maestro/chat_ask_watched.yaml, KIND=closes): an
+# answer typed through `claude attach` stops once the dialog has closed, and
+# the same two-question answer to a dialog that stays goes in whole (two).
+chat_fixes_ask() { ask_watched_kinds two closes; }
+
+# ask_watched_kinds KIND...: the watched host set up, each KIND run and checked.
+ask_watched_kinds() {
   local status=0 home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) log=/home/$SSH_USER/.e2e-ask.log
   local kind pid pids='' pane
   chat_stand_in
@@ -2342,7 +2847,7 @@ SH
   "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-transcripts || return 1
   # The background sessions' processes: a sleep each, as live ones.
   ask_pids=()
-  for kind in single multi two other perm; do
+  for kind in single multi two other perm closes; do
     pid=$("${as[@]}" sh -c 'setsid sleep 3600 </dev/null >/dev/null 2>&1 & echo $!')
     ask_pids+=("$pid")
     pids="$pids\"$kind\": $pid, "
@@ -2355,7 +2860,7 @@ SH
   pane=$("${as[@]}" tmux list-panes -t e2e-ask -F '#{pane_pid}')
   "${as[@]}" python3 "$home/.e2e-ask-watched.py" --seed-rows "{${pids}\"pane\": $pane}" || return 1
   echo "ask host: sleeps ${ask_pids[*]}, pane pid $pane"
-  for kind in single multi two other perm pane; do
+  for kind in "$@"; do
     echo "-- chat_ask_watched: $kind"
     sudo truncate -s 0 "$log" 2>/dev/null
     # Whatever a failed run left on top (a system picker) is sent away first,
@@ -2503,6 +3008,118 @@ jeansh_open() {
   sudo rm -f "$bin" "$home/jeansh-target.txt" "$home/jeansh-forged.txt" \
     "$home/jeansh-forged.done" "$home/jeansh-missing.rc"
   return "$status"
+}
+
+# jeansh notify and jeansh open on a host (.maestro/open_notify_hardening.yaml),
+# with the host's install switch on, against this runner's sshd, whose stock
+# config takes LC_* so the direct notify variables reach the shell:
+#  - notify: the direct way succeeds (curl -f exits 0 only when the app's own
+#    listener took the bearer), with the secret among none of curl's arguments,
+#    read by a stand-in curl ahead on PATH that records only counts and then
+#    runs the real one; a secret that is not base64url is not sent that way.
+#  - nonce: a jeansh open sequence shown in one tab opens a file tab there, and
+#    the same sequence shown in a second tab on the same host opens none.
+#  - fish: with fish as the login shell the installed jeansh is byte for byte
+#    what a bash login installs.
+ONH_STATUS=0
+onh_host() { sudo -u "$SSH_USER" -H "$@"; }
+onh_fail() { echo "::error::open_notify_hardening: $1"; echo "❌ $1"; ONH_STATUS=1; }
+onh_expect() { # label got want
+  if [ "$2" = "$3" ]; then echo "✅ $1"; else onh_fail "$1: got [$2], expected [$3]"; fi
+}
+onh_cat() { sudo cat "/home/$SSH_USER/$1" 2>/dev/null; }
+
+open_notify_hardening() {
+  local home=/home/$SSH_USER bin=/home/$SSH_USER/.local/bin/jeansh
+  local ref fish shell
+  ONH_STATUS=0
+  ref=$(mktemp)
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home/jn-bin" "$home"/jn*.* "$home/jn.osc"
+  onh_host sh -s <<'EOS2'
+mkdir -p "$HOME/jeansh-e2e-open" && printf 'jeansh e2e a\n' >"$HOME/jeansh-e2e-open/a.md" || exit 1
+mkdir -p "$HOME/jn-bin" || exit 1
+# Counts only, so nothing secret is written anywhere; then the real curl.
+cat >"$HOME/jn-bin/curl" <<'EOF'
+#!/bin/sh
+s=0 u=0 k=0
+for a in "$@"; do
+  if [ -n "$LC_SSHBOX_NOTIFY_SECRET" ]; then
+    case $a in *"$LC_SSHBOX_NOTIFY_SECRET"*) s=$((s + 1)) ;; esac
+  fi
+  case $a in http://127.0.0.1:*) u=1 ;; esac
+  [ "$a" = -K ] && k=1
+done
+echo "direct=$u secret_in_args=$s config_on_stdin=$k" >>"$HOME/jn.argv"
+exec /usr/bin/curl "$@"
+EOF
+chmod 755 "$HOME/jn-bin/curl"
+EOS2
+
+  echo "::group::open_notify_hardening: the switch on, a bash login installs jeansh"
+  flow jeansh_open2 -e STEP=on || onh_fail "the switch flow failed"
+  flow open_notify_hardening -e STEP=connect || onh_fail "the connect flow failed"
+  sudo cp "$bin" "$ref" 2>/dev/null || onh_fail "a bash login installed no jeansh"
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: notify"
+  flow open_notify_hardening -e STEP=notify || onh_fail "the notify flow failed"
+  echo "jeansh notify said: [$(onh_cat jn1.err | tr '\n' ' ')] then [$(onh_cat jn2.err | tr '\n' ' ')]"
+  onh_expect "notify: the shell has the direct URL and secret" "$(onh_cat jn.has | tr -d ' \n')" 2
+  onh_expect "notify: positive, delivered down the connection, exit 0" "$(onh_cat jn1.rc)" 0
+  onh_expect "notify: positive, curl had the secret in none of its arguments and its config on stdin" \
+    "$(onh_cat jn.argv | sed -n 1p)" "direct=1 secret_in_args=0 config_on_stdin=1"
+  onh_expect "notify: negative, a secret that is not base64url exits 1 (no relay key on this runner)" \
+    "$(onh_cat jn2.rc)" 1
+  onh_expect "notify: negative, and curl was not called down the connection" \
+    "$(onh_cat jn.argv | grep -c 'direct=1')" 1
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: nonce"
+  flow open_notify_hardening -e STEP=nonce || onh_fail "nonce: the flow failed (a file tab in the second tab, or none in the first)"
+  onh_expect "nonce: the sequence was written to a file, exit 0" "$(onh_cat jn3.rc)" 0
+  onh_expect "nonce: the file holds one jeansh open sequence" \
+    "$(onh_cat jn.osc | grep -c '7733;open;')" 1
+  onh_expect "nonce: the second tab's cat ran" "$(onh_cat jn4.done)" ran
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: fish"
+  fish=$(command -v fish || true)
+  if [ -z "$fish" ]; then
+    sudo apt-get install -y -qq fish >/dev/null 2>&1 ||
+      { sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq fish >/dev/null 2>&1; }
+    fish=$(command -v fish || true)
+  fi
+  if [ -z "$fish" ]; then
+    onh_fail "fish: fish could not be installed, so nothing was learned"
+  else
+    shell=$(getent passwd "$SSH_USER" | cut -d: -f7)
+    sudo rm -f "$bin"
+    sudo usermod -s "$fish" "$SSH_USER"
+    onh_expect "fish: the login shell is fish" "$(getent passwd "$SSH_USER" | cut -d: -f7)" "$fish"
+    flow open_notify_hardening -e STEP=connect || onh_fail "fish: the connect flow failed"
+    sudo usermod -s "$shell" "$SSH_USER"
+    if sudo test -f "$bin"; then
+      sudo cmp "$ref" "$bin" && echo "✅ fish: positive, the installed jeansh is byte for byte the bash one" ||
+        { onh_fail "fish: the installed jeansh differs from the bash one"; sudo diff "$ref" "$bin" | head -8; }
+      sudo grep -qxF '# jeansh-open: installed by Jeansh' "$bin" ||
+        onh_fail "fish: the installed jeansh lacks its marker line"
+    else
+      onh_fail "fish: a fish login installed no jeansh"
+    fi
+    onh_expect "fish: the login shell is back" "$(getent passwd "$SSH_USER" | cut -d: -f7)" "$shell"
+  fi
+  echo "::endgroup::"
+
+  echo "::group::open_notify_hardening: the switch off"
+  flow jeansh_open2 -e STEP=off || onh_fail "the switch-off flow failed"
+  echo "::endgroup::"
+  find "$ROOT" "$HOME/.maestro" -maxdepth 6 -name 'open-notify-*.png' \
+    -exec mv -f {} "$EVIDENCE/" \; 2>/dev/null
+  sudo rm -rf "$bin" "$home/.config/jeansh" "$home/jeansh-e2e-open" "$home/jn-bin" \
+    "$home"/jn*.* "$home/jn.osc" "$home/jn.argv" "$home/jn.has"
+  rm -f "$ref"
+  [ "$ONH_STATUS" = 0 ] && echo "✅ open_notify_hardening: every case passed"
+  return "$ONH_STATUS"
 }
 
 # jeansh open: secret file, file limit, onward ssh, install result (#218,
@@ -3418,6 +4035,262 @@ chat_outbox() {
   return "$OB_STATUS"
 }
 
+# The chat findings of the v1.0.120 review, fixed (.maestro/chat_fixes.yaml,
+# and chat_fixes_ask above for the answer typed into a dialog that closes).
+# Against the outbox block's host: live_session's pane, the chat stand-in's
+# finished sessions, and a `claude` of this block's own that runs chat's own
+# Claude as tools/e2e_fixes_claude.py, which logs every line it reads to
+# ~/.e2e-fixes.log. Each case runs both ways, the second the one where nothing
+# should happen, and the runner counts what reached the host after each.
+FX_HOME=/home/$SSH_USER
+FX_LOG=$FX_HOME/.e2e-fixes.log
+FX_DROP=$FX_HOME/.e2e-fixes-drop
+FX_BG_LOG=$FX_HOME/.e2e-fixes-bg.log
+FX_BG_FAIL=$FX_HOME/.e2e-fixes-bg-fail
+FX_SLOW=$FX_HOME/.e2e-fixes-slow
+FX_WC=/usr/local/bin/wc
+FX_OWN_SID=e2e0f1x1-0000-4000-8000-000000000f11
+FX_SHORT_SID=e2e00002-0000-4000-8000-000000000002
+
+# How many lines of the own stand-in's log are EVENT for TEXT; with `pids`,
+# how many processes logged it.
+fx_count() { # EVENT TEXT [pids]
+  sudo python3 - "$FX_LOG" "$1" "$2" "${3:-}" <<'PY'
+import json, sys
+path, ev, text, what = sys.argv[1:5]
+rows = []
+try:
+    for line in open(path):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get('ev') == ev and e.get('text') == text:
+            rows.append(e)
+except OSError:
+    pass
+print(len({e['pid'] for e in rows}) if what == 'pids' else len(rows))
+PY
+}
+
+# How many user turns SID's transcript holds with exactly TEXT.
+fx_turns() { # SID TEXT
+  sudo python3 - "$FX_HOME/.claude/projects/-home-$SSH_USER/$1.jsonl" "$2" <<'PY'
+import json, sys
+n = 0
+try:
+    for line in open(sys.argv[1]):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        m = e.get('message')
+        if e.get('type') == 'user' and isinstance(m, dict) and m.get('content') == sys.argv[2]:
+            n += 1
+except OSError:
+    pass
+print(n)
+PY
+}
+
+fx_lines() { sudo cat "$1" 2>/dev/null | wc -l | tr -d ' '; }
+
+fx_setup() {
+  chat_stand_in
+  end_live_session
+  live_session
+  if [ -e "$FX_WC" ]; then
+    echo "::error::$FX_WC is there already; not putting a slow one in its place" >&2
+    return 1
+  fi
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_fixes_claude.py "$FX_HOME/.e2e-fixes-claude.py"
+  put_stand_in <<'SH'
+case "$1" in
+  --version) echo '2.1.300 (Claude Code)' ;;
+  agents) cat "$HOME/.e2e-agents.json" ;;
+  # A new chat's first message: logged, and a session named that nothing
+  # lists, or with ~/.e2e-fixes-bg-fail none started at all.
+  --bg) printf '%s\n' "$*" >>"$HOME/.e2e-fixes-bg.log"
+    if [ -f "$HOME/.e2e-fixes-bg-fail" ]; then
+      echo 'claude: could not start a session'
+    else
+      echo 'backgrounded · e2e0fx3a · New chat'
+    fi ;;
+  -p) if [ "$2" = /usage ]; then exit 0; fi
+    exec env PYTHONIOENCODING=utf-8 python3 "$HOME/.e2e-fixes-claude.py" "$@" ;;
+  *) exec cat >/dev/null ;;
+esac
+SH
+  # H1's session: finished, so chat continues it with a Claude of its own.
+  sudo -u "$SSH_USER" HOME="$FX_HOME" python3 - "$FX_OWN_SID" <<'PY'
+import json, os, sys
+sid, home = sys.argv[1], os.environ['HOME']
+d = os.path.join(home, '.claude', 'projects', home.replace('/', '-'))
+with open(os.path.join(d, sid + '.jsonl'), 'w') as f:
+    for e in ({'type': 'user', 'message': {'role': 'user', 'content': 'Earlier fixes question'}},
+              {'type': 'assistant', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': 'Earlier fixes answer'}]}}):
+        f.write(json.dumps(e) + '\n')
+path = os.path.join(home, '.e2e-agents.json')
+rows = [r for r in json.load(open(path)) if r.get('sessionId') != sid]
+rows.append({'id': 'e2ef1x01', 'cwd': home, 'kind': 'background', 'state': 'done',
+             'startedAt': 1790000000900, 'sessionId': sid, 'name': 'E2E fixes own'})
+json.dump(rows, open(path, 'w'))
+PY
+  # H2's slow host: wc, which the history read runs first, sleeps for the test
+  # user while ~/.e2e-fixes-slow is there; the real one otherwise.
+  printf '%s\n' '#!/bin/sh' \
+    "[ \"\$HOME\" = '$FX_HOME' ] && [ -f '$FX_SLOW' ] && sleep 20" \
+    'exec /usr/bin/wc "$@"' | sudo tee "$FX_WC" >/dev/null
+  sudo chmod 755 "$FX_WC"
+  sudo rm -f "$OB_PANE_LOG" "$OB_RELEASE" "$FX_LOG" "$FX_DROP" "$FX_BG_LOG" "$FX_BG_FAIL" "$FX_SLOW"
+  ob_host touch "$OB_STAMPED"
+}
+
+fx_teardown() {
+  sudo rm -f "$FX_WC" "$FX_HOME/.e2e-fixes-claude.py" "$FX_LOG" "$FX_DROP" \
+    "$FX_BG_LOG" "$FX_BG_FAIL" "$FX_SLOW" "$OB_STAMPED" "$OB_RELEASE" "$OB_PANE_LOG"
+  sudo rm -f "$FX_HOME/.claude/projects/-home-$SSH_USER/$FX_OWN_SID.jsonl"
+  adb shell am force-stop "$OB_PKG" >/dev/null 2>&1
+  end_live_session
+  stand_in ''
+}
+
+# H1, both ways. With LOST, the message's bytes never reach chat's own Claude
+# (the stand-in drops them); its process then ends, the message waits for its
+# next try, and Claude is restarted from the chat's menu: the Claude started
+# again gets it, once. Without, it was answered first, and nothing goes again.
+fx_h1() { # lost|answered
+  local msg="fixes own $1" lost=no pid
+  [ "$1" = lost ] && lost=yes
+  echo "::group::chat_fixes H1 ($1): a message whose Claude ended under it"
+  ob_reset
+  ob_restore_ssh
+  sudo rm -f "$FX_LOG"
+  [ "$lost" = yes ] && ob_host touch "$FX_DROP"
+  flow chat_fixes -e STEP=own_open || ob_fail "H1 $1: the own_open flow failed"
+  flow chat_fixes -e STEP=own_send -e "MSG=$msg" || ob_fail "H1 $1: the own_send flow failed"
+  sleep 5
+  if [ "$lost" = yes ]; then
+    ob_expect "H1 lost: the first Claude read it and lost it" "$(fx_count dropped "$msg")" 1
+    ob_expect "H1 lost: nobody answered it yet" "$(fx_count answered "$msg")" 0
+  else
+    ob_expect "H1 answered: answered before its Claude ended" "$(fx_count answered "$msg")" 1
+  fi
+  sudo rm -f "$FX_DROP"
+  # The Claude that read it, ended: the newest stand-in this session started.
+  pid=$(sudo python3 - "$FX_LOG" <<'PY'
+import json, sys
+pids = [e['pid'] for e in map(json.loads, open(sys.argv[1])) if e.get('ev') == 'start']
+print(pids[-1] if pids else '')
+PY
+)
+  echo "ending chat's own Claude, pid $pid"
+  [ -n "$pid" ] && sudo kill "$pid"
+  flow chat_fixes -e STEP=own_restart -e "MSG=$msg" -e "LOST=$lost" ||
+    ob_fail "H1 $1: the own_restart flow failed"
+  # A second send, if one were coming, would have been read by now.
+  sleep 10
+  if [ "$lost" = yes ]; then
+    ob_expect "H1 lost: read by two processes, the old and the new" "$(fx_count received "$msg" pids)" 2
+  else
+    ob_expect "H1 answered: read by one process alone" "$(fx_count received "$msg" pids)" 1
+  fi
+  ob_expect "H1 $1: answered exactly once" "$(fx_count answered "$msg")" 1
+  ob_expect "H1 $1: the transcript holds it exactly once" "$(fx_turns "$FX_OWN_SID" "$msg")" 1
+  ob_expect "H1 $1: delivered, so the device keeps no word of it" "$(ob_kept "$msg")" 0
+  echo "fixes log:"; sudo cat "$FX_LOG" 2>/dev/null
+  echo "::endgroup::"
+}
+
+# H2, both ways: a message sent behind a Retry the host is slow to look in the
+# transcript for. With SWITCH, another session is picked while both wait: the
+# message is kept for the session it was written for and typed nowhere.
+# Without, it goes to that session, once.
+fx_h2() { # switch|stay
+  local first="fixes two first $1" msg="fixes two behind $1"
+  echo "::group::chat_fixes H2 ($1): a message sent behind a slow Retry"
+  ob_reset
+  ob_restore_ssh
+  sudo rm -f "$FX_LOG"
+  flow chat_fixes -e STEP=two_open || ob_fail "H2 $1: the two_open flow failed"
+  ob_type 'a draft of my own'
+  sleep 1
+  flow chat_fixes -e STEP=two_draft -e "MSG=$first" || ob_fail "H2 $1: the two_draft flow failed"
+  ob_clear_draft
+  ob_mark
+  ob_host touch "$FX_SLOW"
+  if [ "$1" = switch ]; then
+    # The Retry, the message behind it and the switch, in one flow.
+    flow chat_fixes -e STEP=two_switch -e "MSG=$msg" || ob_fail "H2 switch: the two_switch flow failed"
+    sudo rm -f "$FX_SLOW"
+    flow chat_fixes -e STEP=two_left -e "MSG=$msg" || ob_fail "H2 switch: the two_left flow failed"
+    sleep 10
+    ob_expect "H2 switch: the session picked meanwhile never read it" "$(fx_count received "$msg")" 0
+    ob_expect "H2 switch: the pane left never read it" "$(ob_sent "$msg")" 0
+    ob_expect "H2 switch: its transcript holds none" "$(ob_turns "$msg")" 0
+    ob_expect "H2 switch: the other session's transcript holds none" "$(fx_turns "$FX_SHORT_SID" "$msg")" 0
+    ob_expect "H2 switch: kept on the device" "$(ob_kept "$msg")" 1
+    ob_expect "H2 switch: kept as failed, with the reason" \
+      "$(ob_device | grep -c 'moved to another session before it went')" 1
+  else
+    flow chat_fixes -e STEP=two_retry -e "MSG=$msg" || ob_fail "H2 stay: the two_retry flow failed"
+    sudo rm -f "$FX_SLOW"
+    flow chat_fixes -e STEP=two_stay -e "MSG=$msg" || ob_fail "H2 stay: the two_stay flow failed"
+    sleep 10
+    ob_expect "H2 stay: the pane read it exactly once" "$(ob_sent "$msg")" 1
+    ob_expect "H2 stay: its transcript holds it exactly once" "$(ob_turns "$msg")" 1
+    ob_expect "H2 stay: no other session read it" "$(fx_count received "$msg")" 0
+    ob_expect "H2 stay: delivered, so the device keeps nothing of it" "$(ob_kept "$msg")" 0
+  fi
+  sudo rm -f "$FX_SLOW"
+  echo "::endgroup::"
+}
+
+# M3, both ways. With STARTED, `claude --bg` names a session nothing lists:
+# the chat says where it is and offers no Retry, so it is started once.
+# Without, it starts nothing, and Retry starts it again.
+fx_m3() { # started|none
+  local msg="fixes new $1"
+  echo "::group::chat_fixes M3 ($1): a new chat's first message"
+  ob_reset
+  ob_restore_ssh
+  sudo rm -f "$FX_BG_LOG" "$FX_BG_FAIL"
+  if [ "$1" = started ]; then
+    flow chat_fixes -e STEP=new_send -e "MSG=$msg" || ob_fail "M3 started: the new_send flow failed"
+    sleep 5
+    ob_expect "M3 started: claude --bg ran once" "$(fx_lines "$FX_BG_LOG")" 1
+    ob_expect "M3 started: with the message" "$(sudo grep -c -- "$msg" "$FX_BG_LOG")" 1
+  else
+    ob_host touch "$FX_BG_FAIL"
+    flow chat_fixes -e STEP=new_fail -e "MSG=$msg" || ob_fail "M3 none: the new_fail flow failed"
+    ob_expect "M3 none: claude --bg ran once" "$(fx_lines "$FX_BG_LOG")" 1
+    flow chat_fixes -e STEP=new_retry -e "MSG=$msg" || ob_fail "M3 none: the new_retry flow failed"
+    sleep 5
+    ob_expect "M3 none: Retry ran claude --bg again" "$(fx_lines "$FX_BG_LOG")" 2
+  fi
+  echo "--bg log:"; sudo cat "$FX_BG_LOG" 2>/dev/null
+  sudo rm -f "$FX_BG_FAIL"
+  echo "::endgroup::"
+}
+
+chat_fixes() {
+  OB_STATUS=0
+  fx_setup || { fx_teardown; return 1; }
+  fx_h1 lost
+  fx_h1 answered
+  fx_h2 switch
+  fx_h2 stay
+  fx_m3 started
+  fx_m3 none
+  ob_restore_ssh
+  keep_shots 'chat-fixes-*.png'
+  fx_teardown
+  local status=$OB_STATUS
+  chat_fixes_ask || status=1
+  return "$status"
+}
+
 # A hand run may ask for one block alone after seed_host (e2e.yml's `block`),
 # which is minutes rather than the half hour of every flow. Here, after every
 # block is defined (#109): a block is one of the functions above, and any
@@ -3525,6 +4398,7 @@ done
 u_single_instance() { report single_instance single_instance; }
 u_jeansh_open2() { report_bare jeansh_open2 jeansh_open2; }
 u_jeansh_open() { report jeansh_open jeansh_open; }
+u_open_notify_hardening() { report_bare open_notify_hardening open_notify_hardening; }
 u_share_text() { report share_text share_text; }
 u_share_chat() { report share_chat share_chat; }
 u_chat_continue_cwd() { report chat_continue_cwd chat_continue_cwd; }
@@ -3582,6 +4456,7 @@ done
 u_folder_zip() { report_bare folder_zip folder_zip; }
 u_chat_outbox() { report_bare chat_outbox chat_outbox; }
 u_chat_outbox_reconnect() { report_bare chat_outbox_reconnect chat_outbox_reconnect; }
+u_chat_fixes() { report_bare chat_fixes chat_fixes; }
 u_chat_edit_previous() { gate chat_edit_previous chat_edit_previous; }
 u_chat_follow_jump() { gate chat_follow_jump chat_follow_jump; }
 for name in chat_ask_watched chat_slash chat_ask \
@@ -3594,6 +4469,9 @@ done
 u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
 u_md_rich_caret() { report_bare md_rich_caret md_rich_caret; }
+u_md_rich_speed() { report_bare md_rich_speed md_rich_speed; }
+u_md_mermaid() { report md_mermaid md_mermaid; }
+u_md_chrome() { report md_chrome md_chrome; }
 u_file_editor() { report file_editor file_editor; }
 # The UI text size at its largest (issue #133), as the size it sets is saved
 # and every flow after it would meet the app at 160%.

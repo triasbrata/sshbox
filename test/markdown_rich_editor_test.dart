@@ -6,11 +6,17 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/ui/markdown_live.dart';
 import 'package:sshbox/src/ui/markdown_rich_editor.dart';
+import 'package:sshbox/src/ui/mermaid_canvas.dart';
+import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/save_chord.dart';
 import 'package:sshbox/src/ui/termul/termul_palette.dart';
 import 'package:sshbox/src/ui/termul/termul_theme.dart';
 import 'package:sshbox/src/ui/termul/tui_checkbox.dart';
+import 'package:sshbox/src/ui/termul/tui_menu.dart';
 import 'package:sshbox/src/ui/tui.dart' show jeanshTheme;
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
+
+import 'fake_web_view.dart';
 
 class _Host {
   _Host(this.text);
@@ -238,6 +244,38 @@ void main() {
     expect(after, contains('**Second'));
   });
 
+  testWidgets(
+    'a copy across a section shaped as blanks copies its words',
+    semanticsEnabled: false,
+    (tester) async {
+      _mockClipboard(tester);
+      final text = [
+        for (var k = 0; k < 6; k++) 'First para $k.',
+        for (var k = 0; k < 6; k++) 'Middle words $k.',
+        for (var k = 0; k < 6; k++) 'Last para $k.',
+      ].join('\n\n');
+      await _pump(tester, text);
+      await _caret(tester, 2);
+      // Select all: its ends touch the first and last sections, so the one
+      // between them stays drawn apart, shaped as blanks.
+      _controller(tester).selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: text.length,
+      );
+      await tester.pump();
+      final drawn = tester.allRenderObjects
+          .whereType<RenderEditable>()
+          .first
+          .text!
+          .toPlainText(includePlaceholders: true);
+      expect(drawn, isNot(contains('Middle')));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.control);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.control);
+      expect(_clipboard, text);
+    },
+  );
+
   testWidgets('# typed at a line start makes a heading', (tester) async {
     final host = await _pump(tester, 'Intro\n\n\n\nEnd');
     await _caret(tester, 7);
@@ -260,6 +298,37 @@ void main() {
     expect(host.text, '- one\n- ');
     expect(_controller(tester).selection.baseOffset, 8);
   });
+
+  testWidgets(
+    'sections away from the caret are shaped as blanks, line '
+    'breaks kept, unless a screen reader reads the text',
+    semanticsEnabled: false,
+    (tester) async {
+      const text =
+          '# Title\n\nFirst **para**.\n\nSecond one\nwith two lines.\n';
+      await _pump(tester, text);
+      String drawn() => tester.allRenderObjects
+          .whereType<RenderEditable>()
+          .first
+          .text!
+          .toPlainText(includePlaceholders: true);
+
+      final blank = drawn();
+      expect(blank.length, text.length);
+      expect(blank, isNot(contains('Second')));
+      expect(blank, isNot(contains('First')));
+      for (var k = 0; k < text.length; k++) {
+        if (text[k] == '\n') expect(blank[k], '\n', reason: 'at $k');
+      }
+
+      final reader = tester.ensureSemantics();
+      await tester.pump();
+      expect(drawn(), contains('Second one\nwith two lines.'));
+      reader.dispose();
+      await tester.pump();
+      expect(drawn(), isNot(contains('Second')));
+    },
+  );
 
   testWidgets('markers show where the caret is and hide as it leaves', (
     tester,
@@ -827,6 +896,109 @@ void main() {
     expect(scroll.offset, 400);
   });
 
+  group('a finger scrolls the page from anywhere on it', () {
+    final text = [
+      for (var i = 0; i < 60; i++) ...[
+        'Paragraph $i of a long note.',
+        if (i % 10 == 4) '```dart\nvoid f$i() {}\n```',
+      ],
+    ].join('\n\n');
+
+    ScrollController scroll(WidgetTester tester) => tester
+        .widget<EditableText>(find.byType(EditableText))
+        .scrollController!;
+
+    /// Ten 20 px steps up from [at], by [kind].
+    Future<TestGesture> drag(
+      WidgetTester tester,
+      Offset at, {
+      PointerDeviceKind kind = PointerDeviceKind.touch,
+    }) async {
+      final g = await tester.startGesture(at, kind: kind);
+      for (var i = 0; i < 10; i++) {
+        await g.moveBy(const Offset(0, -20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      return g;
+    }
+
+    for (final (name, size, inset, at) in [
+      // The keyboard up on a small phone: the middle of the screen is the
+      // space under the text, above the keyboard.
+      ('under the text, keyboard up', const Size(320, 640), 280.0, 340.0),
+      ('the phone gutter', const Size(320, 640), 0.0, 8.0),
+      ('above the text', const Size(320, 640), 0.0, 10.0),
+      ('a tablet margin', const Size(1280, 800), 0.0, 100.0),
+    ]) {
+      testWidgets('a drag over $name scrolls', (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        try {
+          tester.view.viewInsets = FakeViewPadding(bottom: inset);
+          await _pump(tester, text, size: size);
+          final start = name.contains('gutter') || name.contains('margin')
+              ? Offset(at, 300)
+              : Offset(size.width / 2, at);
+          final field = tester.getRect(find.byType(EditableText));
+          expect(
+            field.contains(start),
+            isFalse,
+            reason: 'the press is outside the field\'s own scroller',
+          );
+          expect(scroll(tester).offset, 0);
+          final g = await drag(tester, start);
+          await g.up();
+          await tester.pumpAndSettle();
+          expect(scroll(tester).offset, greaterThanOrEqualTo(180));
+          expect(_controller(tester).selection.isValid, isFalse);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      });
+    }
+
+    testWidgets('over the text it scrolls once, not twice, and a mouse drag '
+        'over a margin scrolls nothing', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        await _pump(tester, text, size: const Size(1280, 800));
+        final g = await drag(tester, const Offset(640, 500));
+        await g.up();
+        await tester.pumpAndSettle();
+        // 200 px dragged, less the first step past the slop: the field alone
+        // moves it, and twice would be 360.
+        expect(scroll(tester).offset, 180);
+        final before = scroll(tester).offset;
+        final m = await drag(
+          tester,
+          const Offset(100, 500),
+          kind: PointerDeviceKind.mouse,
+        );
+        await m.up();
+        await tester.pumpAndSettle();
+        expect(scroll(tester).offset, before);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('a drag over a margin that is cancelled stops where it was', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        await _pump(tester, text, size: const Size(1280, 800));
+        final g = await drag(tester, const Offset(100, 500));
+        final at = scroll(tester).offset;
+        expect(at, greaterThan(0));
+        await g.cancel();
+        await tester.pumpAndSettle();
+        expect(scroll(tester).offset, at);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  });
+
   group('desktop', () {
     testWidgets('a selection brings up the floating bar, and B bolds it', (
       tester,
@@ -912,7 +1084,7 @@ void main() {
   ) async {
     final host = await _pump(tester, 'see here now');
     await tester.showKeyboard(find.byType(EditableText));
-    _controller(tester).selection = const TextSelection(
+    _controller(tester).selection = TextSelection(
       baseOffset: 4,
       extentOffset: 8,
     );
@@ -933,6 +1105,209 @@ void main() {
     _controller(tester).selection = const TextSelection.collapsed(offset: 1);
     await host.controller.editLink();
     expect(host.refused, ['Select the text to link first.']);
+  });
+
+  testWidgets('a diagram takes the pointer, to scroll sideways; a picture '
+      'does not', (tester) async {
+    final downs = <String>[];
+    await _pump(
+      tester,
+      'Top\n\n```mermaid\ngraph LR\n  A --> B\n```\n\n![pic](a.png)\n\nEnd\n',
+      blockBuilder: (context, md) => Listener(
+        onPointerDown: (_) => downs.add(md.split('\n').first),
+        child: Text('RENDERED ${md.split('\n').first}'),
+      ),
+    );
+    await tester.tap(find.text('RENDERED ```mermaid'));
+    await tester.pump();
+    expect(downs, ['```mermaid']);
+    downs.clear();
+    await tester.tap(find.text('RENDERED ![pic](a.png)'));
+    await tester.pump();
+    expect(downs, isEmpty);
+  });
+
+  group('a Mermaid block in rich text', () {
+    // A flowchart far wider than the page, drawn by the real MermaidBlock.
+    final chain = [for (var k = 0; k < 14; k++) 'N$k[Node number $k]'];
+    final wide = 'flowchart LR\n  ${chain.join(' --> ')}\n';
+    final doc =
+        '${[for (var k = 0; k < 12; k++) 'Above $k.'].join('\n\n')}\n\n'
+        '```mermaid\n$wide```\n\nBelow.\n';
+    final pie =
+        '${[for (var k = 0; k < 12; k++) 'Above $k.'].join('\n\n')}\n\n'
+        '```mermaid\npie\n  "a": 1\n```\n\nBottom.\n';
+
+    Widget mermaid(BuildContext context, String md) {
+      final m = RegExp(r'^```mermaid\n([\s\S]*?)```').firstMatch(md);
+      if (m == null) return Text('RENDERED ${md.split('\n').first}');
+      return MermaidBlock(source: m[1]!);
+    }
+
+    ScrollPosition sideways(WidgetTester tester) => tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MermaidBlock),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+
+    testWidgets('a drag across a wide diagram scrolls it sideways, and a tap '
+        'on it still puts the caret in its block', (tester) async {
+      await _pump(
+        tester,
+        doc,
+        size: const Size(600, 900),
+        blockBuilder: mermaid,
+      );
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      final scroll = sideways(tester);
+      expect(scroll.maxScrollExtent, greaterThan(300));
+      // On it, where it is on the page: its centre is far off to the right.
+      final on = Offset(
+        tester.getTopLeft(find.byType(MermaidCanvas)).dx + 120,
+        tester.getCenter(find.byType(MermaidCanvas)).dy,
+      );
+      await tester.dragFrom(on, const Offset(-300, 0));
+      await tester.pumpAndSettle();
+      expect(sideways(tester).pixels, greaterThan(100));
+
+      await tester.tapAt(on);
+      await tester.pumpAndSettle();
+      final at = _controller(tester).selection.extentOffset;
+      final fence = doc.indexOf('```mermaid');
+      expect(at, inInclusiveRange(fence, doc.indexOf('```\n\nBelow')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('a mouse click on a wide diagram puts the caret in its '
+        'block and shows its source, and a mouse drag then selects', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        doc,
+        size: const Size(600, 900),
+        blockBuilder: mermaid,
+      );
+      final on = Offset(
+        tester.getTopLeft(find.byType(MermaidCanvas)).dx + 120,
+        tester.getCenter(find.byType(MermaidCanvas)).dy,
+      );
+      await tester.tapAt(on, kind: PointerDeviceKind.mouse);
+      await tester.pumpAndSettle();
+      final fence = doc.indexOf('```mermaid');
+      final end = doc.indexOf('```\n\nBelow');
+      expect(
+        _controller(tester).selection.extentOffset,
+        inInclusiveRange(fence, end),
+      );
+      // The caret in it shows its source, as any block's; a mouse drag over
+      // that is the field's, a selection. (A mouse drags no scroll view on
+      // a desktop: the wheel scrolls a diagram sideways, as tested below.)
+      expect(find.byType(MermaidCanvas), findsNothing);
+      final gesture = await tester.startGesture(
+        on,
+        kind: PointerDeviceKind.mouse,
+      );
+      for (var k = 1; k <= 10; k++) {
+        await gesture.moveTo(on + Offset(0, 30.0 * k));
+        await tester.pump();
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(_controller(tester).selection.isCollapsed, isFalse);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('on a desktop, Shift and the wheel scroll it sideways', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        doc,
+        size: const Size(600, 900),
+        blockBuilder: mermaid,
+      );
+      // On it, where it is on the page: its centre is far off to the right.
+      final on = Offset(
+        tester.getTopLeft(find.byType(MermaidCanvas)).dx + 120,
+        tester.getCenter(find.byType(MermaidCanvas)).dy,
+      );
+      final mouse = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(mouse.hover(on));
+      await tester.sendEventToBinding(mouse.scroll(const Offset(300, 0)));
+      await tester.pumpAndSettle();
+      expect(sideways(tester).pixels, greaterThan(100));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets('Open in Mermaid opens its dialog and leaves the caret '
+          'where it was (${platform.name})', (tester) async {
+        WebViewPlatform.instance = FakeWebViewPlatform();
+        await _pump(
+          tester,
+          pie,
+          size: const Size(600, 1200),
+          blockBuilder: mermaid,
+        );
+        await _caret(tester, 2);
+        await tester.pumpAndSettle();
+        final before = _controller(tester).selection;
+        await tester.tap(find.text('OPEN IN MERMAID'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MermaidView), findsOneWidget);
+        expect(_controller(tester).selection, before);
+        expect(find.text('OPEN IN MERMAID'), findsOneWidget);
+      }, variant: TargetPlatformVariant.only(platform));
+    }
+
+    for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.touch]) {
+      for (final focused in [true, false]) {
+        testWidgets('Open in Mermaid in a scrolled field, pressed with a '
+            '${kind.name} opens its dialog and leaves the selection as it was '
+            '(${focused ? 'caret elsewhere' : 'unfocused'})', (tester) async {
+          WebViewPlatform.instance = FakeWebViewPlatform();
+          // A page short enough that the pie is below the fold: the field
+          // scrolls to bring it in.
+          await _pump(
+            tester,
+            pie,
+            size: const Size(600, 400),
+            blockBuilder: mermaid,
+          );
+          if (focused) await _caret(tester, 2);
+          await tester.pumpAndSettle();
+          final before = _controller(tester).selection;
+          final scroll = tester
+              .state<ScrollableState>(
+                find
+                    .descendant(
+                      of: find.byType(EditableText),
+                      matching: find.byType(Scrollable),
+                    )
+                    .first,
+              )
+              .position;
+          scroll.jumpTo(scroll.maxScrollExtent);
+          await tester.pumpAndSettle();
+          expect(scroll.pixels, greaterThan(0));
+          // Where the button is painted, which is where a user clicks. Its
+          // transform, and so its accessibility frame, leaves out the field's
+          // scroll: RenderEditable hit-tests an inline widget with the scroll
+          // and transforms it without (Flutter's own), so a click placed from
+          // getCenter lands the scroll's height below the button.
+          final painted =
+              tester.getCenter(find.text('OPEN IN MERMAID')) -
+              Offset(0, scroll.pixels);
+          expect(painted.dy, inInclusiveRange(0, 400));
+          await tester.tapAt(painted, kind: kind);
+          await tester.pumpAndSettle();
+          expect(find.byType(MermaidView), findsOneWidget);
+          expect(_controller(tester).selection, before);
+        }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+      }
+    }
   });
 
   testWidgets('front matter draws as keys and values, <details> as its '
@@ -1151,7 +1526,7 @@ void main() {
       await tester.showKeyboard(find.byType(EditableText));
       await tester.pump();
       host.linkAnswer = 'https://e.x';
-      _controller(tester).selection = const TextSelection(
+      _controller(tester).selection = TextSelection(
         baseOffset: 4,
         extentOffset: 8,
       );
@@ -1165,7 +1540,7 @@ void main() {
       final host = await _pump(tester, 'one word here');
       await tester.showKeyboard(find.byType(EditableText));
       await tester.pump();
-      _controller(tester).selection = const TextSelection(
+      _controller(tester).selection = TextSelection(
         baseOffset: 4,
         extentOffset: 8,
       );
@@ -1189,5 +1564,161 @@ void main() {
       await tester.pump();
       expect(told, isEmpty);
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+  });
+
+  testWidgets('types only what is typed: no smart dashes or quotes', (
+    tester,
+  ) async {
+    await _pump(tester, 'a -- "b"\n');
+    final field = tester.widget<EditableText>(find.byType(EditableText));
+    expect(field.smartDashesType, SmartDashesType.disabled);
+    expect(field.smartQuotesType, SmartQuotesType.disabled);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
+  group('the selection menu, in termul', () {
+    test('every kind of row has its word', () {
+      expect(
+        {for (final t in ContextMenuButtonType.values) t: richMenuLabel(t)},
+        {
+          ContextMenuButtonType.cut: 'Cut',
+          ContextMenuButtonType.copy: 'Copy',
+          ContextMenuButtonType.paste: 'Paste',
+          ContextMenuButtonType.selectAll: 'Select all',
+          ContextMenuButtonType.delete: 'Delete',
+          ContextMenuButtonType.lookUp: 'Look up',
+          ContextMenuButtonType.searchWeb: 'Search web',
+          ContextMenuButtonType.share: 'Share',
+          ContextMenuButtonType.liveTextInput: 'Scan text',
+          ContextMenuButtonType.custom: '',
+        },
+      );
+    });
+
+    testWidgets('a right-click opens the panel with the keys and the '
+        'formatting, and Bold bolds the selection', (tester) async {
+      _mockClipboard(tester);
+      final host = await _pump(tester, 'one two three\n');
+      await _caret(tester, 0);
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 0,
+        extentOffset: 13,
+      );
+      await tester.pump();
+      await tester.tapAt(
+        tester.getTopLeft(find.byType(EditableText)) + const Offset(30, 10),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(TuiTextMenu), findsOneWidget);
+      expect(find.byType(DesktopTextSelectionToolbar), findsNothing);
+      expect(find.byType(TextSelectionToolbar), findsNothing);
+      for (final word in ['Copy', 'Select all', 'Bold', 'Italic', 'Code']) {
+        expect(find.text(word), findsOneWidget, reason: word);
+      }
+      expect(find.text('Ctrl+B'), findsOneWidget);
+      expect(find.text('Ctrl+C'), findsOneWidget);
+      await tester.tap(find.text('Bold'));
+      await tester.pumpAndSettle();
+      expect(host.text, '**one two three**\n');
+      expect(find.byType(TuiTextMenu), findsNothing);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+
+    testWidgets('…with ⌘ on a Mac, and Copy copies', (tester) async {
+      _mockClipboard(tester);
+      await _pump(tester, 'one two three\n');
+      await _caret(tester, 0);
+      _controller(tester).selection = const TextSelection(
+        baseOffset: 4,
+        extentOffset: 7,
+      );
+      await tester.pump();
+      await tester.tapAt(
+        tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+        buttons: kSecondaryButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('⌘B'), findsOneWidget);
+      final selected = _controller(tester).selection;
+      await tester.tap(find.text('Copy'));
+      await tester.pumpAndSettle();
+      expect(_clipboard, selected.textInside('one two three\n'));
+      expect(_clipboard, isNotEmpty);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('a long press on touch shows a row of words, with no '
+        'formatting in it: the bar over the keyboard has that', (tester) async {
+      _mockClipboard(tester);
+      await _pump(tester, 'one two three\n');
+      await tester.longPressAt(
+        tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(TuiTextMenu), findsOneWidget);
+      expect(find.byType(TextSelectionToolbar), findsNothing);
+      expect(find.text('Copy'), findsOneWidget);
+      expect(find.text('Bold'), findsNothing);
+      expect(find.textContaining('Ctrl+'), findsNothing);
+      await tester.tap(find.text('Select all'));
+      await tester.pumpAndSettle();
+      expect(
+        _controller(tester).selection.textInside('one two three\n'),
+        'one two three\n',
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    for (final scale in [1.0, 1.3]) {
+      testWidgets('on a 320 dp phone, at text scale $scale, the row fits: '
+          'nothing overflows and every word shows whole', (tester) async {
+        _clipboard = 'x';
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async => switch (call.method) {
+            'Clipboard.hasStrings' => {'value': true},
+            'Clipboard.getData' => {'text': _clipboard},
+            _ => null,
+          },
+        );
+        tester.platformDispatcher.textScaleFactorTestValue = scale;
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        await _pump(tester, 'one two three\n', size: const Size(320, 640));
+        await tester.longPressAt(
+          tester.getTopLeft(find.byType(EditableText)) + const Offset(45, 10),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final words = find.descendant(
+          of: find.byType(TuiTextMenu),
+          matching: find.byType(Text),
+        );
+        final labels = [
+          for (final e in words.evaluate()) (e.widget as Text).data!,
+        ];
+        expect(labels, containsAll(['Cut', 'Copy', 'Paste', 'Select all']));
+        for (final e in words.evaluate()) {
+          final box = e.renderObject! as RenderBox;
+          final rect = box.localToGlobal(Offset.zero) & box.size;
+          final label = (e.widget as Text).data;
+          expect(rect.left, greaterThanOrEqualTo(0), reason: label);
+          expect(rect.right, lessThanOrEqualTo(320), reason: label);
+          final paragraph = box as RenderParagraph;
+          expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+          expect(
+            paragraph.size.width,
+            greaterThanOrEqualTo(
+              paragraph.getMaxIntrinsicWidth(double.infinity) - 0.5,
+            ),
+            reason: '$label is cut',
+          );
+        }
+        await tester.tap(find.text('Select all'));
+        await tester.pumpAndSettle();
+        expect(
+          _controller(tester).selection.textInside('one two three\n'),
+          'one two three\n',
+        );
+      }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+    }
   });
 }
