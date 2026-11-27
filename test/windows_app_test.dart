@@ -364,4 +364,92 @@ void main() {
     },
     variant: TargetPlatformVariant.only(TargetPlatform.linux),
   );
+
+  testWidgets(
+    'after the first window handed its place over, a new window opens and its '
+    'own close button closes it',
+    (tester) async {
+      _quiet(tester);
+      final runner = _Runner();
+      final views = <int, _ExtraView>{};
+      FlutterView? viewOf(int id) => id == 0
+          ? tester.view
+          : views.putIfAbsent(id, () => _ExtraView(tester.view, viewId: id));
+      final asked = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('sshbox/window'),
+        (call) async {
+          asked.add(call);
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('sshbox/window'),
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        SshboxApp(
+          windows: runner,
+          multiWindow: true,
+          transport: (_, banner) => _Shell()..banner = banner,
+          viewOf: viewOf,
+        ),
+        wrapWithView: false,
+      );
+      await _settle(tester);
+
+      Future<void> newWindow() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await _settle(tester);
+      }
+
+      // A second window, then the first is closed and the second takes its
+      // place in the first view.
+      await newWindow();
+      runner.say.add(const WindowOpened(1, 1));
+      await _settle(tester);
+      runner.say.add(const WindowCloseRequested(0));
+      await _settle(tester);
+      expect(runner.closed, [1]);
+
+      // A new window, in a view of its own.
+      await newWindow();
+      runner.say.add(const WindowOpened(2, 2));
+      await _settle(tester);
+      expect(find.byType(MaterialApp), findsNWidgets(2));
+
+      // Its own close button, the second in the tree, asks the runner to close
+      // the window of view 2, and nothing else.
+      final close = find.byWidgetPredicate(
+        (w) => w is Semantics && w.properties.label == 'Close',
+      );
+      expect(close, findsNWidgets(2));
+      asked.clear();
+      tester
+          .widget<GestureDetector>(
+            find.descendant(
+              of: close.last,
+              matching: find.byType(GestureDetector),
+            ),
+          )
+          .onTap!();
+      await tester.pump();
+      expect(asked.single.method, 'close');
+      expect(asked.single.arguments, {'view': 2, 'arguments': null});
+      expect(appLog.current, contains('win: close button of view 2'));
+
+      // The runner answers as it does, asking the app to close that window.
+      runner.say.add(const WindowCloseRequested(2));
+      await _settle(tester);
+      expect(runner.closed, [1, 2]);
+      expect(find.byType(MaterialApp), findsOneWidget);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.linux),
+  );
 }
