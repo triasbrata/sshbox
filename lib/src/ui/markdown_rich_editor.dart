@@ -716,17 +716,14 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     final pageTop = page.localToGlobal(Offset.zero).dy;
     if (before < pageTop || before > pageTop + page.size.height) return;
     final top = before;
-    // The page's own scroll in the meantime, a finger's drag among it, is
-    // the reader's and is left alone: only what the layout moved is held.
-    final scrolledAt = _scroll.position.pixels;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       final e = _editable;
       if (!mounted || e == null || !e.attached || !_scroll.hasClients) return;
       final after = place(e, anchor);
       if (after == null) return;
-      final pos = _scroll.position;
-      final moved = after - top + (pos.pixels - scrolledAt);
+      final moved = after - top;
       if (moved.abs() < 1) return;
+      final pos = _scroll.position;
       _scroll.jumpTo(
         (pos.pixels + moved).clamp(pos.minScrollExtent, pos.maxScrollExtent),
       );
