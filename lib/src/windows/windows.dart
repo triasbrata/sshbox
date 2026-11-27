@@ -548,7 +548,6 @@ class WindowSet extends ChangeNotifier {
     notifyListeners();
     _log('closed id=${window.id}, the set is $_state');
     return () async {
-      await settle();
       _log('settled for id=${window.id}');
       await window.sessions.retire();
       await registry.forget(window.key);
@@ -590,7 +589,6 @@ class WindowSet extends ChangeNotifier {
     notifyListeners();
     _log('handed over: heir was id=$heirId, the set is $_state');
     return () async {
-      await settle();
       _log('settled for the handover');
       await closing.sessions.retire();
       await registry.forget(closing.key);
