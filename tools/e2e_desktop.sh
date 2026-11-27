@@ -123,7 +123,10 @@ mw_phases() {
     else
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
-        --dart-define=JEANSH_E2E_MWINDOW=$phase || rc=1
+        --dart-define=JEANSH_E2E_MWINDOW=$phase || {
+          rc=1
+          echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+        }
     fi
   done
   rm -rf "$data"

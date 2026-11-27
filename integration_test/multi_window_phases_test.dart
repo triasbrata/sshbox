@@ -34,6 +34,11 @@ final _dir = Directory(
 );
 File _note(String name) => File('${_dir.path}/jeansh-e2e-mw-$name.txt');
 
+void _trace(String what) {
+  debugPrint('multi-window: $what');
+  _note('trace').writeAsStringSync('$what\n', mode: FileMode.append);
+}
+
 Future<void> _until(
   WidgetTester tester,
   FutureOr<bool> Function() done,
@@ -227,34 +232,51 @@ void main() {
 /// third that is closed again before the app goes.
 Future<void> _save(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
+  _trace('save step 1');
   await _xdo(['windowmove', ids[0], '20', '20']);
+  _trace('save step 2');
   await _xdo(['windowsize', ids[0], '600', '450']);
+  _trace('save step 3');
   await _until(tester, () => _views().isNotEmpty, 'A to be drawn');
+  _trace('save step 4');
   var a = _views().single;
+  _trace('save step 5');
   await _click(tester, ids[0], a, await _first(tester, _card, a, 'the card'));
+  _trace('save step 6');
   await _until(tester, () => _in(_tabClose, a).length == 1, 'A\'s shell tab');
+  _trace('save step 7');
 
   await _newWindow(tester, ids[0], 2);
+  _trace('save step 8');
   ids = await _windows();
   final views = _views();
+  _trace('save step 9');
   a = views[0];
   await _xdo(['windowmove', ids[1], '650', '40']);
+  _trace('save step 10');
   await _xdo(['windowsize', ids[1], '600', '450']);
+  _trace('save step 11');
   // A third window, closed again before the app goes.
   await _newWindow(tester, ids[1], 3);
+  _trace('save step 12');
   ids = await _windows();
   final c = _views()[2];
+  _trace('save step 13');
   await _click(
     tester,
     ids[2],
     c,
     await _first(tester, _close, c, 'C\'s Close'),
   );
+  _trace('save step 14');
   await _windowsAre(tester, 2);
+  _trace('save step 15');
   await tester.pump(const Duration(seconds: 3));
+  _trace('save step 16');
 
   ids = await _windows();
   final rects = [for (final id in ids) await _rect(id)];
+  _trace('save step 17');
   debugPrint('multi-window: saved frames $rects, tabs A 1, B 0');
   _note('save').writeAsStringSync(rects.join('\n'));
 }
@@ -343,11 +365,6 @@ Future<void> _buttons(WidgetTester tester) async {
 /// 6 and the negative of 4: the first window closed while the second stays,
 /// a new one by the key, and the last closing with no question and the
 /// process going.
-void _trace(String what) {
-  debugPrint('multi-window: $what');
-  _note('trace').writeAsStringSync('$what\n', mode: FileMode.append);
-}
-
 Future<void> _last(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
   _trace('step 1');
