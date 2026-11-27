@@ -5413,7 +5413,7 @@ class ClaudeChat extends ChangeNotifier {
             id: block['id'] as String? ?? '',
             name: block['name'] as String? ?? 'tool',
             input: switch (block['input']) {
-              final Map<String, dynamic> input => trimToolInput(input),
+              final Map<String, dynamic> input => input,
               _ => const {},
             },
           );
