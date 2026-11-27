@@ -64,6 +64,9 @@ class _Host {
 
   StreamController<Uint8List>? follow;
 
+  /// The transcript the host reads back: a size, then its lines.
+  String history = '0\n';
+
   Future<CommandChannel> open(String command) async {
     commands.add(command);
     if (command.contains('jeansh-agg')) {
@@ -112,7 +115,7 @@ class _Host {
         close: () {},
       );
     }
-    if (command.contains('.jsonl')) return _says('0\n');
+    if (command.contains('.jsonl')) return _says(history);
     return _says('');
   }
 
@@ -162,6 +165,12 @@ Map<String, Object?> _assistant(String text) => {
     ],
   },
 };
+
+/// A transcript as the host reads it back: its size, then its lines.
+String _history(List<Map<String, dynamic>> lines) {
+  final body = '${lines.map(jsonEncode).join('\n')}\n';
+  return '${utf8.encode(body).length}\n$body';
+}
 
 String _b64(String text) => base64Encode(utf8.encode(text));
 
@@ -271,6 +280,185 @@ void main() {
         expect(host.called('deliver'), isEmpty);
       },
     );
+  });
+
+  group('what the helper delivered, read from the transcript', () {
+    String? text(Object? content) => content is String ? content : null;
+
+    Map<String, dynamic> idle(String id, String said) => {
+      'type': 'user',
+      'isMeta': true,
+      'uuid': 'u-$id',
+      'timestamp': '2026-11-27T06:00:00.000Z',
+      'origin': {'kind': 'peer', 'from': 'jeansh-$id', 'verifiedPeerPid': 9},
+      'message': {
+        'role': 'user',
+        'content':
+            'Another Claude session sent a message:\n$said\n\nThis came from '
+            'another Claude session — not typed by your user.',
+      },
+    };
+
+    Map<String, dynamic> midTurn(String id, String said) => {
+      'type': 'attachment',
+      'uuid': 'a-$id',
+      'timestamp': '2026-11-27T06:00:01.000Z',
+      'attachment': {
+        'type': 'queued_command',
+        'prompt': said,
+        'origin': {'kind': 'peer', 'from': 'jeansh-$id'},
+        'isMeta': true,
+      },
+    };
+
+    test('both shapes are read, the wrapper taken off', () {
+      final a = peerMessageIn(idle('msg-aaaa', 'two\n\nlines'), text)!;
+      expect(a.id, 'msg-aaaa');
+      expect(a.text, 'two\n\nlines');
+      final b = peerMessageIn(midTurn('msg-bbbb', 'bare words'), text)!;
+      expect((b.id, b.text), ('msg-bbbb', 'bare words'));
+    });
+
+    test('anything else is not one', () {
+      expect(
+        peerMessageIn({
+          ...idle('x', 'y'),
+          'origin': {'kind': 'peer', 'from': 'someone'},
+        }, text),
+        isNull,
+      );
+      expect(
+        peerMessageIn({
+          ...idle('x', 'y'),
+          'origin': {'kind': 'human', 'from': 'jeansh-x'},
+        }, text),
+        isNull,
+      );
+      expect(
+        peerMessageIn({
+          ...idle('x', 'y'),
+          'origin': {'kind': 'peer', 'from': 'jeansh-'},
+        }, text),
+        isNull,
+      );
+      expect(peerMessageIn({...idle('x', 'y'), 'isMeta': false}, text), isNull);
+      expect(
+        peerMessageIn({
+          'type': 'user',
+          'isMeta': true,
+          'origin': {'kind': 'peer', 'from': 'jeansh-x'},
+          'message': {'content': <Object>[]},
+        }, text),
+        isNull,
+      );
+      expect(peerMessageIn({'type': 'assistant'}, text), isNull);
+      expect(
+        peerMessageIn({
+          'type': 'attachment',
+          'attachment': {'type': 'other'},
+        }, text),
+        isNull,
+      );
+    });
+
+    test('words in a wrapper this app does not know are kept whole', () {
+      expect(unwrapPeer('plain'), 'plain');
+      expect(
+        unwrapPeer('Another Claude session sent a message:\nno end'),
+        'Another Claude session sent a message:\nno end',
+      );
+    });
+
+    test('opened on a session, they are the user\'s messages', () async {
+      host.history = _history([
+        idle('msg-0001-aaaa', 'is the build green?'),
+        midTurn('msg-0002-bbbb', 'and the tests?'),
+        _assistant('Yes.'),
+      ]);
+      await chat.continueFrom(_agent);
+      final said = [
+        for (final e in chat.entries.whereType<ChatSaid>()) (e.mine, e.text),
+      ];
+      expect(said, [
+        (true, 'is the build green?'),
+        (true, 'and the tests?'),
+        (false, 'Yes.'),
+      ]);
+    });
+
+    test('a live line for a bubble this chat shows settles it, once', () async {
+      host.statuses
+        ..clear()
+        ..add({'ok': true, 'state': 'sent', 'sessionStatus': 'busy'});
+      await chat.send('hello');
+      await _until(() => mine().delivery == Delivery.queued);
+      final id = mine().outboxId!;
+      host.adds(midTurn(id, 'hello'));
+      await _until(() => mine().delivery == null);
+      expect(
+        chat.entries.whereType<ChatSaid>().where((e) => e.mine),
+        hasLength(1),
+      );
+      // The same line again changes nothing.
+      host.adds(midTurn(id, 'hello'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        chat.entries.whereType<ChatSaid>().where((e) => e.mine),
+        hasLength(1),
+      );
+      // An empty one draws nothing.
+      host.adds(midTurn('msg-9999-zzzz', '   '));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        chat.entries.whereType<ChatSaid>().where((e) => e.mine),
+        hasLength(1),
+      );
+    });
+
+    test('the outbox proves a message by its id and by nothing else', () {
+      final at = DateTime.utc(2026, 11, 27, 6);
+      OutboxEntry entry(String id, String text) =>
+          OutboxEntry(id: id, text: text, createdAt: at);
+      final turns = OutboxMatch.turnsIn(
+        [
+          jsonEncode(idle('second-id-0002', 'same words')),
+          jsonEncode(midTurn('other-id-0003', 'unrelated')),
+          jsonEncode({
+            'type': 'user',
+            'uuid': 'u-typed',
+            'timestamp': '2026-11-27T06:00:02.000Z',
+            'message': {'content': 'typed words'},
+          }),
+        ].join('\n'),
+        text,
+      );
+      expect(turns.map((t) => t.helperId), [
+        'second-id-0002',
+        'other-id-0003',
+        null,
+      ]);
+      final matched = OutboxMatch.matched(
+        [
+          entry('first-id-0001', 'same words'),
+          entry('second-id-0002', 'same words'),
+        ],
+        turns,
+        const [],
+      );
+      // Only the one the helper delivered; the one with the same words, which
+      // nobody delivered, is not proved by it.
+      expect(matched.keys, ['second-id-0002']);
+      expect(matched['second-id-0002'], 'u-second-id-0002');
+      // A turn already used proves nothing.
+      expect(
+        OutboxMatch.matched(
+          [entry('second-id-0002', 'same words')],
+          turns,
+          ['u-second-id-0002'],
+        ),
+        isEmpty,
+      );
+    });
   });
 
   group('a message that waits for its picture', () {

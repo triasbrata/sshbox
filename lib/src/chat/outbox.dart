@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
 import '../session/terminal_session.dart' show uploadName;
+import 'aggregator.dart' show peerMessageIn;
 
 /// A message the user sent in chat, kept on this device from the moment Send
 /// is tapped until the session's own transcript records it, so that a kill, a
@@ -521,7 +522,11 @@ class OutboxStore {
 
 /// One user turn read from a transcript.
 class TranscriptTurn {
-  const TranscriptTurn(this.key, this.text, this.at);
+  const TranscriptTurn(this.key, this.text, this.at, {this.helperId});
+
+  /// The id the host helper delivered this turn under, which is the outbox
+  /// id of the message: it proves that message and no other.
+  final String? helperId;
 
   /// What names the turn: its uuid, else its timestamp.
   final String key;
@@ -562,7 +567,14 @@ class OutboxMatch {
       }
       if (row is! Map || row['isSidechain'] == true) continue;
       String? text;
-      if (row['type'] == 'user' && row['isMeta'] != true) {
+      String? helper;
+      final peer = peerMessageIn(Map<String, dynamic>.from(row), userText);
+      if (peer != null) {
+        // Matched by its id alone: its words must not stand for a message of
+        // the same words that was typed.
+        helper = peer.id;
+        text = '\u0000jeansh:${peer.id}';
+      } else if (row['type'] == 'user' && row['isMeta'] != true) {
         text = userText((row['message'] as Map?)?['content']);
       } else if (row['type'] == 'attachment') {
         final attachment = row['attachment'];
@@ -579,7 +591,14 @@ class OutboxMatch {
       if (text == null || at == null) continue;
       final key =
           (row['uuid'] is String ? row['uuid'] : row['timestamp']) as String;
-      turns.add(TranscriptTurn(key, normal(text), at.toUtc()));
+      turns.add(
+        TranscriptTurn(
+          key,
+          helper == null ? normal(text) : text,
+          at.toUtc(),
+          helperId: helper,
+        ),
+      );
     }
     return turns;
   }
@@ -622,7 +641,19 @@ class OutboxMatch {
       take((turn) => OutboxClaim.digestOf(turn.text) == claim.digest, claim.at);
     }
     final result = <String, String>{};
+    // What the host helper delivered is proved by its id, before any words
+    // are compared.
     for (final entry in entries) {
+      for (final turn in turns) {
+        if (turn.helperId == entry.id && !used.contains(turn.key)) {
+          used.add(turn.key);
+          result[entry.id] = turn.key;
+          break;
+        }
+      }
+    }
+    for (final entry in entries) {
+      if (result.containsKey(entry.id)) continue;
       final want = normal(textOf == null ? entry.text : textOf(entry.text));
       final turn = take((turn) => turn.text == want, entry.createdAt);
       if (turn != null) result[entry.id] = turn;

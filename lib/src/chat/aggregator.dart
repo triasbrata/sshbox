@@ -147,3 +147,66 @@ class Aggregator {
 
   static String _quote(String value) => "'${value.replaceAll("'", r"'\''")}'";
 }
+
+/// A message the host helper delivered, as the session's transcript holds it:
+/// [id] is the helper's id for it (the outbox id), [text] what the user wrote.
+class PeerMessage {
+  const PeerMessage(this.id, this.text);
+
+  final String id;
+  final String text;
+}
+
+const _peerOpen = 'Another Claude session sent a message:\n';
+const _peerClose = '\n\nThis came from another Claude session';
+
+/// What the session wrote around a message from another session, taken off:
+/// its words are the user's. Claude Code 2.1.332 wraps them as
+/// `Another Claude session sent a message:\n<text>\n\nThis came from…`; a
+/// text it does not recognise is kept whole rather than lost.
+String unwrapPeer(String raw) {
+  if (!raw.startsWith(_peerOpen)) return raw;
+  final end = raw.lastIndexOf(_peerClose);
+  return end < _peerOpen.length ? raw : raw.substring(_peerOpen.length, end);
+}
+
+/// The message [event], a line of a transcript, carries from the helper, or
+/// null when it is not one. Two shapes, measured on 2.1.332: a user line
+/// marked `isMeta` whose `origin` names the sender, written when the session
+/// was idle, with the text wrapped; and, when it arrived mid-turn, an
+/// attachment of type `queued_command` holding the bare text with the
+/// `origin` inside it. The sender is `jeansh-<id>`, which the helper sets.
+///
+/// [userText] reads a user line's `content`.
+PeerMessage? peerMessageIn(
+  Map<String, dynamic> event,
+  String? Function(Object? content) userText,
+) {
+  String? from(Object? origin) =>
+      origin is Map && origin['kind'] == 'peer' && origin['from'] is String
+      ? origin['from'] as String
+      : null;
+  String? id(String? from) =>
+      from != null && from.startsWith('jeansh-') && from.length > 7
+      ? from.substring(7)
+      : null;
+  final attachment = event['attachment'];
+  if (event['type'] == 'attachment' &&
+      attachment is Map &&
+      attachment['type'] == 'queued_command' &&
+      attachment['prompt'] is String) {
+    final sent = id(from(attachment['origin']));
+    return sent == null
+        ? null
+        : PeerMessage(sent, attachment['prompt'] as String);
+  }
+  if (event['type'] == 'user' && event['isMeta'] == true) {
+    final sent = id(from(event['origin']));
+    final message = event['message'];
+    final raw = message is Map ? userText(message['content']) : null;
+    return sent == null || raw == null
+        ? null
+        : PeerMessage(sent, unwrapPeer(raw));
+  }
+  return null;
+}

@@ -4028,7 +4028,8 @@ class ClaudeChat extends ChangeNotifier {
     var failures = 0;
     while (!_disposed) {
       await Future<void>.delayed(aggregatorPoll);
-      if (_disposed) return;
+      // The transcript showed it already: [_onPeerMessage] settled it.
+      if (_disposed || !_viaHelper.containsKey(id)) return;
       final AggregatorReply reply;
       try {
         reply = await aggregator.status(id);
@@ -5242,9 +5243,13 @@ class ClaudeChat extends ChangeNotifier {
       return;
     }
     if (event is! Map<String, dynamic>) return;
+    // What the host helper delivered is the user's own message, however the
+    // session wrote it down.
+    final peer = peerMessageIn(event, _userText);
+    if (peer != null) return _onPeerMessage(peer, event);
+    if (event['isMeta'] == true) return;
     // A sub-agent's own exchange is left out of the session's view, and is
     // all there is in a sub-agent's.
-    if (event['isMeta'] == true) return;
     if (event['isSidechain'] == true && _sub == null) return;
     final message = event['message'];
     switch (event['type']) {
@@ -5297,6 +5302,33 @@ class ClaudeChat extends ChangeNotifier {
               : ChatSaid(text, mine: true, pictures: pictures),
         );
     }
+  }
+
+  /// A message of the user's that the host helper delivered, read from the
+  /// transcript: the bubble this chat already shows for it is what was sent,
+  /// so that is let go of; one it does not show, written before this chat
+  /// opened or from another device, is drawn as the user's message.
+  void _onPeerMessage(PeerMessage peer, Map<String, dynamic> event) {
+    final shown = _entries
+        .whereType<ChatSaid>()
+        .where((said) => said.mine && said.outboxId == peer.id)
+        .firstOrNull;
+    final turn = event['uuid'] is String ? event['uuid'] as String : null;
+    final known = shown ?? _viaHelper[peer.id];
+    if (known != null) {
+      _viaHelper.remove(peer.id);
+      if (known.delivery != null || known.why != null) {
+        known
+          ..delivery = null
+          ..why = null;
+        _helperAwaitsReply = true;
+        unawaited(_outboxDelivered(known.outboxKey, known.outboxId, turn));
+      }
+      return;
+    }
+    if (peer.text.trim().isEmpty) return;
+    _startTurn(event['timestamp']);
+    _entries.add(ChatSaid(peer.text.trim(), mine: true));
   }
 
   /// A message that was sent while the session was mid-turn, as it is

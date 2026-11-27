@@ -161,6 +161,29 @@ void main() {
     expect((await run(['status', 'msg-0002-bbbb']))['state'], 'delivered');
   });
 
+  test(
+    'a message that reached the session mid-turn is delivered too',
+    () async {
+      session(pid: ioPid);
+      await run(
+        ['deliver', 'msg-0002-mid1', sid, '--text-b64', b64('x')],
+        more: {'JEANSH_AGG_FOREGROUND': '1'},
+      );
+      // Mid-turn the session writes an attachment, with the origin inside it.
+      File('$cfg/projects/p/$sid.jsonl').writeAsStringSync(
+        '${jsonEncode({
+          'type': 'attachment',
+          'attachment': {
+            'type': 'queued_command',
+            'prompt': 'x',
+            'origin': {'kind': 'peer', 'from': 'jeansh-msg-0002-mid1'},
+          },
+        })}\n',
+      );
+      expect((await run(['status', 'msg-0002-mid1']))['state'], 'delivered');
+    },
+  );
+
   test('the same id again writes nothing more', () async {
     session(pid: ioPid);
     final args = ['deliver', 'msg-0003-cccc', sid, '--text-b64', b64('once')];

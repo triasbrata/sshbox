@@ -36,7 +36,7 @@ const aggregatorMarker = '# jeansh-agg: installed by Jeansh';
 
 /// Bumped with every change to [aggregatorScript]: the app replaces an
 /// installed copy that says less.
-const aggregatorVersion = 1;
+const aggregatorVersion = 2;
 
 /// Where, under the home folder, the script is installed.
 const aggregatorDir = '.local/share/jeansh';
@@ -59,7 +59,7 @@ import subprocess
 import sys
 import time
 
-VERSION = 1
+VERSION = 2
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 JOB_RE = re.compile(r"^[0-9a-f]{8}$")
@@ -287,7 +287,12 @@ def delivered(rec):
             d = json.loads(l)
         except ValueError:
             continue
-        o = d.get("origin") if isinstance(d, dict) else None
+        if not isinstance(d, dict):
+            continue
+        # A message that reached a session mid-turn is not a user line but an
+        # attachment, and carries its origin inside it.
+        a = d.get("attachment")
+        o = d.get("origin") or (a.get("origin") if isinstance(a, dict) else None)
         if isinstance(o, dict) and o.get("from") == needle:
             return True
     return False
