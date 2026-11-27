@@ -156,6 +156,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
   /// Closing a window that is not the last: asked when a tab of it holds a
   /// live session, whose shell would end with it.
   Future<bool> _mayCloseWindow(AppWindow window) async {
+    if (window.id >= 0) return true;
     final live = window.sessions.liveCount;
     final context = window.navigator.currentContext;
     if (live == 0 || context == null || !context.mounted) return true;
