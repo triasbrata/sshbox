@@ -166,6 +166,8 @@ static gchar* geometry_path() {
 static gboolean save_geometry(gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   self->save_source = 0;
+  // A parked first window is a pixel off to the side, not where it was.
+  if (self->main_hidden) return G_SOURCE_REMOVE;
   GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(self->window));
   if (gdk_window == nullptr || self->width <= 0) return G_SOURCE_REMOVE;
   GdkWindowState state = gdk_window_get_state(gdk_window);
@@ -201,6 +203,7 @@ static void schedule_save(MyApplication* self) {
 static gboolean commit_geometry(gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   self->commit_source = 0;
+  if (self->main_hidden) return G_SOURCE_REMOVE;
   GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(self->window));
   if (gdk_window == nullptr) return G_SOURCE_REMOVE;
   GdkWindowState state = gdk_window_get_state(gdk_window);
@@ -654,6 +657,46 @@ static ExtraWindow* create_extra(MyApplication* self, FlValue* frame) {
   return extra;
 }
 
+// The first window, when the app closes it while others stay open. Not
+// hidden: its view is the engine's implicit view, and the engine's GL context
+// and frame production hang on its window staying realised and mapped — with
+// it hidden no frame ever reached Dart again, in the windows that were left.
+// So it is parked: one pixel, fully transparent, off to the side, out of the
+// taskbar and the pager, and taking neither clicks nor focus.
+static void park_main(MyApplication* self) {
+  GtkWindow* window = self->window;
+  GtkWidget* widget = GTK_WIDGET(window);
+  gtk_window_set_title(window, "Jeansh (parked)");
+  gtk_window_set_skip_taskbar_hint(window, TRUE);
+  gtk_window_set_skip_pager_hint(window, TRUE);
+  gtk_window_set_accept_focus(window, FALSE);
+  gtk_widget_set_opacity(widget, 0.0);
+  // Clicks go through it.
+  cairo_region_t* none = cairo_region_create();
+  gtk_widget_input_shape_combine_region(widget, none);
+  cairo_region_destroy(none);
+  if (gtk_window_is_maximized(window)) gtk_window_unmaximize(window);
+  gtk_window_resize(window, 1, 1);
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_DISPLAY(gtk_widget_get_display(widget))) {
+    gtk_window_move(window, -10000, -10000);
+  }
+#endif
+}
+
+// And back to a window, at [width] by [height].
+static void unpark_main(MyApplication* self, gint width, gint height) {
+  GtkWindow* window = self->window;
+  GtkWidget* widget = GTK_WIDGET(window);
+  gtk_widget_input_shape_combine_region(widget, nullptr);
+  gtk_widget_set_opacity(widget, 1.0);
+  gtk_window_set_skip_taskbar_hint(window, FALSE);
+  gtk_window_set_skip_pager_hint(window, FALSE);
+  gtk_window_set_accept_focus(window, TRUE);
+  gtk_window_set_title(window, "Jeansh");
+  gtk_window_resize(window, width, height);
+}
+
 static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
                             gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
@@ -672,6 +715,9 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
       id = 0;
       gint x, y, width, height;
       gboolean maximized;
+      // The place the first window had before it was parked, or the one the
+      // app sends.
+      unpark_main(self, MAX(self->width, 200), MAX(self->height, 150));
       if (frame_of(args, &x, &y, &width, &height, &maximized)) {
         gtk_window_resize(self->window, width, height);
 #ifdef GDK_WINDOWING_X11
@@ -682,7 +728,12 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
 #endif
         if (maximized) gtk_window_maximize(self->window);
       }
-      gtk_widget_show(GTK_WIDGET(self->window));
+#ifdef GDK_WINDOWING_X11
+      if (!frame_of(args, &x, &y, &width, &height, &maximized) &&
+          GDK_IS_X11_DISPLAY(gtk_widget_get_display(GTK_WIDGET(self->window)))) {
+        gtk_window_move(self->window, self->x, self->y);
+      }
+#endif
       gtk_window_present(self->window);
       announce_later(self, 0, self->main_view);
     } else {
@@ -704,10 +755,13 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
       } else {
         flush_geometry(self);
         self->main_hidden = TRUE;
-        gtk_widget_hide(GTK_WIDGET(self->window));
+        park_main(self);
       }
     } else if (extra != nullptr) {
-      if (self->main_hidden && g_list_length(self->extras) == 1) {
+      // The windows a user can see: the others, and the first unless it is
+      // parked. Counted once, here, and the window going is one of them.
+      guint visible = g_list_length(self->extras) + (self->main_hidden ? 0 : 1);
+      if (visible == 1) {
         // The last window left is this one: the app quits.
         g_application_quit(G_APPLICATION(self));
       } else {

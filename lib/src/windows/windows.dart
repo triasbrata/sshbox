@@ -338,6 +338,7 @@ class WindowSet extends ChangeNotifier {
     required this.restore,
     bool multi = false,
     this.registry = const WindowRegistry(),
+    this.settle = _noSettle,
   }) : // A named parameter cannot be private, and the field is.
        // ignore: prefer_initializing_formals
        _multi = multi {
@@ -356,6 +357,14 @@ class WindowSet extends ChangeNotifier {
   final Future<void> Function(AppWindow window) restore;
 
   final WindowRegistry registry;
+
+  /// Completes once a window removed from [windows] has left the tree, so its
+  /// view is gone from the engine's side before the runner takes the native
+  /// window down: a view still being drawn when it is removed was seen to
+  /// take the whole app with it, now and then.
+  final Future<void> Function() settle;
+
+  static Future<void> _noSettle() async {}
 
   /// Whether the runner can open more than one window, as the app was told
   /// when it began, and as [start] asks again.
@@ -480,6 +489,7 @@ class WindowSet extends ChangeNotifier {
       _windows.remove(window.id);
       if (_focused == window.id) _focused = _windows.keys.first;
       notifyListeners();
+      await settle();
       await window.sessions.retire();
       await registry.forget(window.key);
       await _save();
