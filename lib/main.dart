@@ -11,6 +11,8 @@ import 'src/ui/settings_page.dart';
 import 'src/ui/text_size.dart';
 import 'src/ui/title_bar.dart';
 import 'src/ui/tui.dart';
+import 'src/platform.dart';
+import 'src/windows/windows.dart';
 import 'src/telemetry/app_log.dart';
 
 Future<void> main() async {
@@ -50,5 +52,14 @@ Future<void> main() async {
   await telemetryOn.load();
   // Last run's log becomes the previous one a bug report can carry.
   await appLog.load();
-  await runWithCrashReporting(() => runApp(const SshboxApp()));
+  // Whether the runner can open more than one window decides what the app is
+  // the root of: one view, which `runApp` gives it, or one a window, which
+  // `runWidget` leaves to it. See [WindowSet].
+  final windows = isDesktop ? ChannelWindowBackend() : null;
+  final multi = windows != null && await windows.supported;
+  await runWithCrashReporting(
+    () => multi
+        ? runWidget(SshboxApp(windows: windows, multiWindow: true))
+        : runApp(const SshboxApp(windows: SingleWindow())),
+  );
 }
