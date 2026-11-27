@@ -464,6 +464,11 @@ Future<void> _last(WidgetTester tester) async {
   ]);
   _trace('a frame after the first window closed: $frame');
   _trace(
+    'views: ${[
+      for (final v in PlatformDispatcher.instance.views) '${v.viewId} ${v.physicalSize}',
+    ]}, first View keys: ${_views()}',
+  );
+  _trace(
     'framesEnabled ${WidgetsBinding.instance.framesEnabled}, lifecycle '
     '${WidgetsBinding.instance.lifecycleState}',
   );
@@ -508,6 +513,18 @@ Future<void> _last(WidgetTester tester) async {
       up = dead.existsSync();
     }
     _trace('with no frames, the first window answered real input: $up');
+    // And does the window repaint? Its pixels before a visible command and
+    // after, compared.
+    final shot1 = await _grabWindow(now, 'paint1');
+    await _xdo(['type', '--delay', '30', 'echo JEANSH_PAINT_CHECK']);
+    await _xdo(['key', 'Return']);
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final shot2 = await _grabWindow(now, 'paint2');
+    _trace(
+      'the window\'s pixels changed after a command was typed: '
+      '${shot1 != null && shot2 != null && !_same(shot1, shot2)} '
+      '(${shot1?.length} and ${shot2?.length} bytes)',
+    );
     fail('no frame came after the first window closed (input answered: $up)');
   }
   await _until(tester, () => _in(_tabClose, 0).length == 1, 'B\'s tab in window 0');
@@ -629,4 +646,30 @@ bool _drew(TerminalView view) {
     if (lines[i].getText().trim().isNotEmpty) return true;
   }
   return false;
+}
+
+/// The window's pixels, [rect] being "x y w h", as the PNG ffmpeg grabs from
+/// the display; null when it cannot.
+Future<List<int>?> _grabWindow(String rect, String name) async {
+  final r = rect.split(' ');
+  final file = _note(name);
+  final done = await Process.run('ffmpeg', [
+    '-loglevel', 'error', '-y', '-f', 'x11grab', '-draw_mouse', '0', //
+    '-video_size', '${r[2]}x${r[3]}', //
+    '-i', '${Platform.environment['DISPLAY']}+${r[0]},${r[1]}', //
+    '-frames:v', '1', file.path,
+  ]);
+  if (done.exitCode != 0 || !file.existsSync()) {
+    debugPrint('multi-window: grab failed: ${done.stderr}');
+    return null;
+  }
+  return file.readAsBytesSync();
+}
+
+bool _same(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
