@@ -5959,7 +5959,7 @@ class ClaudeChat extends ChangeNotifier {
       pieces.write(
         'ready; dd bs=1 count=$length 2>/dev/null | '
         r'"$t" load-buffer -b "$b" - && '
-        r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+        r'"$t" paste-buffer $S -r -d -b "$b" -t "$w" </dev/null || '
         r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
         'no paste; }; sleep 0.4; ',
       );
@@ -5968,6 +5968,7 @@ class ClaudeChat extends ChangeNotifier {
         '${_shellQuote('${TmuxSession.findTmux}'
             'p=$pid; s=${_shellQuote(sessionId)}; '
             r'no() { echo "sshbox:no $1"; exit 0; }; '
+            '$_pasteRaw'
             r'y=$(ps -o tty= -p $p </dev/null 2>/dev/null | tr -d " "); '
             r'case $y in ""|"?"|"??") no terminal;; esac; '
             r'w=$("$t" list-panes -a -F "#{pane_tty} #{pane_id}" </dev/null '
@@ -6553,7 +6554,7 @@ class ClaudeChat extends ChangeNotifier {
       pieces.write(
         'dd bs=1 count=${part.length} 2>/dev/null | '
         r'"$t" load-buffer -b "$b" - && '
-        r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+        r'"$t" paste-buffer $S -r -d -b "$b" -t "$w" </dev/null || '
         r'{ "$t" delete-buffer -b "$b" </dev/null 2>/dev/null; '
         'no paste; }; ',
       );
@@ -6593,13 +6594,14 @@ class ClaudeChat extends ChangeNotifier {
               '$chip$pieces'
               'echo sshbox:pasted; sleep 1; ready; '
               r'printf "\r" | "$t" load-buffer -b "$b" - && '
-              r'"$t" paste-buffer -r -d -b "$b" -t "$w" </dev/null || '
+              r'"$t" paste-buffer $S -r -d -b "$b" -t "$w" </dev/null || '
               'no enter; '
               r'echo "sshbox:typed $w"';
     return 'sh -c '
         '${_shellQuote('${TmuxSession.findTmux}'
             'p=$pid; s=${_shellQuote(sessionId)}; '
             r'no() { echo "sshbox:no $1"; exit 0; }; '
+            '$_pasteRaw'
             r'y=$(ps -o tty= -p $p </dev/null 2>/dev/null | tr -d " "); '
             r'case $y in ""|"?"|"??") no terminal;; esac; '
             r'w=$("$t" list-panes -a -F "#{pane_tty} #{pane_id}" </dev/null '
@@ -6608,6 +6610,20 @@ class ClaudeChat extends ChangeNotifier {
             r'[ -n "$w" ] || no pane; '
             '$type')}';
   }
+
+  /// Sets `$S` to `-S` where this tmux has it, for [paneCommand] and
+  /// [askPaneCommand] to paste with. From tmux 3.7 `paste-buffer` shows every
+  /// control character it pastes as text, an ESC as the two characters `^[`,
+  /// unless told `-S`; so the `ESC[200~` that makes a picture's path a paste,
+  /// and the `ESC[B` of an answer's arrow key, reached a pane as words. An
+  /// older tmux does not know `-S` and would refuse it, so it is asked for by
+  /// what `list-commands` says the command takes. Measured on 3.4 (neither)
+  /// and 3.7c (both).
+  @visibleForTesting
+  static const pasteRaw = _pasteRaw;
+  static const _pasteRaw =
+      r'S=; "$t" list-commands paste-buffer </dev/null 2>/dev/null | '
+      r"grep -q '\[-[a-zA-Z]*S' && S=-S; ";
 
   /// Finds [sessionId]'s transcript into `$f`, or says there is none and
   /// stops — by its id, not by the directory the CLI files it under. With
