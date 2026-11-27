@@ -13,3 +13,9 @@ does not get the plugin at all.
 
 To move to a newer version, copy it here the same way and take `android` out
 of its pubspec again.
+
+Linux and Windows: the plugin now keeps its channel for every window, each
+window's drop target says its view before each event, and
+`desktop_drop_plugin_attach_view` (Linux) and `DesktopDropAttachWindow` /
+`DesktopDropDetachWindow` (Windows) put one on the view of a window the app
+opens after the first, so a file can be dropped on any window.

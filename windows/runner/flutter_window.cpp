@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include <desktop_drop/desktop_drop_plugin.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 // Declared in the engine's flutter_windows_internal.h, not in the public
@@ -167,6 +169,8 @@ bool FlutterWindow::OnCreate() {
     view_ = FlutterDesktopViewGetHWND(
         FlutterDesktopViewControllerGetView(controller_));
     SetChildContent(view_);
+    // A file can be dropped on it, as on the first window's view.
+    DesktopDropAttachWindow(view_, view_id_);
     if (g_view_proc == nullptr) {
       g_view_proc = reinterpret_cast<WNDPROC>(
           GetWindowLongPtr(view_, GWLP_WNDPROC));
@@ -229,6 +233,7 @@ void FlutterWindow::OnDestroy() {
   if (engine_ != nullptr) {
     // A window after the first: its view goes, and the engine stays.
     if (controller_ != nullptr) {
+      DesktopDropDetachWindow(view_);
       FlutterDesktopViewControllerDestroy(controller_);
       controller_ = nullptr;
       auto& others = g_windows.others;

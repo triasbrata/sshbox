@@ -21,6 +21,11 @@ FLUTTER_PLUGIN_EXPORT GType desktop_drop_plugin_get_type();
 FLUTTER_PLUGIN_EXPORT void desktop_drop_plugin_register_with_registrar(
     FlPluginRegistrar* registrar);
 
+// Makes a window's view a place files can be dropped. The first window's is
+// done on registering; the app calls this for the views of the windows it
+// opens after it, which share the one engine.
+FLUTTER_PLUGIN_EXPORT void desktop_drop_plugin_attach_view(FlView* view);
+
 G_END_DECLS
 
 #endif  // FLUTTER_PLUGIN_DESKTOP_DROP_PLUGIN_H_

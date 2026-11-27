@@ -8,6 +8,8 @@
 #include <gdk/gdkx.h>
 #endif
 
+#include <desktop_drop/desktop_drop_plugin.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 // A window after the first: its own GtkWindow with its own view on the one
@@ -636,6 +638,8 @@ static ExtraWindow* create_extra(MyApplication* self, FlValue* frame) {
   GdkRGBA background_color;
   gdk_rgba_parse(&background_color, "#000000");
   fl_view_set_background_color(extra->view, &background_color);
+  // A file can be dropped on it, as on the first window's view.
+  desktop_drop_plugin_attach_view(extra->view);
   gtk_widget_show(GTK_WIDGET(extra->view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(extra->view));
 
