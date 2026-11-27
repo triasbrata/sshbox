@@ -209,6 +209,13 @@ mw_phases_windows() {
     echo "experiment: windows phase: $phase"
     # No window of a phase before is left on the screen to be counted.
     taskkill //F //IM Jeansh.exe >/dev/null 2>&1
+    # The app's saved windows and tabs live in the user's own profile, whatever
+    # APPDATA says: a phase that is not the second half of one starts without
+    # them.
+    case "$phase" in
+      restore) ;;
+      *) rm -rf "$APPDATA/cloud.brata" ;;
+    esac
     case "$phase" in
       t[1-4] | last) home=$(mktemp -d) ;;
       *) home=$data ;;
