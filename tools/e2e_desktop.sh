@@ -109,7 +109,7 @@ mw_phases() {
   note="$data/jeansh-e2e-mw-last.txt"
   for phase in save restore buttons last; do
     if [ "$phase" = last ]; then
-      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data flutter test \
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
         --dart-define=JEANSH_E2E_MWINDOW=$phase || true
       if grep -q ready "$note" 2>/dev/null && grep -q ended "$note" &&
