@@ -338,7 +338,9 @@ class WindowSet extends ChangeNotifier {
     required this.restore,
     bool multi = false,
     this.registry = const WindowRegistry(),
-  }) : _multi = multi {
+  }) : // A named parameter cannot be private, and the field is.
+       // ignore: prefer_initializing_formals
+       _multi = multi {
     first
       ..id = 0
       ..viewId = 0;
