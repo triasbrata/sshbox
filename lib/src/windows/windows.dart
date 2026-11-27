@@ -138,6 +138,10 @@ abstract interface class WindowBackend {
   Future<void> close(int id);
 
   Future<void> activate(int id);
+
+  /// Moves and sizes window [id] to [frame]. A runner that cannot leaves the
+  /// window where it is.
+  Future<void> place(int id, WindowFrame frame);
 }
 
 /// No second window: mobile, a runner without the native half, and tests.
@@ -161,6 +165,9 @@ class SingleWindow implements WindowBackend {
 
   @override
   Future<void> activate(int id) async {}
+
+  @override
+  Future<void> place(int id, WindowFrame frame) async {}
 }
 
 /// The runner's half, over the `sshbox/windows` channel.
@@ -223,6 +230,17 @@ class ChannelWindowBackend implements WindowBackend {
 
   @override
   Future<void> activate(int id) => _channel.invokeMethod<void>('activate', id);
+
+  @override
+  Future<void> place(int id, WindowFrame frame) async {
+    try {
+      await _channel.invokeMethod<void>('place', {'id': id, ...frame.toJson()});
+    } on MissingPluginException {
+      // A runner without it leaves the window where it is.
+    } on PlatformException {
+      // The same.
+    }
+  }
 
   Future<Object?> _heard(MethodCall call) async {
     final arguments = call.arguments;
@@ -358,7 +376,10 @@ class WindowSet extends ChangeNotifier {
     required this.restore,
     bool multi = false,
     this.registry = const WindowRegistry(),
-  }) : _multi = multi {
+    this.settle = _noSettle,
+  }) : // A named parameter cannot be private, and the field is.
+       // ignore: prefer_initializing_formals
+       _multi = multi {
     first
       ..id = 0
       ..viewId = 0;
@@ -374,6 +395,14 @@ class WindowSet extends ChangeNotifier {
   final Future<void> Function(AppWindow window) restore;
 
   final WindowRegistry registry;
+
+  /// Completes once a window removed from [windows] has left the tree, so its
+  /// view is gone from the engine's side before the runner takes the native
+  /// window down: a view still being drawn when it is removed was seen to
+  /// take the whole app with it, now and then.
+  final Future<void> Function() settle;
+
+  static Future<void> _noSettle() async {}
 
   /// Whether the runner can open more than one window, as the app was told
   /// when it began, and as [start] asks again.
@@ -497,9 +526,14 @@ class WindowSet extends ChangeNotifier {
       }
       final ask = mayClose;
       if (ask != null && !await ask(window)) return;
+      if (window.id == 0) {
+        await _handOver(window);
+        return;
+      }
       _windows.remove(window.id);
       if (_focused == window.id) _focused = _windows.keys.first;
       notifyListeners();
+      await settle();
       await window.sessions.retire();
       await registry.forget(window.key);
       await _save();
@@ -507,6 +541,43 @@ class WindowSet extends ChangeNotifier {
     } finally {
       _closing = false;
     }
+  }
+
+  /// The first window closed while others are open. Its view is the engine's
+  /// first, which cannot go while the app runs, so what the user sees go is
+  /// done the other way round: another window's tabs, and its place, move into
+  /// the first window, and that other window's own view, which can go, goes.
+  /// The window the user closed is gone and the other stayed, with the same
+  /// tabs where they were.
+  Future<void> _handOver(AppWindow closing) async {
+    final heir = _windows.values.firstWhere((window) => window.id != 0);
+    final heirId = heir.id;
+    final place = heir.frame;
+    // The first window takes the heir's place and size, before its view shows
+    // the heir's tabs.
+    if (place != null) await backend.place(0, place);
+    final rest = [
+      for (final window in _windows.values)
+        if (window.id != 0 && window.id != heirId) window,
+    ];
+    _windows.clear();
+    // In the first window's view, whichever it is: 0 where the runner has an
+    // implicit view, and a Mac's first window has another.
+    heir
+      ..id = 0
+      ..viewId = closing.viewId;
+    // First, so the first window saved is the first window the runner has.
+    _windows[0] = heir;
+    for (final window in rest) {
+      _windows[window.id] = window;
+    }
+    _focused = 0;
+    notifyListeners();
+    await settle();
+    await closing.sessions.retire();
+    await registry.forget(closing.key);
+    await _save();
+    await backend.close(heirId);
   }
 
   /// A window that went without being asked: nothing is kept of it.

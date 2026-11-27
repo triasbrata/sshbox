@@ -396,6 +396,17 @@ final class Windows {
         entry.window.close()
       }
       result(nil)
+    case "place":
+      // The first window takes the place of another that has closed.
+      if let args = call.arguments as? [String: Any], let id = args["id"] as? Int,
+        let entry = entries[id], let rect = Self.rect(of: args)
+      {
+        entry.window.setFrame(Self.fitted(rect), display: true)
+        if args["maximized"] as? Bool == true && !entry.window.isZoomed {
+          entry.window.zoom(nil)
+        }
+      }
+      result(nil)
     case "activate":
       if let id = call.arguments as? Int, let entry = entries[id] {
         if entry.window.isMiniaturized { entry.window.deminiaturize(nil) }
