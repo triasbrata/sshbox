@@ -87,6 +87,7 @@ class SshboxApp extends StatefulWidget {
 }
 
 class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
+  SessionManager? _sharedSessions;
   /// Files another app handed us, waiting for a session to send them to.
   static const _shareChannel = MethodChannel('sshbox/share');
 
@@ -121,7 +122,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
   /// A window with its own tabs. The tab managers are one a window; the
   /// callbacks they take say things in the window the user is in.
   AppWindow _makeWindow(String key, WindowFrame? frame) {
-    final sessions = SessionManager(
+    final sessions = _sharedSessions ??= SessionManager(
       notifyKeys: _notifyKeys,
       onNotify: _notifications.showForHost,
       onOpenRefused: _openRefused,
