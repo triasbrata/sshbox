@@ -917,7 +917,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
               data: MediaQuery.of(context).copyWith(
                 textScaler: UiTextScaler(
                   MediaQuery.textScalerOf(context),
-                  uiTextSize.value,
+                  window.id != 0 ? 3.0 : uiTextSize.value,
                 ),
               ),
               child: AnnotatedRegion<SystemUiOverlayStyle>(
