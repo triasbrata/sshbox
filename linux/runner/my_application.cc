@@ -244,8 +244,12 @@ static void flush_geometry(MyApplication* self) {
 static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
                           gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
+  g_message("jeansh: window 0 delete-event, closing=%d", self->closing);
   // The app decides whether the window goes, and says so with `close`.
-  if (!self->closing && ask_close(self, 0)) return TRUE;
+  if (!self->closing && ask_close(self, 0)) {
+    g_message("jeansh: window 0 delete-event held for the app");
+    return TRUE;
+  }
   flush_geometry(self);
   return FALSE;
 }
@@ -680,6 +684,67 @@ static gboolean experiment(const gchar* name) {
   return on != nullptr && strstr(on, name) != nullptr;
 }
 
+// EXPERIMENT logging: what happens to window 0, its FlView and the widgets
+// under it. One line a signal, to stderr, and the whole tree every 2 s.
+static void log_signal(GtkWidget* widget, gpointer label) {
+  g_message("jeansh: %s signal %s mapped=%d realized=%d visible=%d",
+            static_cast<const gchar*>(label), G_OBJECT_TYPE_NAME(widget),
+            gtk_widget_get_mapped(widget), gtk_widget_get_realized(widget),
+            gtk_widget_get_visible(widget));
+}
+
+static gboolean log_event(GtkWidget* widget, GdkEvent* event, gpointer label) {
+  g_message("jeansh: %s event %d on %s", static_cast<const gchar*>(label),
+            event->type, G_OBJECT_TYPE_NAME(widget));
+  return FALSE;
+}
+
+static void watch_tree(GtkWidget* widget, gpointer label);
+
+static void watch_child(GtkWidget* child, gpointer label) {
+  watch_tree(child, label);
+}
+
+static void watch_tree(GtkWidget* widget, gpointer label) {
+  static const gchar* signals[] = {"map",       "unmap", "realize",
+                                   "unrealize", "show",  "hide",
+                                   "destroy"};
+  for (const gchar* name : signals) {
+    gchar* tagged = g_strdup_printf("%s/%s", static_cast<const gchar*>(label), name);
+    g_signal_connect(widget, name, G_CALLBACK(log_signal), tagged);
+  }
+  g_signal_connect(widget, "delete-event", G_CALLBACK(log_event),
+                   const_cast<gchar*>("delete-event"));
+  if (GTK_IS_CONTAINER(widget)) {
+    gtk_container_forall(GTK_CONTAINER(widget), watch_child, label);
+  }
+}
+
+static void dump_child(GtkWidget* child, gpointer depth);
+
+static void dump_tree(GtkWidget* widget, gint depth) {
+  GtkAllocation a;
+  gtk_widget_get_allocation(widget, &a);
+  g_message("jeansh: tree %*s%s mapped=%d realized=%d visible=%d alloc=%dx%d",
+            depth * 2, "", G_OBJECT_TYPE_NAME(widget),
+            gtk_widget_get_mapped(widget), gtk_widget_get_realized(widget),
+            gtk_widget_get_visible(widget), a.width, a.height);
+  if (GTK_IS_CONTAINER(widget)) {
+    gtk_container_forall(GTK_CONTAINER(widget), dump_child,
+                         GINT_TO_POINTER(depth + 1));
+  }
+}
+
+static void dump_child(GtkWidget* child, gpointer depth) {
+  dump_tree(child, GPOINTER_TO_INT(depth));
+}
+
+static gboolean dump_main(gpointer window) {
+  g_message("jeansh: ---- window 0 tree");
+  dump_tree(GTK_WIDGET(window), 0);
+  return G_SOURCE_CONTINUE;
+}
+
 static gboolean destroy_later(gpointer window) {
   gtk_widget_destroy(GTK_WIDGET(window));
   return G_SOURCE_REMOVE;
@@ -690,6 +755,7 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
   MyApplication* self = MY_APPLICATION(user_data);
   const gchar* method = fl_method_call_get_name(call);
   FlValue* args = fl_method_call_get_args(call);
+  g_message("jeansh: sshbox/windows %s", method);
 
   if (strcmp(method, "supported") == 0) {
     self->multi = TRUE;
@@ -822,6 +888,10 @@ static void my_application_activate(GApplication* application) {
       remember_press, nullptr, nullptr);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
+
+  // EXPERIMENT logging.
+  watch_tree(GTK_WIDGET(window), const_cast<gchar*>("w0"));
+  g_timeout_add(2000, dump_main, window);
 }
 
 // Implements GApplication::local_command_line.
