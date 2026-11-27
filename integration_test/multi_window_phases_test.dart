@@ -27,6 +27,7 @@ import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
 import 'package:xterm2/xterm.dart' show TerminalKey, TerminalView;
 import 'package:sshbox/src/ui/termul/tui_button.dart' show TuiButton;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
+import 'package:sshbox/src/ui/text_size.dart' show uiTextSize;
 
 const _phase = String.fromEnvironment('JEANSH_E2E_MWINDOW');
 
@@ -220,6 +221,14 @@ void main() {
     (tester) async {
       await _launch(tester);
       switch (_phase) {
+        case 't1':
+          await _t1(tester);
+        case 't2':
+          await _t2(tester);
+        case 't3':
+          await _t3(tester);
+        case 't4':
+          await _t4(tester);
         case 'save':
           await _save(tester);
         case 'restore':
@@ -755,3 +764,200 @@ Future<bool> _pumps(WidgetTester tester) => Future.any([
   tester.pump(const Duration(milliseconds: 50)).then((_) => true),
   Future<bool>.delayed(const Duration(seconds: 10), () => false),
 ]);
+
+// ---- Phases 1 to 4: the first checks, a process each. app.main() is not
+// run twice in one process on a runner that opens windows, so these were not
+// tests of the smoke file, where the second one met an app already started.
+
+int _caretN(TerminalView view) {
+  final lines = view.terminal.buffer.lines;
+  var count = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].getText().trim() == '^N') count++;
+  }
+  return count;
+}
+
+Future<void> _openSecond(WidgetTester tester) async {
+  final ids = await _windowsAre(tester, 1);
+  await _newWindow(tester, ids[0], 2);
+}
+
+/// 1. Ctrl+Shift+N opens a second window; plain Ctrl+N is the shell's key and
+/// opens none, the terminal hearing it as ^N.
+Future<void> _t1(WidgetTester tester) async {
+  var ids = await _windowsAre(tester, 1);
+  final a0 = _views().single;
+  await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'the card'));
+  await _until(tester, () => _in(_tabClose, a0).length == 1, 'a shell tab');
+  TerminalView term() =>
+      _in(find.byType(TerminalView), a0).first.widget as TerminalView;
+  await _until(
+    tester,
+    () => _in(find.byType(TerminalView), a0).isNotEmpty && _drew(term()),
+    'the shell to draw its prompt',
+  );
+  // No echo, so a ^N the tty drew itself is not read as the shell's.
+  term().terminal.textInput('stty -echo; cat -v');
+  term().terminal.keyInput(TerminalKey.enter);
+  await tester.pump(const Duration(milliseconds: 500));
+
+  // Negative: plain Ctrl+N.
+  await _xdo(['windowfocus', ids[0]]);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  await _xdo(['key', 'ctrl+n']);
+  await _xdo(['key', 'Return']);
+  await _until(tester, () => _caretN(term()) == 1, 'Ctrl+N to reach the shell');
+  await tester.pump(const Duration(seconds: 2));
+  expect(await _windows(), hasLength(1), reason: 'Ctrl+N opened a window');
+  expect(_views(), hasLength(1));
+  _trace('t1: Ctrl+N reached the shell as ^N and opened no window');
+
+  // Positive: Ctrl+Shift+N, from the real main.
+  await _newWindow(tester, ids[0], 2);
+  ids = await _windows();
+  _trace('t1: Ctrl+Shift+N opened a second window: ${ids.length} windows');
+  // And the first window's terminal heard nothing of it.
+  await _xdo(['windowfocus', ids[0]]);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  await _xdo(['key', 'Return']);
+  await tester.pump(const Duration(seconds: 1));
+  expect(_caretN(term()), 1, reason: 'the terminal got ^N from Ctrl+Shift+N');
+  _trace('t1: the terminal heard nothing of Ctrl+Shift+N');
+}
+
+/// 2. The UI text size changed in A shows in B at once, and B's tabs are as
+/// they were.
+Future<void> _t2(WidgetTester tester) async {
+  await uiTextSize.choose(1);
+  await _openSecond(tester);
+  final ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  // What 100 px of text comes to in that window: its text scaler, which is
+  // what the UI text size sets, read where the tab strip's text is.
+  double scale(int view) =>
+      MediaQuery.textScalerOf(_in(find.text('Home'), view).first).scale(100);
+  await _until(
+    tester,
+    () =>
+        _in(find.text('Home'), a).isNotEmpty &&
+        _in(find.text('Home'), b).isNotEmpty,
+    'Home in both windows',
+  );
+  final a0 = scale(a);
+  final b0 = scale(b);
+  List<String> texts(int view) => [
+    for (final e in _in(find.byType(Text), view))
+      if ((e.widget as Text).data case final t?)
+        if (!t.startsWith('UI text size')) t,
+  ];
+  final tabsB = texts(b);
+  _trace('t2: 100 px of text is $a0 in A and $b0 in B');
+
+  await _xdo(['windowfocus', ids[0]]);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  await _xdo(['key', 'ctrl+equal']);
+  await _xdo(['key', 'ctrl+equal']);
+  await _until(tester, () => uiTextSize.value > 1.0, 'Ctrl+= to zoom');
+  await tester.pump(const Duration(milliseconds: 800));
+  _trace('t2: 100 px of text is now ${scale(a)} in A and ${scale(b)} in B');
+  expect(scale(a), greaterThan(a0), reason: 'A did not grow');
+  expect(scale(b), greaterThan(b0), reason: 'B did not show the new size');
+  // Negative: B's tabs and rows are the same ones.
+  expect(texts(b), tabsB, reason: 'B\'s tabs or rows changed');
+  await uiTextSize.choose(1);
+}
+
+/// 3. A Local shell tab opened in A is not in B, whose Home still lists the
+/// host.
+Future<void> _t3(WidgetTester tester) async {
+  await _openSecond(tester);
+  final ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  await _first(tester, _card, b, 'B\'s card');
+  expect(_in(find.text('Local shell'), a), hasLength(1));
+  expect(_in(find.text('Local shell'), b), hasLength(1));
+  await _click(tester, ids[0], a, await _first(tester, _card, a, 'A\'s card'));
+  await _until(
+    tester,
+    () => _in(find.text('Local shell'), a).length >= 2,
+    'a Local shell tab beside the card in A',
+    timeout: const Duration(seconds: 30),
+  );
+  await tester.pump(const Duration(seconds: 2));
+  final inA = _in(find.text('Local shell'), a).length;
+  final inB = _in(find.text('Local shell'), b).length;
+  _trace('t3: "Local shell" is drawn $inA times in A and $inB in B');
+  // Negative: B shows no tab of it, and its Home still lists the host.
+  expect(inB, 1, reason: 'B shows A\'s tab');
+  expect(_in(_card, b), hasLength(1));
+  expect(_in(_tabClose, b), isEmpty, reason: 'B has a tab');
+}
+
+/// 4. Closing B while it holds a live shell asks first: Keep it keeps B and
+/// its shell, Close window closes B and leaves A.
+Future<void> _t4(WidgetTester tester) async {
+  await _openSecond(tester);
+  final ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
+  await _until(tester, () => _in(_tabClose, b).length == 1, 'a tab in B');
+  await _until(
+    tester,
+    () =>
+        _in(find.byType(TerminalView), b).isNotEmpty &&
+        _drew(_in(find.byType(TerminalView), b).first.widget as TerminalView),
+    'the shell in B to draw its prompt',
+  );
+  await tester.pump(const Duration(seconds: 1));
+
+  Future<void> closeB() async => _click(
+    tester,
+    ids[1],
+    b,
+    await _first(tester, _close, b, 'B\'s Close'),
+  );
+  // Asked, and Keep it keeps B and its shell.
+  await closeB();
+  await _until(
+    tester,
+    () => _in(find.byType(TuiDialog), b).isNotEmpty,
+    'the question before B closes',
+  );
+  expect(_in(find.textContaining('Close this window?'), b), isNotEmpty);
+  await _click(
+    tester,
+    ids[1],
+    b,
+    await _first(tester, _button('Keep it'), b, 'Keep it'),
+  );
+  await tester.pump(const Duration(seconds: 2));
+  expect(await _windows(), hasLength(2), reason: 'B closed on Keep it');
+  expect(_in(find.byType(TuiDialog), b), isEmpty);
+  expect(_in(_tabClose, b), hasLength(1), reason: 'B lost its shell');
+  _trace('t4: Keep it kept B and its shell');
+
+  // Asked again, and Close window closes B alone.
+  await closeB();
+  await _until(
+    tester,
+    () => _in(find.byType(TuiDialog), b).isNotEmpty,
+    'the question again',
+  );
+  await _click(
+    tester,
+    ids[1],
+    b,
+    await _first(tester, _button('Close window'), b, 'Close window'),
+  );
+  await _windowsAre(tester, 1);
+  expect(_in(find.text('Home'), a), isNotEmpty, reason: 'A is gone too');
+  _trace('t4: Close window closed B alone');
+}
+
