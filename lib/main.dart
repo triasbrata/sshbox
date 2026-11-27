@@ -5,6 +5,7 @@ import 'src/session/port_forwards.dart';
 import 'src/session/session_log.dart';
 import 'src/telemetry/crash_reporting.dart';
 import 'src/telemetry/telemetry.dart';
+import 'src/ui/image_cache_limit.dart';
 import 'src/ui/onboarding_page.dart';
 import 'src/ui/right_click.dart';
 import 'src/ui/settings_page.dart';
@@ -17,6 +18,7 @@ Future<void> main() async {
   JeanshBinding.ensureInitialized(
     ctrlOpensLinks: () => linkModifier.chosen == LinkModifier.control,
   );
+  capImageCache(PaintingBinding.instance.imageCache);
   // termul's notice, which the licences page shows: see tui.dart.
   registerTermulLicense();
   // First, before anything saves a setting: whether this is a fresh install,
