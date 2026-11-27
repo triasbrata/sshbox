@@ -13,3 +13,12 @@ does not get the plugin at all.
 
 To move to a newer version, copy it here the same way and take `android` out
 of its pubspec again.
+
+## Several windows
+
+A second change, for the app's several windows on one engine: the platform
+may name the view an event is for with a "view" call before it, and
+`DesktopDrop.eventView` holds it (0 where the platform does not say: Linux and
+Windows attach to the first window's view alone). A `DropTarget` ignores an
+event for a view it is not in, so a file dropped on one window is not handed
+to the drop targets of another, and so not uploaded to its host.
