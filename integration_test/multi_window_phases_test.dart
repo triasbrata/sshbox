@@ -434,7 +434,13 @@ Future<void> _restore(WidgetTester tester) async {
   final saved = _note('save').readAsLinesSync();
   final now = [for (final id in ids) await _rect(id)];
   debugPrint('multi-window: frames now $now, saved $saved');
-  expect(now, saved, reason: 'a window did not come back at its own frame');
+  // On Windows the windows are listed by first sight, which for windows that
+  // came up together is by handle, so the two frames are matched as a set.
+  expect(
+    Platform.isWindows ? (List.of(now)..sort()) : now,
+    Platform.isWindows ? (List.of(saved)..sort()) : saved,
+    reason: 'a window did not come back at its own frame',
+  );
   await _until(tester, () => _views().length == 2, 'a view a window');
   final views = _views();
   await _until(
