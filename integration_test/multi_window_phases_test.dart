@@ -426,6 +426,17 @@ Future<void> _last(WidgetTester tester) async {
     'B\'s shell to write its process id',
   );
   final bRect = await _rect(xb);
+  // The control for the pixel check below: a window that paints changes
+  // its pixels when a command is typed into it.
+  final before = await _grabWindow(bRect, 'control1');
+  shellIn(b).terminal.textInput('echo JEANSH_CONTROL');
+  shellIn(b).terminal.keyInput(TerminalKey.enter);
+  await tester.pump(const Duration(seconds: 1));
+  await Future<void>.delayed(const Duration(seconds: 1));
+  final after = await _grabWindow(bRect, 'control2');
+  final controlChanged =
+      before != null && after != null && !_same(before, after);
+  _trace('control: a window that paints changed its pixels: $controlChanged');
   _trace('B has a shell, pid ${pid1.readAsStringSync().trim()}, frame $bRect');
 
   // Close the first window: asked, as it holds a live shell.
