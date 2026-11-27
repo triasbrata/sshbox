@@ -216,6 +216,30 @@ void main() {
     expect(find.bySemanticsLabel('Maximize'), findsOneWidget);
   }, variant: drawnButtons);
 
+  test('a window after the first says which it is, and the first is asked as '
+      'it always was', () {
+    expect(windowArguments(null, 0), isNull);
+    expect(windowArguments('x', 0), 'x');
+    expect(windowArguments(null, 3), {'view': 3, 'arguments': null});
+    expect(windowArguments(7, 4), {'view': 4, 'arguments': 7});
+  });
+
+  testWidgets('each window is maximized or not by itself', (tester) async {
+    _answerAsAMac(tester);
+    await watchTitleBar();
+    expect(windowMaximizedOf(0), same(windowMaximized));
+    await _tellWindow(tester, 'maximized', {'view': 3, 'value': true});
+    expect(windowMaximizedOf(3).value, isTrue);
+    expect(windowMaximized.value, isFalse);
+    await _tellWindow(tester, 'maximized', true);
+    expect(windowMaximized.value, isTrue);
+    expect(windowMaximizedOf(3).value, isTrue);
+    await _tellWindow(tester, 'maximized', {'view': 3, 'value': false});
+    expect(windowMaximizedOf(3).value, isFalse);
+    expect(windowMaximized.value, isTrue);
+    await _tellWindow(tester, 'maximized', false);
+  }, variant: drawnButtons);
+
   testWidgets("a double-click on the strip's empty space maximizes or "
       'restores, where a click moves the window', (tester) async {
     final asked = _answerAsAMac(tester);

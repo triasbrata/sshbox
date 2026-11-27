@@ -10,9 +10,40 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+// A window after the first: its own GtkWindow with its own view on the one
+// engine, which the app opens and closes through sshbox/windows. The first
+// window is id 0, and never destroyed while the app runs — its view is the
+// engine's implicit view, which has to be there — only hidden.
+typedef struct {
+  MyApplication* app;
+  gint id;
+  GtkWindow* window;
+  FlView* view;
+  // The timer that tells the app where the window is, once it has held
+  // still.
+  guint moved_source;
+  // Where it was last, while neither maximized nor full screen.
+  gint x, y, width, height;
+} ExtraWindow;
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  // sshbox/windows: the app opens, closes and raises windows on it, and
+  // hears on it where they are, which has focus, and when one is asked to
+  // close.
+  FlMethodChannel* windows_channel;
+  FlView* main_view;
+  GList* extras;
+  gint next_window_id;
+  // Whether the app asked for several windows, and so is asked before one
+  // closes, not told after.
+  gboolean multi;
+  // The first window closing for real, rather than being asked of the app.
+  gboolean closing;
+  // The first window hidden after it was closed while others stay open, to
+  // be shown again by the next window the app opens.
+  gboolean main_hidden;
   // sshbox/window: the buttons and the tab strip the app draws in place of a
   // title bar ask the window to move, minimize, maximize and close on it,
   // and hear on it when the window is maximized or restored.
@@ -28,6 +59,11 @@ struct _MyApplication {
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+static gboolean ask_close(MyApplication* self, gint id);
+static void notify_moved(MyApplication* self, gint id, gint x, gint y,
+                         gint width, gint height, gboolean maximized);
+static GtkWindow* window_of_view(MyApplication* self, gint64 view_id);
 
 // The last primary-button press, and the widget it went to: a move needs
 // the press it starts from, and the widget is told it was let go.
@@ -87,6 +123,18 @@ static void window_call_cb(FlMethodChannel* channel, FlMethodCall* call,
                            gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   GtkWindow* window = self->window;
+  // A window after the first says which it is, in a map beside what it asks.
+  FlValue* args = fl_method_call_get_args(call);
+  if (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+    FlValue* view = fl_value_lookup_string(args, "view");
+    if (view != nullptr && fl_value_get_type(view) == FL_VALUE_TYPE_INT) {
+      window = window_of_view(self, fl_value_get_int(view));
+      if (window == nullptr) {
+        fl_method_call_respond_success(call, nullptr, nullptr);
+        return;
+      }
+    }
+  }
   const gchar* method = fl_method_call_get_name(call);
   if (strcmp(method, "drag") == 0) {
     begin_move(window);
@@ -161,6 +209,7 @@ static gboolean commit_geometry(gpointer user_data) {
     gtk_window_get_position(self->window, &self->x, &self->y);
     gtk_window_get_size(self->window, &self->width, &self->height);
     schedule_save(self);
+    notify_moved(self, 0, self->x, self->y, self->width, self->height, FALSE);
   }
   return G_SOURCE_REMOVE;
 }
@@ -182,10 +231,8 @@ static gboolean configure_cb(GtkWidget* widget, GdkEventConfigure* event,
   return FALSE;
 }
 
-static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
-                          gpointer user_data) {
-  MyApplication* self = MY_APPLICATION(user_data);
-  // A change made in the last moments is still pending: it counts.
+// A change made in the last moments is still pending: it counts.
+static void flush_geometry(MyApplication* self) {
   if (self->commit_source != 0) {
     g_source_remove(self->commit_source);
     commit_geometry(self);
@@ -194,6 +241,14 @@ static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
     g_source_remove(self->save_source);
     save_geometry(self);
   }
+}
+
+static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
+                          gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  // The app decides whether the window goes, and says so with `close`.
+  if (!self->closing && ask_close(self, 0)) return TRUE;
+  flush_geometry(self);
   return FALSE;
 }
 
@@ -283,28 +338,28 @@ static gboolean window_state_cb(GtkWidget* widget, GdkEventWindowState* event,
         (event->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) != 0);
     fl_method_channel_invoke_method(self->window_channel, "maximized",
                                     maximized, nullptr, nullptr, nullptr);
+    notify_moved(self, 0, self->x, self->y, self->width, self->height,
+                 (event->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) != 0);
   }
   return FALSE;
 }
 
-// Called when first Flutter frame received.
-static void first_frame_cb(MyApplication* self, FlView* view) {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+static gboolean main_focus_cb(GtkWidget* widget, GdkEventFocus* event,
+                              gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->windows_channel != nullptr) {
+    g_autoptr(FlValue) id = fl_value_new_int(0);
+    fl_method_channel_invoke_method(self->windows_channel, "focused", id,
+                                    nullptr, nullptr, nullptr);
+  }
+  return FALSE;
 }
 
-// Implements GApplication::activate.
-static void my_application_activate(GApplication* application) {
-  MyApplication* self = MY_APPLICATION(application);
+// ---- sshbox/windows: more than one window --------------------------------
 
-  // Jeansh started again while it runs: the window already up comes forward
-  // instead of a second copy starting, as on Android and macOS — two copies
-  // would each save their own tabs over the other's.
-  GList* windows = gtk_application_get_windows(GTK_APPLICATION(application));
-  if (windows != nullptr) {
-    gtk_window_present(GTK_WINDOW(windows->data));
-    return;
-  }
-
+// A window with the title bar the app draws in place of one, and the app's
+// icon: the first window's, and every other's.
+static GtkWindow* new_app_window(GApplication* application) {
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
@@ -342,6 +397,359 @@ static void my_application_activate(GApplication* application) {
     gtk_widget_show(titlebar);
     gtk_window_set_titlebar(window, titlebar);
   }
+  return window;
+}
+
+static void send_event(MyApplication* self, const gchar* method,
+                       FlValue* args) {
+  if (self->windows_channel == nullptr) return;
+  fl_method_channel_invoke_method(self->windows_channel, method, args, nullptr,
+                                  nullptr, nullptr);
+}
+
+// The app is asked to close window [id], which stays until it says so. False
+// when the app has not asked for several windows: then it closes as it
+// always did.
+static gboolean ask_close(MyApplication* self, gint id) {
+  if (!self->multi || self->windows_channel == nullptr) return FALSE;
+  g_autoptr(FlValue) value = fl_value_new_int(id);
+  send_event(self, "closeRequested", value);
+  return TRUE;
+}
+
+static void notify_moved(MyApplication* self, gint id, gint x, gint y,
+                         gint width, gint height, gboolean maximized) {
+  if (!self->multi || self->windows_channel == nullptr) return;
+  g_autoptr(FlValue) map = fl_value_new_map();
+  fl_value_set_string_take(map, "id", fl_value_new_int(id));
+  fl_value_set_string_take(map, "x", fl_value_new_float(x));
+  fl_value_set_string_take(map, "y", fl_value_new_float(y));
+  fl_value_set_string_take(map, "width", fl_value_new_float(width));
+  fl_value_set_string_take(map, "height", fl_value_new_float(height));
+  fl_value_set_string_take(map, "maximized", fl_value_new_bool(maximized));
+  send_event(self, "moved", map);
+}
+
+static GtkWindow* window_of_view(MyApplication* self, gint64 view_id) {
+  if (view_id == 0) return self->window;
+  for (GList* l = self->extras; l != nullptr; l = l->next) {
+    ExtraWindow* extra = static_cast<ExtraWindow*>(l->data);
+    if (fl_view_get_id(extra->view) == view_id) return extra->window;
+  }
+  return nullptr;
+}
+
+static ExtraWindow* extra_by_id(MyApplication* self, gint id) {
+  for (GList* l = self->extras; l != nullptr; l = l->next) {
+    ExtraWindow* extra = static_cast<ExtraWindow*>(l->data);
+    if (extra->id == id) return extra;
+  }
+  return nullptr;
+}
+
+// A number the app sent, which Dart's int and double both reach as.
+static gboolean number_of(FlValue* map, const gchar* key, gdouble* out) {
+  FlValue* value = fl_value_lookup_string(map, key);
+  if (value == nullptr) return FALSE;
+  if (fl_value_get_type(value) == FL_VALUE_TYPE_INT) {
+    *out = static_cast<gdouble>(fl_value_get_int(value));
+    return TRUE;
+  }
+  if (fl_value_get_type(value) == FL_VALUE_TYPE_FLOAT) {
+    *out = fl_value_get_float(value);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+// The frame the app sent for a window, if it is one: each number within
+// ±100000 and a size of at least 200 by 150.
+static gboolean frame_of(FlValue* args, gint* x, gint* y, gint* width,
+                         gint* height, gboolean* maximized) {
+  if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_MAP) {
+    return FALSE;
+  }
+  gdouble n[4];
+  const gchar* keys[4] = {"x", "y", "width", "height"};
+  for (int i = 0; i < 4; i++) {
+    if (!number_of(args, keys[i], &n[i]) || n[i] < -100000 || n[i] > 100000) {
+      return FALSE;
+    }
+  }
+  if (n[2] < 200 || n[3] < 150) return FALSE;
+  *x = static_cast<gint>(n[0]);
+  *y = static_cast<gint>(n[1]);
+  *width = static_cast<gint>(n[2]);
+  *height = static_cast<gint>(n[3]);
+  FlValue* flag = fl_value_lookup_string(args, "maximized");
+  *maximized = flag != nullptr &&
+               fl_value_get_type(flag) == FL_VALUE_TYPE_BOOL &&
+               fl_value_get_bool(flag);
+  return TRUE;
+}
+
+typedef struct {
+  MyApplication* app;
+  gint id;
+  FlView* view;
+  gint tries;
+} Announce;
+
+// Tells the app a window's view is up, once it has an id: on the next turn
+// of the main loop, since the engine says it has added the view after the
+// window is made.
+static gboolean announce_opened(gpointer user_data) {
+  Announce* announce = static_cast<Announce*>(user_data);
+  gint64 view_id = fl_view_get_id(announce->view);
+  if (view_id < 0 && announce->tries++ < 50) return G_SOURCE_CONTINUE;
+  if (view_id >= 0) {
+    g_autoptr(FlValue) map = fl_value_new_map();
+    fl_value_set_string_take(map, "id", fl_value_new_int(announce->id));
+    fl_value_set_string_take(map, "viewId", fl_value_new_int(view_id));
+    send_event(announce->app, "opened", map);
+  }
+  g_object_unref(announce->view);
+  g_free(announce);
+  return G_SOURCE_REMOVE;
+}
+
+static void announce_later(MyApplication* self, gint id, FlView* view) {
+  Announce* announce = g_new0(Announce, 1);
+  announce->app = self;
+  announce->id = id;
+  announce->view = FL_VIEW(g_object_ref(view));
+  g_timeout_add(20, announce_opened, announce);
+}
+
+static gboolean extra_moved(gpointer user_data) {
+  ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
+  extra->moved_source = 0;
+  GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(extra->window));
+  if (gdk_window == nullptr) return G_SOURCE_REMOVE;
+  GdkWindowState state = gdk_window_get_state(gdk_window);
+  if (state & GDK_WINDOW_STATE_ICONIFIED) return G_SOURCE_REMOVE;
+  gboolean maximized =
+      (state & (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN)) != 0;
+  if (!maximized) {
+    gtk_window_get_position(extra->window, &extra->x, &extra->y);
+    gtk_window_get_size(extra->window, &extra->width, &extra->height);
+  }
+  notify_moved(extra->app, extra->id, extra->x, extra->y, extra->width,
+               extra->height, maximized);
+  return G_SOURCE_REMOVE;
+}
+
+static void extra_schedule_moved(ExtraWindow* extra) {
+  if (extra->moved_source != 0) g_source_remove(extra->moved_source);
+  extra->moved_source = g_timeout_add(300, extra_moved, extra);
+}
+
+static gboolean extra_configure_cb(GtkWidget* widget, GdkEventConfigure* event,
+                                   gpointer user_data) {
+  extra_schedule_moved(static_cast<ExtraWindow*>(user_data));
+  return FALSE;
+}
+
+static gboolean extra_state_cb(GtkWidget* widget, GdkEventWindowState* event,
+                               gpointer user_data) {
+  ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
+  if (event->changed_mask &
+      (GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN)) {
+    extra_schedule_moved(extra);
+  }
+  if ((event->changed_mask & GDK_WINDOW_STATE_MAXIMIZED) &&
+      extra->app->window_channel != nullptr) {
+    // A window after the first says which it is.
+    g_autoptr(FlValue) map = fl_value_new_map();
+    fl_value_set_string_take(map, "view",
+                             fl_value_new_int(fl_view_get_id(extra->view)));
+    fl_value_set_string_take(
+        map, "value",
+        fl_value_new_bool((event->new_window_state &
+                           GDK_WINDOW_STATE_MAXIMIZED) != 0));
+    fl_method_channel_invoke_method(extra->app->window_channel, "maximized",
+                                    map, nullptr, nullptr, nullptr);
+  }
+  return FALSE;
+}
+
+static gboolean extra_focus_cb(GtkWidget* widget, GdkEventFocus* event,
+                               gpointer user_data) {
+  ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
+  g_autoptr(FlValue) id = fl_value_new_int(extra->id);
+  send_event(extra->app, "focused", id);
+  return FALSE;
+}
+
+static gboolean extra_delete_cb(GtkWidget* widget, GdkEvent* event,
+                                gpointer user_data) {
+  ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
+  // Stays until the app says `close`.
+  return ask_close(extra->app, extra->id);
+}
+
+static void extra_destroy_cb(GtkWidget* widget, gpointer user_data) {
+  ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
+  MyApplication* self = extra->app;
+  if (extra->moved_source != 0) g_source_remove(extra->moved_source);
+  self->extras = g_list_remove(self->extras, extra);
+  if (self->windows_channel != nullptr) {
+    g_autoptr(FlValue) id = fl_value_new_int(extra->id);
+    send_event(self, "closed", id);
+  }
+  g_free(extra);
+}
+
+static void extra_first_frame_cb(ExtraWindow* extra, FlView* view) {
+  gtk_widget_show(GTK_WIDGET(extra->window));
+}
+
+// A window after the first, on the engine the first window's view runs.
+static ExtraWindow* create_extra(MyApplication* self, FlValue* frame) {
+  FlEngine* engine = fl_view_get_engine(self->main_view);
+  GtkWindow* window = new_app_window(G_APPLICATION(self));
+  ExtraWindow* extra = g_new0(ExtraWindow, 1);
+  extra->app = self;
+  extra->id = self->next_window_id++;
+  extra->window = window;
+  extra->width = 1280;
+  extra->height = 720;
+  gtk_window_set_default_size(window, extra->width, extra->height);
+
+  gint x, y, width, height;
+  gboolean maximized;
+  if (frame_of(frame, &x, &y, &width, &height, &maximized)) {
+    extra->x = x;
+    extra->y = y;
+    extra->width = width;
+    extra->height = height;
+    gtk_window_set_default_size(window, width, height);
+#ifdef GDK_WINDOWING_X11
+    if (GDK_IS_X11_DISPLAY(gtk_widget_get_display(GTK_WIDGET(window)))) {
+      gtk_window_move(window, x, y);
+    }
+#endif
+    if (maximized) gtk_window_maximize(window);
+  }
+
+  extra->view = fl_view_new_for_engine(engine);
+  GdkRGBA background_color;
+  gdk_rgba_parse(&background_color, "#000000");
+  fl_view_set_background_color(extra->view, &background_color);
+  gtk_widget_show(GTK_WIDGET(extra->view));
+  gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(extra->view));
+
+  g_signal_connect(window, "configure-event", G_CALLBACK(extra_configure_cb),
+                   extra);
+  g_signal_connect(window, "window-state-event", G_CALLBACK(extra_state_cb),
+                   extra);
+  g_signal_connect(window, "focus-in-event", G_CALLBACK(extra_focus_cb),
+                   extra);
+  g_signal_connect(window, "delete-event", G_CALLBACK(extra_delete_cb), extra);
+  g_signal_connect(window, "destroy", G_CALLBACK(extra_destroy_cb), extra);
+  g_signal_connect_swapped(extra->view, "first-frame",
+                           G_CALLBACK(extra_first_frame_cb), extra);
+  gtk_widget_realize(GTK_WIDGET(extra->view));
+  self->extras = g_list_append(self->extras, extra);
+  return extra;
+}
+
+static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
+                            gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  const gchar* method = fl_method_call_get_name(call);
+  FlValue* args = fl_method_call_get_args(call);
+
+  if (strcmp(method, "supported") == 0) {
+    self->multi = TRUE;
+    g_autoptr(FlValue) yes = fl_value_new_bool(TRUE);
+    fl_method_call_respond_success(call, yes, nullptr);
+  } else if (strcmp(method, "open") == 0) {
+    gint id;
+    if (self->main_hidden) {
+      // The first window comes back before a new one is made.
+      self->main_hidden = FALSE;
+      id = 0;
+      gint x, y, width, height;
+      gboolean maximized;
+      if (frame_of(args, &x, &y, &width, &height, &maximized)) {
+        gtk_window_resize(self->window, width, height);
+#ifdef GDK_WINDOWING_X11
+        if (GDK_IS_X11_DISPLAY(
+                gtk_widget_get_display(GTK_WIDGET(self->window)))) {
+          gtk_window_move(self->window, x, y);
+        }
+#endif
+        if (maximized) gtk_window_maximize(self->window);
+      }
+      gtk_widget_show(GTK_WIDGET(self->window));
+      gtk_window_present(self->window);
+      announce_later(self, 0, self->main_view);
+    } else {
+      ExtraWindow* extra = create_extra(self, args);
+      id = extra->id;
+      announce_later(self, id, extra->view);
+    }
+    g_autoptr(FlValue) answer = fl_value_new_int(id);
+    fl_method_call_respond_success(call, answer, nullptr);
+  } else if (strcmp(method, "close") == 0 && args != nullptr &&
+             fl_value_get_type(args) == FL_VALUE_TYPE_INT) {
+    gint id = static_cast<gint>(fl_value_get_int(args));
+    ExtraWindow* extra = id == 0 ? nullptr : extra_by_id(self, id);
+    if (id == 0) {
+      if (self->extras == nullptr) {
+        // The last window: the app quits, and keeps where it was.
+        self->closing = TRUE;
+        gtk_window_close(self->window);
+      } else {
+        flush_geometry(self);
+        self->main_hidden = TRUE;
+        gtk_widget_hide(GTK_WIDGET(self->window));
+      }
+    } else if (extra != nullptr) {
+      if (self->main_hidden && g_list_length(self->extras) == 1) {
+        // The last window left is this one: the app quits.
+        g_application_quit(G_APPLICATION(self));
+      } else {
+        gtk_widget_destroy(GTK_WIDGET(extra->window));
+      }
+    }
+    fl_method_call_respond_success(call, nullptr, nullptr);
+  } else if (strcmp(method, "activate") == 0 && args != nullptr &&
+             fl_value_get_type(args) == FL_VALUE_TYPE_INT) {
+    gint id = static_cast<gint>(fl_value_get_int(args));
+    ExtraWindow* extra = id == 0 ? nullptr : extra_by_id(self, id);
+    GtkWindow* window = id == 0 ? self->window : nullptr;
+    if (extra != nullptr) window = extra->window;
+    if (window != nullptr) gtk_window_present(window);
+    fl_method_call_respond_success(call, nullptr, nullptr);
+  } else {
+    fl_method_call_respond_not_implemented(call, nullptr);
+  }
+}
+
+// Called when first Flutter frame received.
+static void first_frame_cb(MyApplication* self, FlView* view) {
+  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+}
+
+// Implements GApplication::activate.
+static void my_application_activate(GApplication* application) {
+  MyApplication* self = MY_APPLICATION(application);
+
+  // Jeansh started again while it runs: the window already up comes forward
+  // instead of a second copy starting, as on Android and macOS — two copies
+  // would each save their own tabs over the other's.
+  GList* windows = gtk_application_get_windows(GTK_APPLICATION(application));
+  if (windows != nullptr) {
+    GtkWindow* active =
+        gtk_application_get_active_window(GTK_APPLICATION(application));
+    gtk_window_present(active != nullptr ? active
+                                         : GTK_WINDOW(windows->data));
+    return;
+  }
+
+  GtkWindow* window = new_app_window(application);
   self->window = window;
   g_signal_connect(window, "window-state-event",
                    G_CALLBACK(window_state_cb), self);
@@ -356,6 +764,8 @@ static void my_application_activate(GApplication* application) {
       project, self->dart_entrypoint_arguments);
 
   FlView* view = fl_view_new(project);
+  self->main_view = view;
+  self->next_window_id = 1;
   GdkRGBA background_color;
   // Background defaults to black, override it here if necessary, e.g. #00000000
   // for transparent.
@@ -378,6 +788,12 @@ static void my_application_activate(GApplication* application) {
       "sshbox/window", FL_METHOD_CODEC(codec));
   fl_method_channel_set_method_call_handler(self->window_channel,
                                             window_call_cb, self, nullptr);
+  self->windows_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "sshbox/windows", FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(self->windows_channel,
+                                            windows_call_cb, self, nullptr);
+  g_signal_connect(window, "focus-in-event", G_CALLBACK(main_focus_cb), self);
   g_signal_add_emission_hook(
       g_signal_lookup("button-press-event", GTK_TYPE_WIDGET), 0,
       remember_press, nullptr, nullptr);
@@ -425,6 +841,9 @@ static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   g_clear_object(&self->window_channel);
+  g_clear_object(&self->windows_channel);
+  g_list_free(self->extras);
+  self->extras = nullptr;
   if (self->save_source != 0) {
     g_source_remove(self->save_source);
     self->save_source = 0;
