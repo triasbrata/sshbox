@@ -47,9 +47,6 @@ struct Windows {
   flutter::MethodChannel<flutter::EncodableValue>* windows_channel = nullptr;
   // The app asked for several windows, so it is asked before one closes.
   bool multi = false;
-  // The first window hidden after it was closed while others stay up, to be
-  // shown again by the next window the app opens.
-  bool first_hidden = false;
   int next_id = 1;
 };
 
@@ -492,22 +489,6 @@ void FlutterWindow::OnWindowsCall(
     RECT rect;
     bool maximized = false;
     bool framed = FrameOf(arguments, &rect, &maximized);
-    if (g_windows.first_hidden) {
-      // The first window comes back before a new one is made.
-      g_windows.first_hidden = false;
-      HWND hwnd = GetHandle();
-      SetWindowTextW(hwnd, L"Jeansh");
-      if (framed) ApplyPlacement(rect, maximized);
-      ShowWindow(hwnd, maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
-      SetForegroundWindow(hwnd);
-      NotifyWindows("opened", flutter::EncodableValue(flutter::EncodableMap{
-                                  {flutter::EncodableValue("id"),
-                                   flutter::EncodableValue(0)},
-                                  {flutter::EncodableValue("viewId"),
-                                   flutter::EncodableValue(0)}}));
-      result->Success(flutter::EncodableValue(0));
-      return;
-    }
     int id = g_windows.next_id++;
     auto* window = new FlutterWindow(g_windows.engine, id);
     // Each a little lower and to the right of the last, as a window manager
@@ -536,27 +517,36 @@ void FlutterWindow::OnWindowsCall(
       if (other->id_ == id) target = other;
     }
     if (id == 0) {
+      // Only the last window: the app quits, and keeps where it was. With
+      // others open the app moves one of them into the first window and
+      // closes that one instead, since the first window's view is the
+      // engine's own and has to stay.
       if (g_windows.others.empty()) {
-        // The last window: the app quits, and keeps where it was.
         force_close_ = true;
         PostMessage(GetHandle(), WM_CLOSE, 0, 0);
-      } else {
-        // Hidden, not destroyed: its view is the engine's first, which has
-        // to stay. A title of its own, so a second Jeansh started now finds
-        // a window that is up.
-        KillTimer(GetHandle(), kSaveTimer);
-        SavePlacement();
-        SetWindowTextW(GetHandle(), L"Jeansh (hidden)");
-        ShowWindow(GetHandle(), SW_HIDE);
-        g_windows.first_hidden = true;
       }
     } else if (target != nullptr) {
-      if (g_windows.first_hidden && g_windows.others.size() == 1) {
-        // The last window left is this one: the app quits.
-        PostQuitMessage(0);
-      } else {
-        target->force_close_ = true;
-        PostMessage(target->GetHandle(), WM_CLOSE, 0, 0);
+      target->force_close_ = true;
+      PostMessage(target->GetHandle(), WM_CLOSE, 0, 0);
+    }
+    result->Success();
+  } else if (method == "place" && arguments != nullptr) {
+    // Moves and sizes a window, as the app asks when the first window takes
+    // the place of another that has closed.
+    RECT rect;
+    bool maximized = false;
+    const auto* idv = Field(arguments, "id");
+    if (auto number = NumberOf(idv); number && FrameOf(arguments, &rect, &maximized)) {
+      int id = static_cast<int>(*number);
+      FlutterWindow* target = id == 0 ? this : nullptr;
+      for (FlutterWindow* other : g_windows.others) {
+        if (other->id_ == id) target = other;
+      }
+      if (target != nullptr && target->GetHandle() != nullptr) {
+        HWND hwnd = target->GetHandle();
+        if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        target->ApplyPlacement(rect, false);
+        if (maximized) ShowWindow(hwnd, SW_MAXIMIZE);
       }
     }
     result->Success();
