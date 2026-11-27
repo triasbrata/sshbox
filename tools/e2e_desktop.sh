@@ -201,6 +201,8 @@ fi
 # independent ones, one for the phases that follow each other.
 mw_phases_windows() {
   local rc=0 data home note phase rounds flutter_rc
+  # A phase that ends with the app killed exits non-zero: the loop goes on.
+  set +e
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
   for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore churn last}; do
