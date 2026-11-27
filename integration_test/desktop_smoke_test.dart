@@ -683,6 +683,7 @@ Future<void> _pickRepo(WidgetTester tester, Directory repo) async {
 /// a skipped test's name, and a skip is no coverage, so it has to be read as
 /// one.
 void _test(String name, WidgetTesterCallback body, {String? skip}) {
+  final mine = _inShard(_declared++);
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
@@ -698,7 +699,23 @@ void _test(String name, WidgetTesterCallback body, {String? skip}) {
         ' | $name',
       );
     }
-  }, skip: skip != null);
+  }, skip: skip != null || !mine);
+}
+
+/// How many tests have been declared, for the shard each belongs to.
+var _declared = 0;
+
+/// JEANSH_E2E_SHARD=i/n runs the tests whose place in this file is i modulo n,
+/// the others skipped, so one runner's share of the file fits its step: the
+/// whole file took 31 min 50 s of a 32 minute step on Linux, 93 tests of which
+/// 11 minutes were waits for a screen and the rest taps, pumps and checks,
+/// each test starting from a cold app of its own and none leaning on another.
+/// Unset, every test runs.
+bool _inShard(int index) {
+  final shard = Platform.environment['JEANSH_E2E_SHARD'];
+  if (shard == null || shard.isEmpty) return true;
+  final parts = shard.split('/').map(int.parse).toList();
+  return index % parts[1] == parts[0];
 }
 
 /// Where a test's time went, by step, printed after it as `time:`: a Linux
