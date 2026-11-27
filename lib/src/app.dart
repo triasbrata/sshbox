@@ -93,6 +93,7 @@ class SshboxApp extends StatefulWidget {
 }
 
 class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
+  final _frozenSize = <int, double>{};
   /// Files another app handed us, waiting for a session to send them to.
   static const _shareChannel = MethodChannel('sshbox/share');
 
@@ -917,7 +918,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
               data: MediaQuery.of(context).copyWith(
                 textScaler: UiTextScaler(
                   MediaQuery.textScalerOf(context),
-                  uiTextSize.value,
+                  window.id == 0 ? uiTextSize.value : (_frozenSize[window.id] ??= uiTextSize.value),
                 ),
               ),
               child: AnnotatedRegion<SystemUiOverlayStyle>(
