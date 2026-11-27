@@ -44,6 +44,7 @@ void main() {
       clockOffset: 0,
       now: () => clock,
     );
+    addTearDown(requests.dispose);
     terminal = ClipboardTerminal(
       onPrivateOSC: (code, args) => requests.handle(code, args),
     );
@@ -94,6 +95,35 @@ void main() {
     clock = clock.add(const Duration(seconds: 30));
     terminal.write(once);
     expect(opened, ['/srv/a.md']);
+  });
+
+  test('a sequence opens once per host: a second tab on the same host, '
+      'sharing its ring, does not open it again', () {
+    final ring = OpenSecretRing(['sek-ret']);
+    OpenRequests tab() => OpenRequests(
+      onOpen: opened.add,
+      ring: ring,
+      clockOffset: 0,
+      now: () => clock,
+    );
+    final once = osc('sek-ret', '/srv/a.md', nonce: 'deadbeef02');
+    ClipboardTerminal(onPrivateOSC: tab().handle).write(once);
+    ClipboardTerminal(onPrivateOSC: tab().handle).write(once);
+    expect(opened, ['/srv/a.md']);
+    // A fresh nonce in the second tab still opens.
+    ClipboardTerminal(onPrivateOSC: tab().handle)
+        .write(osc('sek-ret', '/srv/b.md'));
+    expect(opened, ['/srv/a.md', '/srv/b.md']);
+  });
+
+  test('a host keeps its newest 512 nonces, forgetting the oldest', () {
+    final ring = OpenSecretRing();
+    for (var i = 0; i < 513; i++) {
+      expect(ring.firstUse('n$i'), isTrue);
+    }
+    expect(ring.firstUse('n512'), isFalse);
+    expect(ring.firstUse('n1'), isFalse);
+    expect(ring.firstUse('n0'), isTrue);
   });
 
   test('a stale or future time opens nothing', () {
@@ -205,6 +235,38 @@ void main() {
     expect(dropped, hasLength(before));
   });
 
+  test('drops held back by the two-second spacing are said when it ends, '
+      'with no later drop needed', () async {
+    for (var i = 0; i < 7; i++) {
+      terminal.write(osc('sek-ret', '/f$i'));
+    }
+    expect(dropped, [(1, 'more than 5 files at a time')]);
+    await Future<void>.delayed(
+      OpenRequests.droppedEvery + const Duration(milliseconds: 200),
+    );
+    expect(dropped, [
+      (1, 'more than 5 files at a time'),
+      (1, 'more than 5 files at a time'),
+    ]);
+    // Nothing held, nothing more said.
+    await Future<void>.delayed(
+      OpenRequests.droppedEvery + const Duration(milliseconds: 200),
+    );
+    expect(dropped, hasLength(2));
+    requests.dispose();
+  });
+
+  test('a held drop is not said after the requests are disposed', () async {
+    for (var i = 0; i < 7; i++) {
+      terminal.write(osc('sek-ret', '/f$i'));
+    }
+    requests.dispose();
+    await Future<void>.delayed(
+      OpenRequests.droppedEvery + const Duration(milliseconds: 200),
+    );
+    expect(dropped, hasLength(1));
+  });
+
   test('every secret of the newest four counts, an older one does not, and '
       'one is no use to a host that never made it', () {
     final ring = OpenSecretRing();
@@ -258,6 +320,64 @@ void main() {
     expect(OpenRequests.constantTimeEquals('abc', 'abcd'), isFalse);
     expect(OpenRequests.constantTimeEquals('', ''), isTrue);
     expect(OpenRequests.constantTimeEquals('a', ''), isFalse);
+  });
+
+  test('the install line reaches sh the same whether a POSIX shell or fish '
+      'reads its quotes, so the installed jeansh is the script', () {
+    // sshd hands the line to the login shell. In fish's single quotes a
+    // backslash before a backslash or a quote escapes it; in sh's nothing
+    // does. The line must mean the same to both.
+    String word(String line, {required bool fish}) {
+      final out = StringBuffer();
+      var quoted = false;
+      for (var i = 0; i < line.length; i++) {
+        final c = line[i];
+        final next = i + 1 < line.length ? line[i + 1] : '';
+        if (quoted) {
+          if (fish && c == r'\' && (next == r'\' || next == "'")) {
+            out.write(next);
+            i++;
+          } else if (c == "'") {
+            quoted = false;
+          } else {
+            out.write(c);
+          }
+        } else if (c == "'") {
+          quoted = true;
+        } else if (c == r'\') {
+          out.write(next);
+          i++;
+        } else {
+          out.write(c);
+        }
+      }
+      return out.toString();
+    }
+
+    final line = openCommandInstallScript();
+    expect(line, startsWith("sh -c '"));
+    final argument = line.substring('sh -c '.length);
+    final bySh = word(argument, fish: false);
+    expect(bySh, contains(openCommandScript));
+    expect(word(argument, fish: true), bySh);
+  });
+
+  test('jeansh notify escapes a quote and a backslash in the relay body', () {
+    final home = Directory.systemTemp.createTempSync('jeansh-esc');
+    addTearDown(() => home.deleteSync(recursive: true));
+    // The script's own esc(), run alone.
+    final esc = RegExp(
+      r'^  (?:bs=|esc\(\)).*$',
+      multiLine: true,
+    ).allMatches(openCommandScript).map((m) => m.group(0)).join('\n');
+    final result = Process.runSync('sh', [
+      '-c',
+      '$esc\nesc "\$1"',
+      'sh',
+      'say "hi" \\ there\nnext',
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stderr}');
+    expect(result.stdout, r'say \"hi\" \\ there next');
   });
 
   test(
@@ -496,6 +616,44 @@ void main() {
       File('${dir.path}/elsewhere').writeAsStringSync('sek-ret\n');
       Link(file.path).createSync('${dir.path}/elsewhere');
       expect(run(['a b\'s.txt']).exitCode, 1);
+      expect(tty.readAsStringSync(), isEmpty);
+    });
+
+    test('a path that resolves longer than the app takes is said, writes '
+        'nothing, and exits non-zero; one that resolves to the most still '
+        'opens', () {
+      // A folder whose real path is 3900 bytes, reached through a short
+      // link: the script resolves the link, and the path it would send is
+      // the long one. Each name stays under a filesystem's 255 bytes.
+      const real = 3900;
+      var deep = '${dir.path}/r';
+      while (real - deep.length > 201) {
+        deep = '$deep/${'d' * 200}';
+      }
+      deep = '$deep/${'e' * (real - deep.length - 1)}';
+      expect(deep, hasLength(real));
+      Directory(deep).createSync(recursive: true);
+      Link('${dir.path}/s').createSync(deep);
+      final fits = File('${dir.path}/s/${'f' * (openLongestPath - real - 1)}');
+      final over = File('${dir.path}/s/${'g' * (openLongestPath - real)}');
+      fits.writeAsStringSync('x');
+      over.writeAsStringSync('x');
+      // Removed through the short link: by their real paths they are too
+      // long to delete, and the folders left are not.
+      addTearDown(() {
+        if (fits.existsSync()) fits.deleteSync();
+        if (over.existsSync()) over.deleteSync();
+      });
+
+      final ok = run(['s/${fits.uri.pathSegments.last}']);
+      expect(ok.exitCode, 0, reason: '${ok.stderr}');
+      expect('\x07'.allMatches(tty.readAsStringSync()), hasLength(1));
+
+      tty.writeAsStringSync('');
+      final long = run(['s/${over.uri.pathSegments.last}']);
+      expect(long.exitCode, 1);
+      expect(long.stderr, contains('the path is longer than 4096 bytes'));
+      expect(long.stderr, contains('1 of 1 not opened'));
       expect(tty.readAsStringSync(), isEmpty);
     });
 
@@ -819,7 +977,9 @@ void main() {
         installOpenCommand('${home.path}/.local/bin');
         File('${bin.path}/curl').writeAsStringSync(
           '#!/bin/sh\nprintf "curl" >> "${log.path}"\n'
-          'for a in "\$@"; do printf "\\n  %s" "\$a" >> "${log.path}"; done\n'
+          'p=\nfor a in "\$@"; do printf "\\n  %s" "\$a" >> "${log.path}"; '
+          'if [ "\$p" = -K ] && [ "\$a" = - ]; then '
+          'cat >> "${log.path}.config"; fi; p=\$a; done\n'
           'printf "\\n" >> "${log.path}"\n',
         );
         // The three things the script asks of openssl: random hex, a hash
@@ -911,6 +1071,43 @@ esac
         final sent = log.readAsStringSync();
         expect(sent, contains('http://127.0.0.1:9/v1/send'));
         expect(sent, isNot(contains('relay.invalid')));
+      });
+
+      test('passes the connection secret to curl on its standard input, '
+          'never among its arguments', () {
+        install('-', key);
+        final direct = notify(
+          ['only a body'],
+          env: {
+            'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:9/v1/send',
+            'LC_SSHBOX_NOTIFY_SECRET': 'conn-secret',
+          },
+        );
+        expect(direct.exitCode, 0);
+        final argv = log.readAsStringSync();
+        expect(argv, contains('http://127.0.0.1:9/v1/send'));
+        expect(argv, isNot(contains('conn-secret')));
+        expect(
+          File('${log.path}.config').readAsStringSync(),
+          'header = "Authorization: Bearer conn-secret"\n',
+        );
+      });
+
+      test('a connection secret that is not base64url is not sent down the '
+          'connection, and the relay is used', () {
+        install('-', key);
+        final result = notify(
+          ['only a body'],
+          env: {
+            'LC_SSHBOX_NOTIFY_URL': 'http://127.0.0.1:9/v1/send',
+            'LC_SSHBOX_NOTIFY_SECRET': 'a"b\nheader = x',
+          },
+        );
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        final argv = log.readAsStringSync();
+        expect(argv, isNot(contains('127.0.0.1:9')));
+        expect(argv, contains('relay.invalid'));
+        expect(File('${log.path}.config').existsSync(), isFalse);
       });
     });
   });
