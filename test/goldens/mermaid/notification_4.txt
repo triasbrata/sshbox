@@ -1,0 +1,63 @@
+size 1101x1140
+line lifeline dashed none-none (144,44) (144,1096)
+line lifeline dashed none-none (443,44) (443,1096)
+line lifeline dashed none-none (728,44) (728,1096)
+line lifeline dashed none-none (1048,44) (1048,1096)
+box frame 124,642 944x434
+box frameTab 124,642 37x24
+line separator dashed none-none (124,890) (1068,890)
+box actorBox 42.5,8 203x36
+text actor 56.5,18 175x16 "sshbox-notify (notify.sh)"
+box actorBox 355.5,8 175x36
+text actor 369.5,18 147x16 "sshd or Tailscale SSH"
+box actorBox 679,8 98x36
+text actor 693,18 70x16 "Jeansh app"
+box actorBox 1003,8 90x36
+text actor 1023.5,18 49x16 "Android"
+box note 8,68 272x46
+text note 18,75 252x32 "only when LC_SSHBOX_NOTIFY_URL and LC_SSHBOX_NOTIFY_SECRET are both set"
+text message 164,128 259x96 "curl -fsS POST http://127.0.0.1:P/v1/send, connect 2 s, total 5 s\nAuthorization: Bearer secret, read from stdin (-H @-), never in ps\nform: body=message, title=title"
+line edge solid none-arrow (144,230) (443,230)
+box badge 135,221 18x18
+text number 140.5,222 7x16 "1"
+text message 463,252 245x32 "forwarded-tcpip channel on the same SSH connection"
+line edge solid none-arrow (443,290) (728,290)
+box badge 434,281 18x18
+text number 439.5,282 7x16 "2"
+text message 738,312 259x32 "DirectNotify.serve(tunnel): the whole request within 5 s, 16 KB at most"
+line edge solid none-arrow (728,350) (762,350) (762,368) (728,368)
+box badge 719,341 18x18
+text number 724.5,342 7x16 "3"
+box note 588.5,390 279x238
+text note 598.5,397 259x224 "DirectNotify._evaluate, in this order:\n16 KB and no end of headers: 413. Bad request line: 400.\nPath not /v1/send: 404. Not POST: 405.\nBearer not this connection's secret, compared in constant time: 401.\nNo Content-Length: 400. Over 16 KB: 413.\nNeither a form nor JSON: 400. Empty body: 400.\nBody cut to 1000 chars, title to 100, title Jeansh when empty."
+text message 310,676 252x32 "HTTP/1.1 200 {ok: true}, Connection: close"
+line edge dashed none-arrow (728,714) (144,714)
+box badge 719,705 18x18
+text number 724.5,706 7x16 "4"
+text message 748,736 280x64 "NotificationGateway.showForHost(host.id, title, body),\npayload sshbox://host/hostId, one notification id per host"
+line edge solid none-arrow (728,806) (1048,806)
+box badge 719,797 18x18
+text number 724.5,798 7x16 "5"
+text message 154,828 217x16 "sent directly to Jeansh, exit 0"
+line edge solid none-arrow (144,850) (178,850) (178,868) (144,868)
+box badge 135,841 18x18
+text number 140.5,842 7x16 "6"
+text message 310,938 252x32 "4xx {ok: false, error}, or a hang-up with no answer"
+line edge dashed none-arrow (728,976) (144,976)
+box badge 719,967 18x18
+text number 724.5,968 7x16 "7"
+text message 154,998 259x32 "curl fails, so try the relay (diagram 4)"
+line edge solid none-arrow (144,1036) (178,1036) (178,1054) (144,1054)
+box badge 135,1027 18x18
+text number 140.5,1028 7x16 "8"
+text frameKind 132,646 21x16 "alt"
+text frameTitle 579.5,646 70x16 "[accepted]"
+text frameTitle 470,894 252x32 "[refused, or no whole request within 5 s]"
+box actorBox 42.5,1096 203x36
+text actor 56.5,1106 175x16 "sshbox-notify (notify.sh)"
+box actorBox 355.5,1096 175x36
+text actor 369.5,1106 147x16 "sshd or Tailscale SSH"
+box actorBox 679,1096 98x36
+text actor 693,1106 70x16 "Jeansh app"
+box actorBox 1003,1096 90x36
+text actor 1023.5,1106 49x16 "Android"

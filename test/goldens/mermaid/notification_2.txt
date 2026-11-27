@@ -1,0 +1,136 @@
+size 1172.5x2190
+line lifeline dashed none-none (144,44) (144,2146)
+line lifeline dashed none-none (432,44) (432,2146)
+line lifeline dashed none-none (608.5,44) (608.5,2146)
+line lifeline dashed none-none (907.5,44) (907.5,2146)
+line lifeline dashed none-none (1080.5,44) (1080.5,2146)
+box frame 124,988 504.5x78
+box frameTab 124,988 51x24
+box frame 124,1078 504.5x108
+box frameTab 124,1078 51x24
+box frame 124,1276 504.5x94
+box frameTab 124,1276 51x24
+box frame 124,1598 504.5x92
+box frameTab 124,1598 51x24
+box frame 124,1702 504.5x78
+box frameTab 124,1702 51x24
+box frame 114,362 986.5x1672
+box frameTab 114,362 37x24
+line separator dashed none-none (114,472) (1100.5,472)
+box actorBox 95,8 98x36
+text actor 109,18 70x16 "Jeansh app"
+box actorBox 376,8 112x36
+text actor 390,18 84x16 "Secret store"
+box actorBox 528,8 161x36
+text actor 542,18 133x16 "jeansh-notify relay"
+box actorBox 858.5,8 98x36
+text actor 872.5,18 70x16 "Workers KV"
+box actorBox 996.5,8 168x36
+text actor 1010.5,18 140x16 "Google OAuth and FCM"
+text message 165.5,68 245x96 "once per launch (_load): read sshbox.notify.revoke, then sshbox.notify.keys\n(a key in both stays waiting only), delete the old bearer key sshbox.notify.key"
+line edge solid none-arrow (144,170) (432,170)
+box badge 135,161 18x18
+text number 140.5,162 7x16 "1"
+box note 15,192 258x78
+text note 25,199 238x64 "NotifyKeys.forConnect(hostId) at a connect,\nor useFcmToken for the hosts that have a key (diagram 7)"
+text message 154,284 245x32 "_sync(hostId): one registration per host at a time"
+line edge solid none-arrow (144,322) (178,322) (178,340) (144,340)
+box badge 135,313 18x18
+text number 140.5,314 7x16 "2"
+text message 154,410 133x16 "nothing to register"
+line edge solid none-arrow (144,432) (178,432) (178,450) (144,450)
+box badge 135,423 18x18
+text number 140.5,424 7x16 "3"
+text message 154,504 245x48 "the host's key, or RelayKey.generate(): a P-256 scalar from Random.secure()"
+line edge solid none-arrow (144,558) (178,558) (178,576) (144,576)
+box badge 135,549 18x18
+text number 140.5,550 7x16 "4"
+text message 154,598 224x32 "keyId = jnk_ + first 32 chars of base64url SHA-256(SPKI DER)"
+line edge solid none-arrow (144,636) (178,636) (178,654) (144,654)
+box badge 135,627 18x18
+text number 140.5,628 7x16 "5"
+text message 154,676 245x96 "_signed(key): X-PARTNER-ID = keyId, X-TIMESTAMP, X-EXTERNAL-ID and X-SIGNATURE,\nthe key's own signature over POST:/v1/register:hex SHA-256 of body:X-TIMESTAMP:X-EXTERNAL-ID"
+line edge solid none-arrow (144,778) (178,778) (178,796) (144,796)
+box badge 135,769 18x18
+text number 140.5,770 7x16 "6"
+text message 250.3,818 252x64 "POST /v1/register {token: FCM token, publicKey: base64 SPKI DER, host: hostId},\nwith the four headers"
+line edge solid none-arrow (144,888) (608.5,888)
+box badge 135,879 18x18
+text number 140.5,880 7x16 "7"
+text message 618.5,910 252x32 "REGISTER_LIMIT, by cf-connecting-ip, 10 per 60 s"
+line edge solid none-arrow (608.5,948) (642.5,948) (642.5,966) (608.5,966)
+box badge 599.5,939 18x18
+text number 605,940 7x16 "8"
+text message 302.8,1022 147x16 "429 too many requests"
+line edge dashed none-arrow (608.5,1044) (144,1044)
+box badge 599.5,1035 18x18
+text number 605,1036 7x16 "9"
+text frameKind 132,992 35x16 "break"
+text frameTitle 345.8,992 112x16 "[over the limit]"
+text message 365.8,1142 21x16 "400"
+line edge dashed none-arrow (608.5,1164) (144,1164)
+box badge 597.5,1153 22x22
+text number 601.5,1156 14x16 "10"
+text frameKind 132,1082 35x16 "break"
+text frameTitle 275.8,1082 252x48 "[token not 1 to 4096 chars, host not 1 to 100, or publicKey not SPKI P-256]"
+text message 618.5,1198 259x32 "keyId = jnk_ + base64url SHA-256(SPKI DER), first 32"
+line edge solid none-arrow (608.5,1236) (642.5,1236) (642.5,1254) (608.5,1254)
+box badge 597.5,1225 22x22
+text number 601.5,1228 14x16 "11"
+text message 253.8,1310 245x32 "401 X-PARTNER-ID is not publicKey's key id"
+line edge dashed none-arrow (608.5,1348) (144,1348)
+box badge 597.5,1337 22x22
+text number 601.5,1340 14x16 "12"
+text frameKind 132,1280 35x16 "break"
+text frameTitle 275.8,1280 252x16 "[X-PARTNER-ID missing, or not keyId]"
+text message 628.5,1382 259x112 "unsigned(): a send's checks after its key (diagram 4), against publicKey\nfrom the body. 401 stale or bad timestamp, 400 X-EXTERNAL-ID,\n401 bad signature, 409 duplicate X-EXTERNAL-ID, 429 SEND_LIMIT.\nThen put n:keyId:externalId for 600 s"
+line edge solid none-arrow (608.5,1500) (907.5,1500)
+box badge 597.5,1489 22x22
+text number 601.5,1492 14x16 "13"
+text message 722,1522 245x48 "messages:send {validate_only: true, message: {token}}\n(access token as in diagram 4)"
+line edge solid none-arrow (608.5,1576) (1080.5,1576)
+box badge 597.5,1565 22x22
+text number 601.5,1568 14x16 "14"
+text message 257.3,1646 238x16 "400 FCM does not accept this token"
+line edge dashed none-arrow (608.5,1668) (144,1668)
+box badge 597.5,1657 22x22
+text number 601.5,1660 14x16 "15"
+text frameKind 132,1602 35x16 "break"
+text frameTitle 275.8,1602 252x32 "[404, INVALID_ARGUMENT, UNREGISTERED or SENDER_ID_MISMATCH]"
+text message 246.8,1736 259x16 "502 FCM returned HTTP status and code"
+line edge dashed none-arrow (608.5,1758) (144,1758)
+box badge 597.5,1747 22x22
+text number 601.5,1750 14x16 "16"
+text frameKind 132,1706 35x16 "break"
+text frameTitle 335.3,1706 133x16 "[any other failure]"
+text message 646,1792 224x32 "put k:keyId = {publicKey, token, host, created}, no expiry"
+line edge solid none-arrow (608.5,1830) (907.5,1830)
+box badge 597.5,1819 22x22
+text number 601.5,1822 14x16 "17"
+text message 337.8,1852 77x16 "200 {keyId}"
+line edge dashed none-arrow (608.5,1874) (144,1874)
+box badge 597.5,1863 22x22
+text number 601.5,1866 14x16 "18"
+text message 154,1896 252x32 "keyId must equal the app's own, else HttpException"
+line edge solid none-arrow (144,1934) (178,1934) (178,1952) (144,1952)
+box badge 133,1923 22x22
+text number 137,1926 14x16 "19"
+text message 165.5,1974 245x32 "hostId → {keyId, privateKey: base64 PKCS8 DER, fcmToken}"
+line edge solid none-arrow (144,2012) (432,2012)
+box badge 133,2001 22x22
+text number 137,2004 14x16 "20"
+text frameKind 122,366 21x16 "alt"
+text frameTitle 513.8,366 224x32 "[no FCM token yet, or the key is registered for this token]"
+text frameTitle 540.8,476 133x16 "[a key to register]"
+box note 8,2046 272x78
+text note 18,2053 252x64 "A failure is logged by its kind only and tried again at the\nnext connect, token or launch, never in a loop of its own."
+box actorBox 95,2146 98x36
+text actor 109,2156 70x16 "Jeansh app"
+box actorBox 376,2146 112x36
+text actor 390,2156 84x16 "Secret store"
+box actorBox 528,2146 161x36
+text actor 542,2156 133x16 "jeansh-notify relay"
+box actorBox 858.5,2146 98x36
+text actor 872.5,2156 70x16 "Workers KV"
+box actorBox 996.5,2146 168x36
+text actor 1010.5,2156 140x16 "Google OAuth and FCM"

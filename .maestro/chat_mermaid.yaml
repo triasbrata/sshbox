@@ -42,7 +42,8 @@ env:
     visible: "Copy diagram source"
     timeout: 5000
 - assertNotVisible: '(?s).*E2EA --> E2EB.*'
-# Time for the web view to draw it, for the screenshot.
+# #333: drawn natively, one node for a screen reader naming its nodes.
+- assertVisible: "Flowchart: E2EA, E2EB"
 - waitForAnimationToEnd:
     timeout: 3000
 - takeScreenshot: chat-mermaid-diagram
