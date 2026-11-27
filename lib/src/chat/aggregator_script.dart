@@ -292,7 +292,7 @@ def delivered(rec):
         # A message that reached a session mid-turn is not a user line but an
         # attachment, and carries its origin inside it.
         a = d.get("attachment")
-        o = d.get("origin") or (a.get("origin") if isinstance(a, dict) else None)
+        o = d.get("origin")
         if isinstance(o, dict) and o.get("from") == needle:
             return True
     return False
