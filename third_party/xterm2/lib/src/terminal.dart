@@ -748,6 +748,7 @@ class Terminal
   void write(String data) {
     if (_isDisposed) return;
     _parser.write(data);
+    _mainBuffer.compactScrollback();
     if (_synchronizedUpdateMode) return;
     notifyListeners();
   }

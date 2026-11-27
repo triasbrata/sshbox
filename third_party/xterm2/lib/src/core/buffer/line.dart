@@ -1,3 +1,4 @@
+import 'dart:collection' show Queue;
 import 'dart:math' show min;
 import 'dart:typed_data';
 
@@ -23,11 +24,41 @@ class BufferLine with IndexedItem {
   BufferLine(
     this._length, {
     this.isWrapped = false,
-  }) : _data = Uint32List(_calcCapacity(_length) * _cellSize);
+  }) : _cells = Uint32List(_calcCapacity(_length) * _cellSize);
 
   int _length;
 
-  Uint32List _data;
+  /// The cells, four words each. Empty while the line is [isPacked].
+  Uint32List _cells;
+
+  /// What every method reads and writes: the cells, unpacked first if they
+  /// are packed.
+  @pragma('vm:prefer-inline')
+  Uint32List get _data {
+    if (_packed != null) _unpack();
+    return _cells;
+  }
+
+  set _data(Uint32List value) {
+    _packed = null;
+    _cells = value;
+  }
+
+  /// The line as [pack] left it, or null while its cells are in [_cells].
+  Uint8List? _packed;
+
+  /// Whether the cells are held packed, a line scrolled out of sight taking
+  /// a twentieth of the memory it does unpacked.
+  bool get isPacked => _packed != null;
+
+  /// The bytes the cells take now, packed or not.
+  int get heldBytes => _packed?.lengthInBytes ?? _cells.lengthInBytes;
+
+  /// Lines unpacked to be read or changed, oldest first. A line that has
+  /// fallen out of the back of it is packed again, so scrolling through the
+  /// whole scrollback does not leave it all unpacked.
+  static final _unpacked = Queue<BufferLine>();
+  static const _maxUnpacked = 256;
 
   Uint32List get data => _data;
 
@@ -527,6 +558,9 @@ class BufferLine with IndexedItem {
       return;
     }
 
+    // The packed cells are a run of exactly the old length.
+    if (_packed != null) _unpack();
+
     if (length > _length) {
       final newBufferSize = _calcCapacity(length) * _cellSize;
 
@@ -545,6 +579,121 @@ class BufferLine with IndexedItem {
         anchor.reposition(_length);
       }
     }
+  }
+
+  /// Holds the cells in a form that takes about 1 to 2 bytes for each one
+  /// written, instead of 16 for each one in the line's width: the text as
+  /// bytes (a printable ASCII character is one byte, anything else a marker
+  /// and a number), the trailing blanks left out, and the colours and
+  /// attributes as runs. Nothing is lost: every method of the line unpacks it
+  /// again, as it was, when it is used. Cells past [length] are not kept.
+  void pack() {
+    if (_packed != null) return;
+    final cells = _cells;
+    final length = _length;
+    var contentLength = 0;
+    for (var i = length - 1; i >= 0; i--) {
+      if (cells[i * _cellSize + _cellContent] != 0) {
+        contentLength = i + 1;
+        break;
+      }
+    }
+
+    final out = <int>[];
+    _writeVarint(out, contentLength);
+    final runs = <int>[];
+    var runCount = 0;
+    var runStart = 0;
+    for (var i = 1; i <= length; i++) {
+      if (i < length &&
+          cells[i * _cellSize + _cellForeground] ==
+              cells[runStart * _cellSize + _cellForeground] &&
+          cells[i * _cellSize + _cellBackground] ==
+              cells[runStart * _cellSize + _cellBackground] &&
+          cells[i * _cellSize + _cellAttributes] ==
+              cells[runStart * _cellSize + _cellAttributes]) {
+        continue;
+      }
+      if (length == 0) break;
+      _writeVarint(runs, i - runStart);
+      _writeVarint(runs, cells[runStart * _cellSize + _cellForeground]);
+      _writeVarint(runs, cells[runStart * _cellSize + _cellBackground]);
+      _writeVarint(runs, cells[runStart * _cellSize + _cellAttributes]);
+      runCount++;
+      runStart = i;
+    }
+    _writeVarint(out, runCount);
+    out.addAll(runs);
+    for (var i = 0; i < contentLength; i++) {
+      final word = cells[i * _cellSize + _cellContent];
+      final codePoint = word & CellContent.codepointMask;
+      if (word == 0) {
+        out.add(0);
+      } else if (word == (codePoint | (1 << CellContent.widthShift)) &&
+          codePoint >= 0x20 &&
+          codePoint <= 0x7e) {
+        out.add(codePoint);
+      } else {
+        out.add(1);
+        _writeVarint(out, word);
+      }
+    }
+    _packed = Uint8List.fromList(out);
+    _cells = _emptyCells;
+  }
+
+  static final _emptyCells = Uint32List(0);
+
+  void _unpack() {
+    final packed = _packed!;
+    final cells = Uint32List(_calcCapacity(_length) * _cellSize);
+    var at = 0;
+    int readVarint() {
+      var value = 0;
+      var shift = 0;
+      while (true) {
+        final byte = packed[at++];
+        value |= (byte & 0x7f) << shift;
+        if (byte & 0x80 == 0) return value;
+        shift += 7;
+      }
+    }
+
+    final contentLength = readVarint();
+    final runCount = readVarint();
+    var cell = 0;
+    for (var run = 0; run < runCount; run++) {
+      final count = readVarint();
+      final foreground = readVarint();
+      final background = readVarint();
+      final attributes = readVarint();
+      for (var i = 0; i < count; i++, cell++) {
+        final offset = cell * _cellSize;
+        cells[offset + _cellForeground] = foreground;
+        cells[offset + _cellBackground] = background;
+        cells[offset + _cellAttributes] = attributes;
+      }
+    }
+    for (var i = 0; i < contentLength; i++) {
+      final byte = packed[at++];
+      final offset = i * _cellSize + _cellContent;
+      if (byte == 0) continue;
+      cells[offset] =
+          byte == 1 ? readVarint() : byte | (1 << CellContent.widthShift);
+    }
+    _cells = cells;
+    _packed = null;
+
+    _unpacked.add(this);
+    if (_unpacked.length > _maxUnpacked) _unpacked.removeFirst().pack();
+  }
+
+  static void _writeVarint(List<int> out, int value) {
+    while (value >= 0x80) {
+      out.add((value & 0x7f) | 0x80);
+      value >>= 7;
+    }
+    out.add(value);
   }
 
   /// Returns the offset of the last cell that has content from the start of
