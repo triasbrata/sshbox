@@ -24,6 +24,11 @@ class DesktopDrop {
 
   Offset? _offset;
 
+  /// The view the events that follow are for: 0, the first, unless the
+  /// platform says. macOS names it, before each event, with a "view" call;
+  /// Linux and Windows attach to the first window's view alone.
+  int eventView = 0;
+
   void init() {
     if (_inited) {
       return;
@@ -73,6 +78,9 @@ class DesktopDrop {
 
   Future<void> _handleMethodChannel(MethodCall call) async {
     switch (call.method) {
+      case "view":
+        eventView = call.arguments as int;
+        break;
       case "entered":
         final position = (call.arguments as List).cast<double>();
         _offset = Offset(position[0], position[1]);
