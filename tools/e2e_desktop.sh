@@ -110,8 +110,15 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 drop save restore buttons churn last}; do
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn drop last}; do
     echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
+    # A drag between windows is run with no window manager, as the smoke
+    # tests' file drops are: under openbox the same drag reached no window.
+    if [ "$phase" = drop ] && [ -n "${MW_WM_PID:-}" ]; then
+      kill "$MW_WM_PID" 2>/dev/null
+      MW_WM_PID=
+      sleep 1
+    fi
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
@@ -177,10 +184,11 @@ mw_phases() {
 if [ "$target" = mw-phases ]; then
   openbox >/dev/null 2>&1 &
   wm=$!
+  MW_WM_PID=$wm
   sleep 1
   rc=0
   mw_phases || rc=1
-  kill $wm
+  kill $wm 2>/dev/null
   exit $rc
 fi
 
