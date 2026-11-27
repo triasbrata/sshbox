@@ -4595,11 +4595,13 @@ touch '${done.path}'
         greaterThan(100),
         reason: 'the attach fill was not packed',
       );
+      // The 18 cells of the shortest line's text: tmux's capture also draws
+      // the blanks after it as spaces, which has nothing to do with packing.
       final diff = _packedAgainstTwin(
         terminal,
         twin.terminal,
         count - 20,
-        terminal.viewWidth,
+        18,
       );
       expect(
         diff,
