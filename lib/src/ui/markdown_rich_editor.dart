@@ -601,7 +601,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     if (was.text == _text.text &&
         was.selection != _text.selection &&
         _text.selection.isCollapsed) {
-      _holdLine(_text.selection);
+      // MUTATION: the line is never held
     }
     final text = _text.text;
     if (text == _known) return;
