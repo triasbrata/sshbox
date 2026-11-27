@@ -604,14 +604,14 @@ jobs:
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
 
-      - name: Several windows, the window experiments
-        timeout-minutes: 40
+      - name: Several windows, what makes the first close stall
+        timeout-minutes: 50
         if: always()
         run: |
-          for exp in control hide-extra delayed-destroy no-place; do
-            v=$exp; [ "$exp" = control ] && v=
-            JEANSH_WIN_EXPERIMENT=$v E2E_MW_PHASES=last E2E_MW_ONLY=1 tools/e2e_desktop.sh linux || true
-          done
+          for target in A B; do for live in 0 1; do for how in button wm; do
+            BISECT_TARGET=$target BISECT_LIVE=$live BISECT_HOW=$how E2E_MW_PHASES=bisect E2E_MW_ONLY=1 tools/e2e_desktop.sh linux || true
+          done; done; done
+          BISECT_LOG=1 G_MESSAGES_DEBUG=all GDK_DEBUG=opengl BISECT_TARGET=A BISECT_LIVE=1 BISECT_HOW=button E2E_MW_PHASES=bisect E2E_MW_ONLY=1 tools/e2e_desktop.sh linux || true
 
       # Markdown Rich text, how long a key takes, in profile: a measure for a
       # person to read, never a gate. flutter test runs debug alone, so this

@@ -123,6 +123,16 @@ mw_phases() {
         tail -n 80 "$data/last.log"
         rc=1
       fi
+    elif [ "$phase" = bisect ]; then
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/bisect.log" || true
+      echo "BISECT RESULT: $(grep -a bisect "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+      if [ -n "$BISECT_LOG" ]; then
+        echo "--- stderr around the close, the last 90 lines:"
+        tail -n 90 "$data/bisect.log"
+      fi
+      rm -f "$data/jeansh-e2e-mw-trace.txt"
     elif [ "$phase" = churn ]; then
       # The app's stderr is in flutter test's output, kept to be read for a
       # crash line.

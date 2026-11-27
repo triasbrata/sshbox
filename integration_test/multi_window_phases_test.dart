@@ -226,6 +226,8 @@ void main() {
           await _restore(tester);
         case 'buttons':
           await _buttons(tester);
+        case 'bisect':
+          await _bisect(tester);
         case 'churn':
           await _churn(tester);
         case 'last':
@@ -685,4 +687,68 @@ bool _same(List<int> a, List<int> b) {
     if (a[i] != b[i]) return false;
   }
   return true;
+}
+
+/// What makes the first window's close stall the frames, when the second's
+/// does not: which window closes (BISECT_TARGET A or B), whether it holds a
+/// live shell (BISECT_LIVE 1 or 0), and how (BISECT_HOW button, the app's
+/// own ✕, or wm, the window manager's delete). The answer is one trace line.
+Future<void> _bisect(WidgetTester tester) async {
+  final target = Platform.environment['BISECT_TARGET'] ?? 'A';
+  final live = Platform.environment['BISECT_LIVE'] == '1';
+  final how = Platform.environment['BISECT_HOW'] ?? 'button';
+  var ids = await _windowsAre(tester, 1);
+  final a0 = _views().single;
+  if (live && target == 'A') {
+    await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'A\'s card'));
+    await _until(tester, () => _in(_tabClose, a0).length == 1, 'A\'s shell tab');
+    await tester.pump(const Duration(seconds: 3));
+  }
+  await _newWindow(tester, ids[0], 2);
+  ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  if (live && target == 'B') {
+    await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
+    await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
+    await tester.pump(const Duration(seconds: 3));
+  }
+  final x = target == 'A' ? ids[0] : ids[1];
+  final v = target == 'A' ? a : b;
+  if (how == 'button') {
+    await _click(tester, x, v, await _first(tester, _close, v, 'its Close'));
+  } else {
+    await _xdo(['windowfocus', x]);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _xdo(['key', 'alt+F4']);
+  }
+  if (live) {
+    await _until(
+      tester,
+      () => _in(find.byType(TuiDialog), v).isNotEmpty,
+      'the question before the window closes',
+    );
+    await _click(
+      tester,
+      x,
+      v,
+      await _first(tester, _button('Close window'), v, 'Close window'),
+    );
+  }
+  // Counted with no pump, which may not come back.
+  var windows = 99;
+  for (var i = 0; i < 200 && windows != 1; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    windows = (await _windows()).length;
+  }
+  WidgetsBinding.instance.scheduleFrame();
+  final frame = await Future.any([
+    WidgetsBinding.instance.endOfFrame.then((_) => true),
+    Future<bool>.delayed(const Duration(seconds: 8), () => false),
+  ]);
+  _trace(
+    'bisect target=$target live=${live ? 1 : 0} how=$how windows=$windows '
+    'frame=$frame',
+  );
 }
