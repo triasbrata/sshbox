@@ -167,7 +167,10 @@ const _settleStep = Duration(milliseconds: 100);
 /// A generous settle: this is a real app doing real work at launch — reading
 /// preferences off disk, asking the keychain, starting notifications — not a
 /// widget tree pumped in memory.
-Future<void> _launch(WidgetTester tester) async {
+Future<void> _launch(WidgetTester tester) =>
+    _timed('launch', () => _launchTimed(tester));
+
+Future<void> _launchTimed(WidgetTester tester) async {
   await app.main();
   // A fresh install opens on the redesign's first-run slides, which animate,
   // so nothing settles until they are skipped; main has none and opens on
@@ -188,6 +191,13 @@ Future<void> _launch(WidgetTester tester) async {
 /// terminal never settles — its cursor blinks — so pumpAndSettle cannot wait
 /// on one.
 Future<void> _until(
+  WidgetTester tester,
+  FutureOr<bool> Function() done,
+  String what, {
+  Duration timeout = const Duration(seconds: 20),
+}) => _timed('until', () => _untilTimed(tester, done, what, timeout: timeout));
+
+Future<void> _untilTimed(
   WidgetTester tester,
   FutureOr<bool> Function() done,
   String what, {
@@ -680,10 +690,58 @@ void _test(
   String? skip,
   bool semantics = true,
 }) {
+  final mine = _inShard(_declared++);
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null, semanticsEnabled: semantics);
+  testWidgets(
+    name,
+    (tester) async {
+      _spent.clear();
+      final watch = Stopwatch()..start();
+      try {
+        await body(tester);
+      } finally {
+        debugPrint(
+          'time: ${(watch.elapsedMilliseconds / 1000).toStringAsFixed(1)}s '
+          '${_spent.entries.map((e) => '${e.key} ${(e.value / 1000).toStringAsFixed(1)}s').join(', ')}'
+          ' | $name',
+        );
+      }
+    },
+    skip: skip != null || !mine,
+    semanticsEnabled: semantics,
+  );
+}
+
+/// How many tests have been declared, for the shard each belongs to.
+var _declared = 0;
+
+/// JEANSH_E2E_SHARD=i/n runs the tests whose place in this file is i modulo n,
+/// the others skipped, so one runner's share of the file fits its step: the
+/// whole file took 31 min 50 s of a 32 minute step on Linux, 93 tests of which
+/// 11 minutes were waits for a screen and the rest taps, pumps and checks,
+/// each test starting from a cold app of its own and none leaning on another.
+/// Unset, every test runs.
+bool _inShard(int index) {
+  final shard = Platform.environment['JEANSH_E2E_SHARD'];
+  if (shard == null || shard.isEmpty) return true;
+  final parts = shard.split('/').map(int.parse).toList();
+  return index % parts[1] == parts[0];
+}
+
+/// Where a test's time went, by step, printed after it as `time:`: a Linux
+/// run of the whole file had passed its 32 minutes, and the log said only
+/// when each test ended.
+final _spent = <String, int>{};
+
+Future<T> _timed<T>(String step, Future<T> Function() body) async {
+  final watch = Stopwatch()..start();
+  try {
+    return await body();
+  } finally {
+    _spent[step] = (_spent[step] ?? 0) + watch.elapsedMilliseconds;
+  }
 }
 
 const _powershell =
@@ -1970,7 +2028,6 @@ Future<void> _macWidenWindow(WidgetTester tester) async {
   );
   await tester.pump(const Duration(milliseconds: 500));
 }
-
 
 // ---- Packed scrollback (#351): helpers -----------------------------------
 
@@ -4708,12 +4765,7 @@ touch '${done.path}'
       );
       // The 18 cells of the shortest line's text: tmux's capture also draws
       // the blanks after it as spaces, which has nothing to do with packing.
-      final diff = _packedAgainstTwin(
-        terminal,
-        twin.terminal,
-        count - 20,
-        18,
-      );
+      final diff = _packedAgainstTwin(terminal, twin.terminal, count - 20, 18);
       expect(
         diff,
         isNull,
@@ -5635,7 +5687,7 @@ touch '${done.path}'
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       expect(find.byTooltip('Expand the sessions'), findsNothing);
       expect(_collapse, findsNothing);
       // No sessions button in the composer: the ⋮ menu's item opens the
@@ -5647,7 +5699,7 @@ touch '${done.path}'
       await tester.tap(find.byTooltip('Chat settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Sessions on this host').last);
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       expect(list, findsOneWidget);
       // A drawer has no «, folding being a wide window's.
       expect(_collapse, findsNothing);
@@ -5655,7 +5707,7 @@ touch '${done.path}'
       await tester.pumpAndSettle();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       await _closeTabs(tester);
     },
   );
@@ -7556,15 +7608,13 @@ touch '${done.path}'
       );
       final drawn = await recorder.endRecording().toImage(400, 400);
       final png = (await drawn.toByteData(format: ui.ImageByteFormat.png))!;
-      final dir = Directory(
-        Platform.environment['HOME']!,
-      ).createTempSync('0-jeansh-e2e-');
+      final dir = Directory(Platform.environment['HOME']!)
+          .createTempSync('0-jeansh-e2e-');
       addTearDown(() => dir.deleteSync(recursive: true));
       String name(int i) => 'e2e-pic-${'$i'.padLeft(3, '0')}.png';
       for (var i = 0; i < total; i++) {
-        File('${dir.path}/${name(i)}').writeAsBytesSync(
-          png.buffer.asUint8List(),
-        );
+        File('${dir.path}/${name(i)}')
+            .writeAsBytesSync(png.buffer.asUint8List());
       }
 
       await _launch(tester);
@@ -7580,7 +7630,8 @@ touch '${done.path}'
       cache.clear();
       for (var i = 0; i < total; i++) {
         await tester.runAsync(
-          () => precacheImage(FileImage(File('${dir.path}/${name(i)}')), context),
+          () =>
+              precacheImage(FileImage(File('${dir.path}/${name(i)}')), context),
         );
       }
       debugPrint(
@@ -9957,7 +10008,8 @@ touch '${done.path}'
       _standInClaudeFor();
       final home = Platform.environment['HOME']!;
       String big() => [
-        for (var i = 0; i < 1200; i++) 'line ${'$i'.padLeft(4, '0')}: ${'x' * 38}',
+        for (var i = 0; i < 1200; i++)
+          'line ${'$i'.padLeft(4, '0')}: ${'x' * 38}',
       ].join('\n');
       final bigContent = big();
       const limit = 32 * 1024;
@@ -10007,8 +10059,7 @@ touch '${done.path}'
       await _chatAnswered(tester);
       await tester.pump(const Duration(milliseconds: 500));
 
-      Finder body(String text) =>
-          find.textContaining(text, findRichText: true);
+      Finder body(String text) => find.textContaining(text, findRichText: true);
 
       Future<void> open(String path) async {
         final row = find.textContaining(path);
@@ -11223,6 +11274,150 @@ sequenceDiagram
       await _closeTabs(tester);
     },
   );
+
+  // D: Rich text's selection menu in termul's face. A real right-click on a
+  // selection opens the panel with the field's own rows and, under them,
+  // the formatting with its keys (Ctrl+B, or ⌘B on a Mac); its Bold wraps
+  // the selection, which saved is the file. With no selection, a right-click
+  // opens the panel with no Cut. A mutation with the panel taken out leaves
+  // Flutter's own menu, which has no Ctrl+B.
+  _test(
+    'rich text: a right-click on a selection shows termul\'s panel with its '
+    'keys, and its Bold wraps the selection; with none, no Cut',
+    skip: editorSkip,
+    (tester) async {
+      const original = 'one two three\n';
+      final k = await _EditorSave.start(tester, 'chrome.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      final editable = tester.state<EditableTextState>(field);
+      Offset at(int offset) {
+        final render = editable.renderEditable;
+        return render.localToGlobal(
+          render.getLocalRectForCaret(TextPosition(offset: offset)).center,
+        );
+      }
+
+      final bold = Platform.isMacOS ? '⌘B' : 'Ctrl+B';
+      Future<void> click(Offset p, {bool right = false}) => _realPointer(
+        () => right
+            ? _realRightClick(tester, p)
+            : _osMouse(tester, [
+                'move ${p.dx} ${p.dy}',
+                'down',
+                'sleep 40',
+                'up',
+              ]),
+      );
+
+      // The whole line selected, and a right-click inside it.
+      await tester.showKeyboard(field);
+      editable.userUpdateTextEditingValue(
+        editable.textEditingValue.copyWith(
+          selection: const TextSelection(baseOffset: 0, extentOffset: 13),
+        ),
+        SelectionChangedCause.keyboard,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await click(at(5), right: true);
+      await _until(
+        tester,
+        () => find.text(bold).evaluate().isNotEmpty,
+        "the panel, with Bold's $bold",
+      );
+      expect(find.text('Cut'), findsOneWidget);
+      expect(find.text('Copy'), findsWidgets);
+      debugPrint(
+        "✅ rich text: a right-click on a selection shows termul's "
+        'panel, Cut, Copy and Bold $bold',
+      );
+      await _grab(tester, 'desktop-md-chrome-panel');
+      await click(tester.getCenter(find.text('Bold')));
+      await _until(
+        tester,
+        () => k.text() == '**one two three**\n',
+        'Bold to wrap the selection',
+      );
+      debugPrint('✅ rich text: the panel\'s Bold wrapped the selection');
+      await k.chord(save);
+      await _until(
+        tester,
+        () => k.file.readAsStringSync() == '**one two three**\n',
+        'the save to write the bold alone',
+        timeout: const Duration(seconds: 8),
+      );
+
+      // No selection: the one Bold left collapsed to the end, and a
+      // right-click there, on the empty last line, where no word is for a
+      // Mac to select.
+      editable.userUpdateTextEditingValue(
+        editable.textEditingValue.copyWith(
+          selection: TextSelection.collapsed(offset: k.text().length),
+        ),
+        SelectionChangedCause.keyboard,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(editable.textEditingValue.selection.isCollapsed, isTrue);
+      await click(at(k.text().length), right: true);
+      await _until(
+        tester,
+        () => find.text(bold).evaluate().isNotEmpty,
+        'the panel with no selection',
+      );
+      expect(
+        find.text('Cut'),
+        findsNothing,
+        reason: 'Cut offered with nothing selected',
+      );
+      debugPrint('✅ rich text: with no selection the panel has no Cut');
+      await _escape(tester);
+      await _closeTabs(tester);
+    },
+  );
+
+  // D: italic off `***x***`, bold and italic in one pair of markers, takes
+  // italic's own star and leaves **x**. A real Ctrl+I (⌘I on a Mac). A
+  // mutation without the three-marker branch leaves `x`.
+  _test('rich text: italic off ***x*** leaves **x**', skip: editorSkip, (
+    tester,
+  ) async {
+    const original = '***x***\n';
+    final k = await _EditorSave.start(tester, 'triple.md', text: original);
+    final field = find.descendant(
+      of: find.byType(MarkdownRichEditor),
+      matching: find.byType(EditableText),
+    );
+    final editable = tester.state<EditableTextState>(field);
+    await tester.showKeyboard(field);
+    editable.userUpdateTextEditingValue(
+      editable.textEditingValue.copyWith(
+        selection: const TextSelection(baseOffset: 3, extentOffset: 4),
+      ),
+      SelectionChangedCause.keyboard,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await k.press('ctrl+i', 'keystroke "i" using command down');
+    await _until(
+      tester,
+      () => k.text() != original,
+      'the italic chord to change the text',
+    );
+    expect(k.text(), '**x**\n');
+    debugPrint(
+      '✅ rich text: ${Platform.isMacOS ? '⌘I' : 'Ctrl+I'} on ***x*** '
+      'left **x**',
+    );
+    await k.chord(save);
+    await _until(
+      tester,
+      () => k.file.readAsStringSync() == '**x**\n',
+      'the save to write **x**',
+      timeout: const Duration(seconds: 8),
+    );
+    await _closeTabs(tester);
+  });
 
   // Not a check but a measure, for the PR: how long a frame takes while keys
   // are typed into a long Markdown file in Rich text, build and raster, as
