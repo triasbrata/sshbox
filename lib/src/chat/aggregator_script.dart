@@ -432,7 +432,7 @@ def cmd_deliver(args):
     # The journal's lock makes the check and the write one step.
     jl = open(os.path.join(d, "journal.lock"), "a")
     fcntl.flock(jl, fcntl.LOCK_EX)
-    have = load_rec(d, mid)
+    have = None
     if have is not None:
         fcntl.flock(jl, fcntl.LOCK_UN)
         v = view(have, d)
