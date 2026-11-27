@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sshbox/src/app.dart';
 import 'package:sshbox/src/data/secret_store.dart';
 import 'package:sshbox/src/models/host_profile.dart';
+import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/session/terminal_session.dart';
 import 'package:sshbox/src/ui/hosts_page.dart';
 import 'package:sshbox/src/ui/web_page.dart';
@@ -112,6 +115,26 @@ class _Shell implements SessionTransport, TerminalSession {
   Future<void> dispose() async {}
 }
 
+/// A second view for a test: the engine of a widget test observes one view,
+/// so nothing is drawn in this one, as in Flutter's own multi-view tests.
+class _ExtraView extends TestFlutterView {
+  _ExtraView(FlutterView view, {required this.viewId})
+    : super(
+        view: view,
+        platformDispatcher: view.platformDispatcher as TestPlatformDispatcher,
+        display: view.display as TestDisplay,
+      );
+
+  @override
+  final int viewId;
+
+  @override
+  void render(Scene scene, {Size? size}) {}
+
+  @override
+  void updateSemantics(SemanticsUpdate update) {}
+}
+
 class _BareNotifications extends FlutterLocalNotificationsPlatform {}
 
 Map<String, Object> _saved({bool restored = false}) => {
@@ -187,6 +210,11 @@ void main() {
       binding.handleMetricsChanged();
       await _settle(tester);
       expect(find.byType(MaterialApp), findsOneWidget);
+      // The lifecycle each window change leaves is in the app log.
+      expect(
+        appLog.current,
+        contains('lifecycle resumed, frames on, 1 windows'),
+      );
     },
   );
 
@@ -280,5 +308,63 @@ void main() {
       // The link is a tab of the same host's, beside its shell.
       expect(find.byType(WebPage), findsOneWidget);
     },
+  );
+
+  testWidgets(
+    'the first window closed while another is open hands over without a '
+    'fault, the other drawing in the first view from then on',
+    (tester) async {
+      _quiet(tester);
+      final runner = _Runner();
+      final extra = _ExtraView(tester.view, viewId: 1);
+      await tester.pumpWidget(
+        SshboxApp(
+          windows: runner,
+          multiWindow: true,
+          transport: (_, banner) => _Shell()..banner = banner,
+          viewOf: (id) => id == 0 ? tester.view : (id == 1 ? extra : null),
+        ),
+        wrapWithView: false,
+      );
+      await _settle(tester);
+      expect(find.byType(MaterialApp), findsOneWidget);
+
+      // A second window, its view come up.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await _settle(tester);
+      runner.say.add(const WindowOpened(1, 1));
+      await _settle(tester);
+      expect(find.byType(MaterialApp), findsNWidgets(2));
+
+      // The first window is closed, with nothing live in it to ask about.
+      runner.say.add(const WindowCloseRequested(0));
+      await _settle(tester);
+      expect(tester.takeException(), isNull);
+
+      // One window left, drawn in the first view, and frames still come.
+      expect(find.byType(MaterialApp), findsOneWidget);
+      final context = tester.element(find.byType(MaterialApp));
+      expect(View.of(context).viewId, 0);
+      // And its render tree is the first view's, not the one it came from.
+      RenderObject? render = tester.renderObject(find.byType(Navigator).first);
+      while (render != null && render is! RenderView) {
+        render = render.parent;
+      }
+      expect((render as RenderView).flutterView.viewId, 0);
+      expect(runner.closed, [1]);
+      var frames = 0;
+      tester.binding.addPostFrameCallback((_) => frames++);
+      tester.binding.scheduleFrame();
+      final frame = tester.binding.endOfFrame;
+      await tester.pump();
+      await frame;
+      expect(frames, 1);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.linux),
   );
 }
