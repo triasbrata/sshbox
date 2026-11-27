@@ -392,6 +392,14 @@ Future<void> _last(WidgetTester tester) async {
   final xb = ids[1];
   _trace('step 9');
 
+  // Where B's card is, kept for a click made with no frame to wait for.
+  final bCard = await _first(tester, _card, b, 'B\'s card');
+  final bBox = bCard.renderObject! as RenderBox;
+  final bAt = bBox.localToGlobal(bBox.size.center(Offset.zero));
+  final bRatio = tester.binding.platformDispatcher
+      .view(id: b)!
+      .devicePixelRatio;
+
   // Close the first window: asked, as it holds a live shell; then B works.
   await _click(tester, xa, a, await _first(tester, _close, a, 'A\'s Close'));
   _trace('step 10');
@@ -417,6 +425,40 @@ Future<void> _last(WidgetTester tester) async {
     Future<bool>.delayed(const Duration(seconds: 8), () => false),
   ]);
   _trace('a frame after the first window closed: $frame');
+  if (!frame) {
+    // No frame: so is B dead, or only the test's pump? A click on its card
+    // and a command typed into the shell it opens, answered by a file.
+    IntegrationTestWidgetsFlutterBinding.instance
+            .shouldPropagateDevicePointerEvents =
+        true;
+    await _xdo(['windowfocus', xb]);
+    await _xdo([
+      'mousemove',
+      '--window',
+      xb,
+      '${(bAt.dx * bRatio).round()}',
+      '${(bAt.dy * bRatio).round()}',
+      'sleep',
+      '0.3',
+      'click',
+      '1',
+    ]);
+    await Future<void>.delayed(const Duration(seconds: 5));
+    final alive = _note('b-alive');
+    if (alive.existsSync()) alive.deleteSync();
+    await _xdo(['type', '--delay', '30', 'touch ${alive.path}']);
+    await _xdo(['key', 'Return']);
+    var answered = false;
+    for (var i = 0; i < 100 && !answered; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      answered = alive.existsSync();
+    }
+    _trace('B opened a shell and ran a command with no frames: $answered');
+    fail(
+      'no frame came after the first window was closed; the second '
+      '${answered ? 'still works, so only frames to the test stopped' : 'is dead too'}',
+    );
+  }
   expect(await _windows(), [xb], reason: 'the wrong window is left');
   await _click(tester, xb, b, await _first(tester, _card, b, 'B\'s card'));
   _trace('step 14');
