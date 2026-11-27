@@ -104,8 +104,20 @@ Future<String> _xdoWindows(List<String> a) async {
   return '';
 }
 
+/// The Windows windows in the order they were first seen.
+final _winOrder = <String>[];
+
 Future<List<String>> _windows() async {
-  if (Platform.isWindows) return winWindows();
+  if (Platform.isWindows) {
+    // Oldest first, as the order they were first seen in: a window made later
+    // can have a smaller handle than the first.
+    final now = winWindows();
+    _winOrder.removeWhere((h) => !now.contains(h));
+    for (final h in now) {
+      if (!_winOrder.contains(h)) _winOrder.add(h);
+    }
+    return List.of(_winOrder);
+  }
   final found = await Process.run('xdotool', [
     'search',
     '--onlyvisible',
