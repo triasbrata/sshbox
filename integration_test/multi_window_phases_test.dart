@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'win_desk.dart';
 import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
 import 'package:xterm2/xterm.dart' show TerminalKey, TerminalView;
 import 'package:sshbox/src/ui/termul/tui_button.dart' show TuiButton;
@@ -37,6 +38,11 @@ final _dir = Directory(
   Platform.environment['JEANSH_E2E_MW_DIR'] ?? Directory.systemTemp.path,
 );
 File _note(String name) => File('${_dir.path}/jeansh-e2e-mw-$name.txt');
+
+/// The shell's process id written to [file]: sh's `$$`, PowerShell's `$PID`.
+String _pidCommand(File file) => Platform.isWindows
+    ? '\$PID | Out-File -Encoding ascii "${file.path}"'
+    : 'echo \$\$ > ${file.path}';
 
 void _trace(String what) {
   debugPrint('multi-window: $what');
@@ -58,6 +64,7 @@ Future<void> _until(
 }
 
 Future<String> _xdo(List<String> args) async {
+  if (Platform.isWindows) return _xdoWindows(args);
   // A time limit: `windowfocus --sync` waits for ever on a window that holds
   // the focus already.
   final result = await Process.run('timeout', ['15', 'xdotool', ...args]);
@@ -65,7 +72,34 @@ Future<String> _xdo(List<String> args) async {
   return '${result.stdout}'.trim();
 }
 
+/// What xdotool calls this file makes, on Windows: see win_desk.dart.
+Future<String> _xdoWindows(List<String> a) async {
+  switch (a.first) {
+    case 'windowfocus':
+      winFocus(a[1]);
+    case 'mousemove':
+      // mousemove --window ID X Y sleep S click B
+      final at = a.indexOf('--window');
+      final x = int.parse(a[at + 2]);
+      final y = int.parse(a[at + 3]);
+      await Future<void>.delayed(
+        Duration(milliseconds: (double.parse(a[a.indexOf('sleep') + 1]) * 1000).round()),
+      );
+      winClick(a[at + 1], x, y, button: int.parse(a.last));
+    case 'key':
+      winKey(a[1]);
+    case 'windowmove':
+      winPlace(a[1], x: int.parse(a[2]), y: int.parse(a[3]));
+    case 'windowsize':
+      winPlace(a[1], width: int.parse(a[2]), height: int.parse(a[3]));
+    default:
+      throw UnsupportedError('no Windows version of xdotool ${a.first}');
+  }
+  return '';
+}
+
 Future<List<String>> _windows() async {
+  if (Platform.isWindows) return winWindows();
   final found = await Process.run('xdotool', [
     'search',
     '--onlyvisible',
@@ -91,6 +125,7 @@ Future<List<String>> _windowsAre(WidgetTester tester, int count) async {
 
 /// A window's place and size as X reports them, the same way both times.
 Future<String> _rect(String id) async {
+  if (Platform.isWindows) return winRect(id);
   final info = await Process.run('xwininfo', ['-id', id]);
   expect(info.exitCode, 0, reason: 'xwininfo $id: ${info.stderr}');
   String value(String key) =>
@@ -462,7 +497,7 @@ Future<void> _last(WidgetTester tester) async {
   );
   final pid1 = _note('pid1');
   if (pid1.existsSync()) pid1.deleteSync();
-  shellIn(b).terminal.textInput('echo \$\$ > ${pid1.path}');
+  shellIn(b).terminal.textInput(_pidCommand(pid1));
   shellIn(b).terminal.keyInput(TerminalKey.enter);
   await _until(
     tester,
@@ -512,8 +547,12 @@ Future<void> _last(WidgetTester tester) async {
     expect(now, bRect, reason: 'the first window is not at B\'s old frame');
   }
   // Negative: nothing left over, mapped or not, parked or not.
-  final all = await Process.run('xdotool', ['search', '--name', r'^Jeansh']);
-  final named = '${all.stdout}'.trim().split('\n').where((x) => x.isNotEmpty);
+  final named = Platform.isWindows
+      ? winWindows()
+      : '${(await Process.run('xdotool', ['search', '--name', r'^Jeansh'])).stdout}'
+            .trim()
+            .split('\n')
+            .where((x) => x.isNotEmpty);
   _trace('windows named Jeansh*, mapped or not: ${named.length}');
   if (strict) {
     expect(named, hasLength(1), reason: 'a window is left over: $named');
@@ -620,8 +659,16 @@ Future<void> _last(WidgetTester tester) async {
     '1',
   ]);
   await Future<void>.delayed(const Duration(seconds: 1));
-  await _xdo(['type', '--delay', '30', 'echo \$\$ > ${pid2.path}']);
-  await _xdo(['key', 'Return']);
+  if (Platform.isWindows) {
+    // The Windows job has no keyboard layer that types text: the command goes
+    // to the terminal as the key bar's would, after the real click above.
+    final term = _in(find.byType(TerminalView), 0).first.widget as TerminalView;
+    term.terminal.textInput(_pidCommand(pid2));
+    term.terminal.keyInput(TerminalKey.enter);
+  } else {
+    await _xdo(['type', '--delay', '30', _pidCommand(pid2)]);
+    await _xdo(['key', 'Return']);
+  }
   var answered = false;
   for (var i = 0; i < 100 && !answered; i++) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -655,11 +702,23 @@ Future<void> _last(WidgetTester tester) async {
   // process ends. A watcher outside it says when.
   final marker = _note('last');
   if (marker.existsSync()) marker.deleteSync();
-  await Process.start('sh', [
-    '-c',
-    'while kill -0 $pid 2>/dev/null; do sleep 0.1; done; '
-        'echo ended >> ${marker.path}',
-  ], mode: ProcessStartMode.detached);
+  await Process.start(
+    Platform.isWindows ? 'powershell' : 'sh',
+    Platform.isWindows
+        ? [
+            '-NoProfile',
+            '-Command',
+            'while (Get-Process -Id $pid -ErrorAction SilentlyContinue) '
+                '{ Start-Sleep -Milliseconds 100 }; '
+                'Add-Content -Path "${marker.path}" -Value ended',
+          ]
+        : [
+            '-c',
+            'while kill -0 $pid 2>/dev/null; do sleep 0.1; done; '
+                'echo ended >> ${marker.path}',
+          ],
+    mode: ProcessStartMode.detached,
+  );
   marker.writeAsStringSync('ready\n', mode: FileMode.append);
   await _click(
     tester,
@@ -721,6 +780,7 @@ bool _drew(TerminalView view) {
 /// The window's pixels, [rect] being "x y w h", as the PNG ffmpeg grabs from
 /// the display; null when it cannot.
 Future<List<int>?> _grabWindow(String rect, String name) async {
+  if (Platform.isWindows) return null;
   final r = rect.split(' ');
   final file = File('${_dir.path}/jeansh-e2e-mw-$name.png');
   final done = await Process.run('ffmpeg', [
@@ -863,6 +923,14 @@ Future<void> _openSecond(WidgetTester tester) async {
 /// opens none, the terminal hearing it as ^N.
 Future<void> _t1(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
+  if (Platform.isWindows) {
+    // The shell is PowerShell, where Ctrl+N is not an sh ^N to read back, so
+    // only the key that opens is checked here.
+    await _newWindow(tester, ids[0], 2);
+    _trace('t1: Ctrl+Shift+N opened a second window: 2 windows (Windows)');
+    await _closeSecond(tester);
+    return;
+  }
   final a0 = _views().single;
   await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'the card'));
   await _until(tester, () => _in(_tabClose, a0).length == 1, 'a shell tab');
