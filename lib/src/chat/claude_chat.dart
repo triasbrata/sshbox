@@ -9,6 +9,7 @@ import 'package:xterm2/xterm.dart' show Terminal;
 
 import '../session/terminal_session.dart';
 import '../session/tmux.dart';
+import 'aggregator.dart';
 import 'chat_ask.dart';
 import 'outbox.dart';
 import 'slash_commands.dart';
@@ -3889,6 +3890,248 @@ class ClaudeChat extends ChangeNotifier {
     _ => false,
   };
 
+  /// Whether a message to a watched session goes through the host helper
+  /// (see [Aggregator]) rather than being typed into it. Tests that fake a
+  /// host switch it on for themselves.
+  static bool useAggregatorByDefault = true;
+  bool useAggregator = useAggregatorByDefault;
+
+  /// How often a message handed to the helper is looked at, and how long a
+  /// session may sit idle with the message written and not taken before the
+  /// session is taken to be holding it for approval.
+  Duration aggregatorPoll = const Duration(seconds: 1);
+  Duration aggregatorHeldAfter = const Duration(seconds: 15);
+
+  Aggregator? _aggregator;
+
+  /// Messages given to the helper and the bubble each is. A message the
+  /// helper may already have written is never typed: it is looked up by its
+  /// id, which is why a retry is always the same message.
+  final Map<String, ChatSaid> _viaHelper = {};
+
+  /// Ids whose next try is typed into the session, because the helper cannot
+  /// take them: the session held one for approval, or the helper could not
+  /// say whether it wrote it.
+  final Set<String?> _typedIds = {};
+
+  /// What the user has been told once about messages going the older way.
+  final Set<String> _helperTold = {};
+
+  /// A message handed over by the helper was taken and Claude has not
+  /// answered yet: its answer is read for a refusal to act on a peer's say-so.
+  bool _helperAwaitsReply = false;
+
+  static final _peerRefusal = RegExp(
+    r'(peer|another (claude )?session)',
+    caseSensitive: false,
+  );
+  static final _configWord = RegExp(
+    r'(claude\.md|settings|config|permission)',
+    caseSensitive: false,
+  );
+  static final _refusalWord = RegExp(
+    r"(n't|\bnot\b|\brefus|\bcannot\b)",
+    caseSensitive: false,
+  );
+
+  void _noteHelper(String why) {
+    if (_disposed || !_helperTold.add(why)) return;
+    _say(ChatNotice('Messages go in the older way: $why.'));
+  }
+
+  /// Gives [said] to the helper on the host. True when that is where it is
+  /// now, being watched, or failed with its reason; false when the helper
+  /// cannot take it and nothing was written, so it can be typed instead.
+  Future<bool> _deliverViaHelper(
+    ChatSaid said,
+    ClaudeAgent agent,
+    ClaudeAgent now,
+    int target,
+    PictureUpload? upload,
+  ) async {
+    final aggregator = _aggregator ??= Aggregator(open);
+    final AggregatorReady ready;
+    try {
+      ready = await aggregator.ensure();
+    } catch (error) {
+      _undelivered(
+        said,
+        'Could not check on the host first: $error',
+        transient: true,
+      );
+      return true;
+    }
+    if (!ready.ready) {
+      // Nothing was given to it, so nothing can have been written.
+      _noteHelper(ready.unavailable!);
+      return false;
+    }
+    final paths = await _uploaded(said, upload);
+    if (paths == null) return true;
+    if (!_current(target)) {
+      _movedOn(said, agent);
+      return true;
+    }
+    // The outbox's id, which is what makes a retry the same message; a chat
+    // with no outbox (none in the app) has only this try's.
+    final id = said.outboxId ?? _helperId();
+    // Each `[Image #N]` with a file on the host is that path, which Claude
+    // reads as a picture.
+    final text = said.text.replaceAllMapped(pictureToken, (match) {
+      final path = paths[int.parse(match[1]!)];
+      return path ?? match[0]!;
+    });
+    _pending.remove(said);
+    final recorded = _recorded.remove(said);
+    if (recorded != null && !recorded.isCompleted) recorded.complete();
+    _viaHelper[id] = said;
+    final AggregatorReply reply;
+    try {
+      reply = await aggregator.deliver(id, agent.sessionId, text);
+    } catch (error) {
+      _undelivered(
+        said,
+        'Not delivered: could not reach the host ($error)',
+        transient: true,
+      );
+      return true;
+    }
+    if (!reply.ok) {
+      _viaHelper.remove(id);
+      _undelivered(
+        said,
+        'Not delivered: ${reply.error ?? 'the helper refused it'}.',
+      );
+      return true;
+    }
+    said.delivery = Delivery.sending;
+    if (!_disposed) notifyListeners();
+    unawaited(_watchHelper(said, agent, id, target, upload));
+    return true;
+  }
+
+  String _helperId() =>
+      '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
+      '${math.Random().nextInt(1 << 32).toRadixString(36)}';
+
+  /// Follows one message the helper has until the session has it or it is
+  /// known not to. The helper does the delivering, and goes on if this ends.
+  Future<void> _watchHelper(
+    ChatSaid said,
+    ClaudeAgent agent,
+    String id,
+    int target,
+    PictureUpload? upload,
+  ) async {
+    final aggregator = _aggregator!;
+    DateTime? idleSince;
+    var failures = 0;
+    while (!_disposed) {
+      await Future<void>.delayed(aggregatorPoll);
+      if (_disposed) return;
+      final AggregatorReply reply;
+      try {
+        reply = await aggregator.status(id);
+        failures = 0;
+      } catch (error) {
+        if (++failures < 5) continue;
+        _undelivered(
+          said,
+          'Not confirmed: could not ask the host whether it arrived '
+          '($error). Retry looks it up again and never sends it twice.',
+        );
+        return;
+      }
+      switch (reply.state) {
+        case 'delivered':
+          _viaHelper.remove(id);
+          said
+            ..delivery = null
+            ..why = null;
+          _helperAwaitsReply = true;
+          unawaited(_outboxDelivered(said.outboxKey, said.outboxId, null));
+          if (!_disposed) notifyListeners();
+          return;
+        case 'sent':
+          if (said.delivery != Delivery.queued) {
+            said.delivery = Delivery.queued;
+            if (!_disposed) notifyListeners();
+          }
+          if (reply.sessionStatus == 'idle') {
+            final since = idleSince ??= DateTime.now();
+            if (DateTime.now().difference(since) >= aggregatorHeldAfter) {
+              _typedIds.add(id);
+              _viaHelper.remove(id);
+              _undelivered(
+                said,
+                'Not taken: “${agent.name}” has not taken it though it is '
+                'idle. It may be holding messages from other sessions for '
+                'approval at its terminal. Retry types it in instead; if it '
+                'is approved there first, it arrives twice.',
+              );
+              return;
+            }
+          } else {
+            idleSince = null;
+          }
+        case 'refused':
+          // Never written: typed instead, and said once.
+          _viaHelper.remove(id);
+          _typedIds.add(id);
+          _noteHelper(reply.reason ?? 'the session holds messages from others');
+          unawaited(
+            _deliver(
+              said,
+              agent,
+              target,
+              _replaced.future,
+              upload: upload,
+              helper: false,
+            ).catchError(
+              (Object error) => _undelivered(said, 'Not delivered: $error'),
+            ),
+          );
+          return;
+        case 'undeliverable':
+          _viaHelper.remove(id);
+          _undelivered(said, '${reply.reason ?? 'Not delivered'}.');
+          return;
+        case 'unknown' || 'unknown-id':
+          _viaHelper.remove(id);
+          _typedIds.add(id);
+          _undelivered(
+            said,
+            'Not confirmed: the host could not say whether it was written '
+            '(${reply.reason ?? 'no reason'}). Look at the session; Retry '
+            'types it in instead.',
+          );
+          return;
+        default:
+          break;
+      }
+    }
+  }
+
+  /// What the chat shows when Claude, answering a message the helper gave
+  /// it, says it will not change its own configuration at another session's
+  /// request: this chat's messages reach it that way, and the one way to ask
+  /// it directly is its terminal.
+  void _checkPeerRefusal(String reply) {
+    if (!_helperAwaitsReply) return;
+    _helperAwaitsReply = false;
+    if (_peerRefusal.hasMatch(reply) &&
+        _configWord.hasMatch(reply) &&
+        _refusalWord.hasMatch(reply)) {
+      _say(
+        ChatNotice(
+          'Claude will not change its own configuration at another '
+          'session’s request, and messages from this chat reach it that '
+          'way. Open the terminal to ask this directly.',
+        ),
+      );
+    }
+  }
+
   /// Messages typed into the watched session that it has not recorded yet.
   final List<ChatSaid> _pending = [];
 
@@ -4122,6 +4365,7 @@ class ClaudeChat extends ChangeNotifier {
     PictureUpload? upload,
     bool confirm = true,
     bool hold = true,
+    bool helper = true,
   }) async {
     // What it is doing now, not what the list said when it was picked.
     final ClaudeAgent? now;
@@ -4140,6 +4384,12 @@ class ClaudeChat extends ChangeNotifier {
       // from where it ended, which is where Retry then sends this.
       _continueEnded(agent);
       return;
+    }
+    // Handed to the host helper when it can take it: nothing is typed, the
+    // helper delivers once, in order, and the session queues it if busy.
+    if (useAggregator && helper && !_typedIds.contains(said.outboxId)) {
+      if (await _deliverViaHelper(said, agent, now, target, upload)) return;
+      if (!_current(target)) return _movedOn(said, agent);
     }
     // Busy, or older messages are still held: kept here, nothing typed, so
     // they go one turn each and in the order they were sent.
@@ -5394,6 +5644,7 @@ class ClaudeChat extends ChangeNotifier {
         case 'text':
           final text = (block['text'] as String? ?? '').trim();
           if (text.isEmpty) break;
+          _checkPeerRefusal(text);
           _entries.add(ChatSaid(text, mine: false));
           changed = true;
         case 'tool_use' when block['name'] == askTool:

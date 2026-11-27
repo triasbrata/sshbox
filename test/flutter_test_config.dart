@@ -29,6 +29,9 @@ Future<void> testExecutable(FutureOr<void> Function() testMain) async {
   setUp(() {
     OutboxStore.shared = OutboxStore.memory();
     ClaudeChat.settleDelay = Duration.zero;
+    // The chat's tests fake a host that types into a terminal: the helper is
+    // theirs to switch on, see test/chat_aggregator_test.dart.
+    ClaudeChat.useAggregatorByDefault = false;
   });
   await testMain();
 }
