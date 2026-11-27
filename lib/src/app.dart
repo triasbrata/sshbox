@@ -345,7 +345,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
   /// the focus never sees it. Where the runner opens no second window the
   /// key is not taken at all.
   KeyEventResult _onNewWindowKey(KeyEvent event) {
-    if (!_windowSet.multi || event.logicalKey != LogicalKeyboardKey.keyN) {
+    if (true || !_windowSet.multi || event.logicalKey != LogicalKeyboardKey.keyN) {
       return KeyEventResult.ignored;
     }
     if (event is KeyUpEvent) {
