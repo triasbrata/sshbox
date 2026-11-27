@@ -162,8 +162,15 @@ Future<void> _click(
 Future<void> _newWindow(WidgetTester tester, String from, int count) async {
   await _xdo(['windowfocus', '--sync', from]);
   await _xdo(['key', 'ctrl+shift+n']);
-  await _windowsAre(tester, count);
+  final ids = await _windowsAre(tester, count);
   await _until(tester, () => _views().length == count, 'a view a window');
+  // Side by side, so a click in one lands on it and not on the one over it.
+  if (count == 2) {
+    await _xdo(['windowmove', ids[1], '650', '40']);
+    await _xdo(['windowsize', ids[1], '600', '450']);
+    await _xdo(['windowmove', ids[0], '20', '20']);
+    await _xdo(['windowsize', ids[0], '600', '450']);
+  }
 }
 
 Future<void> _launch(WidgetTester tester) async {
@@ -243,6 +250,11 @@ Future<void> _save(WidgetTester tester) async {
     return box.localToGlobal(Offset.zero).dy < 40;
   });
   await _click(tester, ids[1], b, chip, button: 3);
+  await tester.pump(const Duration(seconds: 1));
+  debugPrint('multi-window: after the right-click B reads ${[
+    for (final e in _in(find.byType(Text), b))
+      if ((e.widget as Text).data case final t?) t,
+  ]}');
   await _click(
     tester,
     ids[1],
