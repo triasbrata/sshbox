@@ -111,8 +111,10 @@ bool winFocus(String id) {
 /// The window that has the keyboard now.
 String winForeground() => '${_getForegroundWindow()}';
 
-/// A click at [x], [y] in the window's own client area, in physical pixels.
-void winClick(String id, int x, int y, {int button = 1}) {
+/// A click at [x], [y] in the window's own client area, in physical pixels:
+/// the pointer put there, a move made so the window sees it arrive, and then
+/// the button down and up.
+Future<void> winClick(String id, int x, int y, {int button = 1}) async {
   final h = int.parse(id);
   final p = calloc<Int32>(2);
   try {
@@ -121,8 +123,11 @@ void winClick(String id, int x, int y, {int button = 1}) {
   } finally {
     calloc.free(p);
   }
+  _mouseEvent(0x0001, 0, 0, 0, 0);
+  await Future<void>.delayed(const Duration(milliseconds: 150));
   final (down, up) = button == 3 ? (0x08, 0x10) : (0x02, 0x04);
   _mouseEvent(down, 0, 0, 0, 0);
+  await Future<void>.delayed(const Duration(milliseconds: 60));
   _mouseEvent(up, 0, 0, 0, 0);
 }
 

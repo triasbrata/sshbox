@@ -90,7 +90,7 @@ Future<String> _xdoWindows(List<String> a) async {
       await Future<void>.delayed(
         Duration(milliseconds: (double.parse(a[a.indexOf('sleep') + 1]) * 1000).round()),
       );
-      winClick(a[at + 1], x, y, button: int.parse(a.last));
+      await winClick(a[at + 1], x, y, button: int.parse(a.last));
     case 'key':
       _trace('key ${a[1]}, foreground ${winForeground()}');
       winKey(a[1]);
@@ -1158,36 +1158,28 @@ String _shellText(TerminalView view) {
 }
 
 /// A file dropped on the second window lands in that window's tab, the shell
-/// there being handed its path, and the first window's tab gets nothing.
+/// there being handed its path, and the first window's tab gets nothing. Three
+/// drops, each said as it is: on the first window alone (what has always
+/// worked), on the first window with a second open, and on the second.
 Future<void> _drop(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
   final a0 = _views().single;
   await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'A\'s card'));
   await _until(tester, () => _in(_tabClose, a0).length == 1, 'A\'s shell tab');
-  await _newWindow(tester, ids[0], 2);
-  ids = await _windows();
-  final views = _views();
-  final a = views[0];
-  final b = views[1];
-  await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
-  await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
   TerminalView shellIn(int view) =>
       _in(find.byType(TerminalView), view).first.widget as TerminalView;
   await _until(
     tester,
     () =>
-        _in(find.byType(TerminalView), a).isNotEmpty &&
-        _in(find.byType(TerminalView), b).isNotEmpty &&
-        _drew(shellIn(a)) &&
-        _drew(shellIn(b)),
-    'both shells to draw their prompts',
+        _in(find.byType(TerminalView), a0).isNotEmpty && _drew(shellIn(a0)),
+    'A\'s shell to draw its prompt',
   );
   final dir = Directory.systemTemp.createTempSync('jeansh-e2e-drop-');
 
   // One file, dragged with the X pointer from a source window of its own to
   // the middle of the window whose id is [target].
   Future<void> dragTo(File file, String target) async {
-    final source = File('${dir.path}/drag_source_${file.uri.pathSegments.last}.py')
+    final source = File('${dir.path}/drag_${file.uri.pathSegments.last}.py')
       ..writeAsStringSync(_dragSource);
     final process = await Process.start('python3', [source.path, file.path]);
     try {
@@ -1199,7 +1191,6 @@ Future<void> _drop(WidgetTester tester) async {
         r'^e2e drag source$',
       ])).split('\n').first;
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      // Where the source really is: a window manager places it where it likes.
       final geometry = await _xdo(['getwindowgeometry', '--shell', sourceId]);
       int geo(String key) =>
           int.parse(RegExp('$key=(-?\\d+)').firstMatch(geometry)!.group(1)!);
@@ -1208,7 +1199,6 @@ Future<void> _drop(WidgetTester tester) async {
       final r = (await _rect(target)).split(' ').map(int.parse).toList();
       final cx = r[0] + r[2] ~/ 2;
       final cy = r[1] + r[3] ~/ 2;
-      _trace('drop: ${file.uri.pathSegments.last}: from $sx,$sy to $cx,$cy');
       await _xdo(['mousemove', '$sx', '$sy']);
       await _xdo(['mousedown', '1']);
       for (final (x, y) in [
@@ -1232,41 +1222,53 @@ Future<void> _drop(WidgetTester tester) async {
     }
   }
 
-  // The control: a file dropped on the first window, which has always taken
-  // one, reaches its shell. Without it, a miss below might be the drag.
-  final first = File('${dir.path}/dropped-on-the-first.txt')
-    ..writeAsStringSync('x');
-  await dragTo(first, ids[0]);
+  /// Whether [name] reached the shell of [view] within a few seconds.
+  Future<bool> reached(int view, String name) async {
+    final end = DateTime.now().add(const Duration(seconds: 8));
+    while (DateTime.now().isBefore(end)) {
+      if (_shellText(shellIn(view)).contains(name)) return true;
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    return false;
+  }
+
+  File made(String name) => File('${dir.path}/$name')..writeAsStringSync('x');
+
+  // 1. The first window alone: the drop that has always worked.
+  await dragTo(made('drop-one-alone.txt'), ids[0]);
+  final alone = await reached(a0, 'drop-one-alone.txt');
+  _trace('drop: on the first window alone: $alone');
+
+  await _newWindow(tester, ids[0], 2);
+  ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
+  await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
   await _until(
     tester,
-    () => _shellText(shellIn(a)).contains('dropped-on-the-first.txt'),
-    'the control: the first window\'s shell to be handed the path',
+    () =>
+        _in(find.byType(TerminalView), b).isNotEmpty && _drew(shellIn(b)),
+    'B\'s shell to draw its prompt',
   );
-  _trace('drop: the control reached the first window\'s shell');
 
-  final file = File('${dir.path}/dropped-on-the-second.txt')
-    ..writeAsStringSync('x');
-  await dragTo(file, ids[1]);
-  final name = 'dropped-on-the-second.txt';
-  try {
-    await _until(
-      tester,
-      () => _shellText(shellIn(b)).contains(name),
-      'the second window\'s shell to be handed the dropped path',
-    );
-  } on TestFailure {
-    _trace(
-      'drop: the path reached the first window: '
-      '${_shellText(shellIn(a)).contains(name)}; the second window: false',
-    );
-    rethrow;
-  }
-  await tester.pump(const Duration(seconds: 1));
-  _trace('drop: the second window\'s shell got the path');
-  expect(
-    _shellText(shellIn(a)).contains(name),
-    isFalse,
-    reason: 'the first window\'s shell was handed a file dropped on the second',
+  // 2. The first window with a second open.
+  await dragTo(made('drop-two-first.txt'), ids[0]);
+  final first = await reached(a, 'drop-two-first.txt');
+  _trace('drop: on the first window, a second open: $first');
+
+  // 3. The second window.
+  await dragTo(made('drop-three-second.txt'), ids[1]);
+  final second = await reached(b, 'drop-three-second.txt');
+  final strayed = _shellText(shellIn(a)).contains('drop-three-second.txt');
+  _trace(
+    'drop: on the second window: $second; the first window got it too: '
+    '$strayed',
   );
-  _trace('drop: the first window\'s shell got nothing');
+
+  expect(alone, isTrue, reason: 'a drop on the first window alone failed');
+  expect(first, isTrue, reason: 'a drop on the first window, a second open, failed');
+  expect(second, isTrue, reason: 'a drop on the second window did not reach its shell');
+  expect(strayed, isFalse, reason: 'the first window\'s shell got the second\'s file');
 }
