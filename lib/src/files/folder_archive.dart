@@ -76,12 +76,21 @@ class FolderArchiver implements FolderArchiveCapable {
       r'PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/opt/local/bin:'
       r'$HOME/.local/bin:$HOME/.nix-profile/bin:/snap/bin"; export PATH';
 
+  /// Sets `tmp` to the temp folder with no slash at its end: macOS names
+  /// `$TMPDIR` with one, which would put `//` in every path printed. One that
+  /// is not absolute would follow the script's `cd`, so `/tmp` is used then.
+  static const tmpScript =
+      r'tmp="${TMPDIR:-/tmp}"; '
+      r'while [ "${tmp%/}" != "$tmp" ]; do tmp="${tmp%/}"; done; '
+      r'case "$tmp" in /*) ;; *) tmp=/tmp;; esac';
+
   /// Removes this login's own `jeansh-zip.*` folders older than an hour,
   /// where an app that died mid-way left them. Only a real folder (a link
   /// is a link to find, and is never matched), only directly under the temp
   /// folder, and only this user's.
   static const sweepScript =
-      r'''find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'jeansh-zip.*' '''
+      '$tmpScript\n'
+      r'''find "$tmp" -maxdepth 1 -type d -name 'jeansh-zip.*' '''
       r'''-user "$(id -un)" -mmin +60 -exec rm -rf {} + 2>/dev/null''';
 
   /// Prints `kind=path` for each archiver there is. Runs nothing of theirs.
@@ -150,7 +159,8 @@ class FolderArchiver implements FolderArchiveCapable {
     };
     return '$_path\n'
         'umask 077\n'
-        'd="\${TMPDIR:-/tmp}/jeansh-zip.$token"\n'
+        '$tmpScript\n'
+        'd="\$tmp/jeansh-zip.$token"\n'
         'mkdir -m 700 "\$d" 2>/dev/null || '
         '{ echo "could not make a private folder for the archive" >&2; '
         'exit 70; }\n'
@@ -186,7 +196,8 @@ class FolderArchiver implements FolderArchiveCapable {
   /// an exec channel that closing does not hang up, or one that came too late.
   static String? cleanupScript(String token) {
     if (!_token.hasMatch(token)) return null;
-    return 'd="\${TMPDIR:-/tmp}/jeansh-zip.$token"\n'
+    return '$tmpScript\n'
+        'd="\$tmp/jeansh-zip.$token"\n'
         '[ -d "\$d" ] && [ ! -L "\$d" ] || exit 0\n'
         'if [ -f "\$d/pid" ]; then read -r p < "\$d/pid"; '
         'case "\$p" in ""|*[!0-9]*) ;; *) kill "\$p" 2>/dev/null;; esac; fi\n'
@@ -198,10 +209,15 @@ class FolderArchiver implements FolderArchiveCapable {
     r'^/(?:[^/]+/)*jeansh-zip\.[A-Za-z0-9]+/jeansh\.(?:zip|tar\.gz)$',
   );
 
+  /// [path] with any doubled slash made one, as a `$TMPDIR` set by hand with
+  /// one inside it would print: the same place, in the shape matched above.
+  static String _single(String path) => path.replaceAll(RegExp('/{2,}'), '/');
+
   /// Removes the archive's folder, and refuses any path that is not one.
   static String? removeScript(String archivePath) {
-    if (!_archivePath.hasMatch(archivePath)) return null;
-    final dir = archivePath.substring(0, archivePath.lastIndexOf('/'));
+    final path = _single(archivePath);
+    if (!_archivePath.hasMatch(path)) return null;
+    final dir = path.substring(0, path.lastIndexOf('/'));
     return 'rm -rf -- ${_q(dir)}';
   }
 
@@ -285,7 +301,7 @@ class FolderArchiver implements FolderArchiveCapable {
       );
     }
     final lines = const LineSplitter().convert(result.stdout);
-    final path = lines.length < 2 ? '' : lines[lines.length - 2];
+    final path = lines.length < 2 ? '' : _single(lines[lines.length - 2]);
     final size = lines.length < 2 ? 0 : int.tryParse(lines.last) ?? 0;
     if (!_archivePath.hasMatch(path) || size <= 0) {
       throw const FileBrowserException(

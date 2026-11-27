@@ -15,6 +15,7 @@ import 'package:sshbox/src/files/file_browser.dart';
 import 'package:sshbox/src/ui/file_editor_page.dart';
 import 'package:sshbox/src/ui/key_bar.dart';
 import 'package:sshbox/src/ui/markdown_rich_editor.dart';
+import 'package:sshbox/src/ui/mermaid_canvas.dart';
 import 'package:sshbox/src/ui/mermaid_view.dart';
 import 'package:sshbox/src/ui/settings_page.dart';
 import 'package:sshbox/src/ui/text_size.dart';
@@ -1777,14 +1778,14 @@ Run `make` first.
 ''');
 
         expect(
-          tester.widget<MermaidView>(find.byType(MermaidView)).source,
+          tester.widget<MermaidBlock>(find.byType(MermaidBlock)).source,
           'flowchart LR\n  A --> B\n',
         );
         expect(rendered(find.textContaining('A --> B')), findsNothing);
         expect(find.text('echo hello'), findsOneWidget);
 
         await toggle(tester, 'source');
-        expect(find.byType(MermaidView), findsNothing);
+        expect(find.byType(MermaidBlock), findsNothing);
         expect(_editor(tester).text, contains('```mermaid\nflowchart LR\n'));
       },
     );
@@ -1811,7 +1812,8 @@ Run `make` first.
 
       // The two fences, and neither the diagram nor `make`.
       expect(find.byTooltip('Copy code'), findsNWidgets(2));
-      expect(find.byType(MermaidView), findsOneWidget);
+      expect(find.byType(MermaidCanvas), findsOneWidget);
+      expect(find.byType(MermaidView), findsNothing);
     });
 
     testWidgets('the copy button copies the block, fences and all left out', (

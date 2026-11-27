@@ -1,0 +1,209 @@
+size 1458.5x3282
+line lifeline dashed none-none (140.5,44) (140.5,3238)
+line lifeline dashed none-none (428.5,44) (428.5,3238)
+line lifeline dashed none-none (723.5,44) (723.5,3238)
+line lifeline dashed none-none (868.5,44) (868.5,3238)
+line lifeline dashed none-none (1017,44) (1017,3238)
+line lifeline dashed none-none (1158.5,44) (1158.5,3238)
+box frame 120.5,828 328x78
+box frameTab 120.5,828 51x24
+box frame 120.5,918 328x108
+box frameTab 120.5,918 51x24
+box frame 120.5,1038 328x92
+box frameTab 120.5,1038 51x24
+box frame 120.5,1268 328x78
+box frameTab 120.5,1268 51x24
+box frame 120.5,1402 328x78
+box frameTab 120.5,1402 51x24
+box frame 120.5,1570 328x78
+box frameTab 120.5,1570 51x24
+box frame 120.5,1764 328x124
+box frameTab 120.5,1764 51x24
+box frame 408.5,1900 480x232
+box frameTab 408.5,1900 37x24
+box frame 1138.5,2512 296x286
+box frameTab 1138.5,2512 37x24
+line separator dashed none-none (1138.5,2640) (1434.5,2640)
+box frame 120.5,2284 1324x874
+box frameTab 120.5,2284 37x24
+line separator dashed none-none (120.5,2810) (1444.5,2810)
+line separator dashed none-none (120.5,3006) (1444.5,3006)
+box actorBox 39,8 203x36
+text actor 53,18 175x16 "sshbox-notify (notify.sh)"
+box actorBox 348,8 161x36
+text actor 362,18 133x16 "jeansh-notify relay"
+box actorBox 674.5,8 98x36
+text actor 688.5,18 70x16 "Workers KV"
+box actorBox 812.5,8 112x36
+text actor 826.5,18 84x16 "Google OAuth"
+box actorBox 964.5,8 105x36
+text actor 978.5,18 77x16 "FCM HTTP v1"
+box actorBox 1109.5,8 98x36
+text actor 1123.5,18 70x16 "Jeansh app"
+box note 11.5,68 258x110
+text note 21.5,75 238x96 "No direct variables, or the direct way failed.\nNo ~/.config/jeansh/notify-key (or LC_SSHBOX_KEY, as older versions sent) or no openssl: exit 1 with a hint."
+text message 150.5,192 238x32 "data = JSON {body, title}, escaped with awk, title only when given"
+line edge solid none-arrow (140.5,230) (174.5,230) (174.5,248) (140.5,248)
+box badge 131.5,221 18x18
+text number 137,222 7x16 "1"
+text message 150.5,270 238x64 "umask 077, mktemp: PEM of the key file after the colon,\nfolded at 64, removed on exit by a trap"
+line edge solid none-arrow (140.5,340) (174.5,340) (174.5,358) (140.5,358)
+box badge 131.5,331 18x18
+text number 137,332 7x16 "2"
+text message 150.5,380 182x64 "stamp = date -u +%Y-%m-%dT%H:%M:%S+00:00\nid = openssl rand -hex 16\nhash = hex SHA-256 of data"
+line edge solid none-arrow (140.5,450) (174.5,450) (174.5,468) (140.5,468)
+box badge 131.5,441 18x18
+text number 137,442 7x16 "3"
+text message 150.5,490 252x48 "sig = base64 of openssl dgst -sha256 -sign PEM\nover POST:/v1/send:hash:stamp:id"
+line edge solid none-arrow (140.5,544) (174.5,544) (174.5,562) (140.5,562)
+box badge 131.5,535 18x18
+text number 137,536 7x16 "4"
+text message 162,584 245x96 "POST /v1/send, body data, headers read from stdin:\nX-PARTNER-ID = the key before the colon, X-TIMESTAMP = stamp,\nX-EXTERNAL-ID = id, X-SIGNATURE = sig, Content-Type: application/json"
+line edge solid none-arrow (140.5,686) (428.5,686)
+box badge 131.5,677 18x18
+text number 137,678 7x16 "5"
+box note 313.5,708 230x46
+text note 323.5,715 210x32 "verified() finds the key, then unsigned() checks the rest"
+text message 450,768 252x32 "get k:keyId, only if X-PARTNER-ID is jnk_ and 32 base64url chars"
+line edge solid none-arrow (428.5,806) (723.5,806)
+box badge 419.5,797 18x18
+text number 425,798 7x16 "6"
+text message 232,862 105x16 "401 unknown key"
+line edge dashed none-arrow (428.5,884) (140.5,884)
+box badge 419.5,875 18x18
+text number 425,876 7x16 "7"
+text frameKind 128.5,832 35x16 "break"
+text frameTitle 264.5,832 91x16 "[no such key]"
+text message 193.5,982 182x16 "401 stale or bad timestamp"
+line edge dashed none-arrow (428.5,1004) (140.5,1004)
+box badge 419.5,995 18x18
+text number 425,996 7x16 "8"
+text frameKind 128.5,922 35x16 "break"
+text frameTitle 184,922 252x48 "[X-TIMESTAMP not yyyy-MM-ddTHH:mm:ss and a zone, or more than 300 s from now]"
+text message 274,1086 21x16 "400"
+line edge dashed none-arrow (428.5,1108) (140.5,1108)
+box badge 419.5,1099 18x18
+text number 425,1100 7x16 "9"
+text frameKind 128.5,1042 35x16 "break"
+text frameTitle 191,1042 238x32 "[X-EXTERNAL-ID not 16 to 64 of A-Z a-z 0-9 and -]"
+text message 438.5,1142 259x80 "verify X-SIGNATURE (DER turned into r and s) with the stored\nSPKI key, over METHOD:PATH:hex SHA-256 of body:X-TIMESTAMP:X-EXTERNAL-ID"
+line edge solid none-arrow (428.5,1228) (462.5,1228) (462.5,1246) (428.5,1246)
+box badge 417.5,1217 22x22
+text number 421.5,1220 14x16 "10"
+text message 225,1302 119x16 "401 bad signature"
+line edge dashed none-arrow (428.5,1324) (140.5,1324)
+box badge 417.5,1313 22x22
+text number 421.5,1316 14x16 "11"
+text frameKind 128.5,1272 35x16 "break"
+text frameTitle 215.5,1272 189x16 "[signature does not verify]"
+text message 499,1358 154x16 "get n:keyId:externalId"
+line edge solid none-arrow (428.5,1380) (723.5,1380)
+box badge 417.5,1369 22x22
+text number 421.5,1372 14x16 "12"
+text message 190,1436 189x16 "409 duplicate X-EXTERNAL-ID"
+line edge dashed none-arrow (428.5,1458) (140.5,1458)
+box badge 417.5,1447 22x22
+text number 421.5,1450 14x16 "13"
+text frameKind 128.5,1406 35x16 "break"
+text frameTitle 212,1406 196x16 "[seen within the last 600 s]"
+text message 438.5,1492 245x32 "SEND_LIMIT, by key id, 30 per 60 s, sends and registers together"
+line edge solid none-arrow (428.5,1530) (462.5,1530) (462.5,1548) (428.5,1548)
+box badge 417.5,1519 22x22
+text number 421.5,1522 14x16 "14"
+text message 211,1604 147x16 "429 too many requests"
+line edge dashed none-arrow (428.5,1626) (140.5,1626)
+box badge 417.5,1615 22x22
+text number 421.5,1618 14x16 "15"
+text frameKind 128.5,1574 35x16 "break"
+text frameTitle 254,1574 112x16 "[over the limit]"
+text message 481.5,1660 189x32 "put n:keyId:externalId = 1, expirationTtl 600"
+line edge solid none-arrow (428.5,1698) (723.5,1698)
+box badge 417.5,1687 22x22
+text number 421.5,1690 14x16 "16"
+box note 397.5,1720 62x30
+text note 407.5,1727 42x16 "send()"
+text message 274,1844 21x16 "400"
+line edge dashed none-arrow (428.5,1866) (140.5,1866)
+box badge 417.5,1855 22x22
+text number 421.5,1858 14x16 "17"
+text frameKind 128.5,1768 35x16 "break"
+text frameTitle 184,1768 252x64 "[readMessage: not a JSON object, not strings, empty body,\nbody over 1000 or title over 100 chars]"
+text message 526,1948 245x112 "POST oauth2.googleapis.com/token, grant type jwt-bearer,\nan RS256 JWT signed with the FCM_SERVICE_ACCOUNT key\n(iss client_email, scope firebase.messaging, aud, iat, exp 1 h)"
+line edge solid none-arrow (428.5,2066) (868.5,2066)
+box badge 417.5,2055 22x22
+text number 421.5,2058 14x16 "18"
+text message 564.5,2088 168x16 "access_token, expires_in"
+line edge dashed none-arrow (868.5,2110) (428.5,2110)
+box badge 857.5,2099 22x22
+text number 861.5,2102 14x16 "19"
+text frameKind 416.5,1904 21x16 "opt"
+text frameTitle 562,1904 210x32 "[no cached access token, or it expires within 5 minutes]"
+text message 589.8,2144 266x112 "POST /v1/projects/project_id/messages:send, Bearer access token\n{token, data: {hostId: the key's host, title, body},\nnotification: {title, body}, android: {priority: high}}"
+line edge solid none-arrow (428.5,2262) (1017,2262)
+box badge 417.5,2251 22x22
+text number 421.5,2254 14x16 "20"
+text message 712.3,2318 21x16 "200"
+line edge dashed none-arrow (1017,2340) (428.5,2340)
+box badge 1006,2329 22x22
+text number 1010,2332 14x16 "21"
+text message 235.5,2362 98x16 "200 {ok: true}"
+line edge dashed none-arrow (428.5,2384) (140.5,2384)
+box badge 417.5,2373 22x22
+text number 421.5,2376 14x16 "22"
+text message 150.5,2406 210x16 "sent through the relay, exit 0"
+line edge solid none-arrow (140.5,2428) (174.5,2428) (174.5,2446) (140.5,2446)
+box badge 129.5,2417 22x22
+text number 133.5,2420 14x16 "23"
+text message 1059.8,2468 56x16 "the push"
+line edge solid none-open (1017,2490) (1158.5,2490)
+box badge 1006,2479 22x22
+text number 1010,2482 14x16 "24"
+text message 1168.5,2546 252x48 "onMessage, _showFrom: showForHost(data.hostId, data.title, data.body)"
+line edge solid none-arrow (1158.5,2600) (1192.5,2600) (1192.5,2618) (1158.5,2618)
+box badge 1147.5,2589 22x22
+text number 1151.5,2592 14x16 "25"
+text message 1168.5,2688 245x64 "the FCM SDK shows the notification block itself,\nwith default_notification_icon from the manifest"
+line edge solid none-arrow (1158.5,2758) (1192.5,2758) (1192.5,2776) (1158.5,2776)
+box badge 1147.5,2747 22x22
+text number 1151.5,2750 14x16 "26"
+text frameKind 1146.5,2516 21x16 "alt"
+text frameTitle 1224.5,2516 161x16 "[app in the foreground]"
+text frameTitle 1185,2644 203x32 "[app in the background or not running]"
+text message 656.3,2858 133x16 "404 or UNREGISTERED"
+line edge dashed none-arrow (1017,2880) (428.5,2880)
+box badge 1006,2869 22x22
+text number 1010,2872 14x16 "27"
+text message 527,2902 98x16 "delete k:keyId"
+line edge solid none-arrow (428.5,2924) (723.5,2924)
+box badge 417.5,2913 22x22
+text number 421.5,2916 14x16 "28"
+text message 176,2946 217x32 "410 the phone is no longer registered, this key is deleted"
+line edge dashed none-arrow (428.5,2984) (140.5,2984)
+box badge 417.5,2973 22x22
+text number 421.5,2976 14x16 "29"
+text message 705.3,3054 35x16 "error"
+line edge dashed none-arrow (1017,3076) (428.5,3076)
+box badge 1006,3065 22x22
+text number 1010,3068 14x16 "30"
+text message 172.5,3098 224x32 "502 FCM returned HTTP status and code, or FCM is unavailable"
+line edge dashed none-arrow (428.5,3136) (140.5,3136)
+box badge 417.5,3125 22x22
+text number 421.5,3128 14x16 "31"
+text frameKind 128.5,2288 21x16 "alt"
+text frameTitle 783.5,2288 35x16 "[200]"
+text frameTitle 667,2814 231x32 "[404 or UNREGISTERED: the phone's token is dead]"
+text frameTitle 663.5,3010 238x32 "[any other error (a 401 also drops the cached access token)]"
+box note 8,3170 265x46
+text note 18,3177 245x32 "Anything but 200: print the relay's answer, exit 1"
+box actorBox 39,3238 203x36
+text actor 53,3248 175x16 "sshbox-notify (notify.sh)"
+box actorBox 348,3238 161x36
+text actor 362,3248 133x16 "jeansh-notify relay"
+box actorBox 674.5,3238 98x36
+text actor 688.5,3248 70x16 "Workers KV"
+box actorBox 812.5,3238 112x36
+text actor 826.5,3248 84x16 "Google OAuth"
+box actorBox 964.5,3238 105x36
+text actor 978.5,3248 77x16 "FCM HTTP v1"
+box actorBox 1109.5,3238 98x36
+text actor 1123.5,3248 70x16 "Jeansh app"

@@ -78,8 +78,18 @@ class _GitPageState extends State<GitPage> {
 
   void _onRepos() {
     if (!mounted) return;
-    setState(() {});
     final root = _repos.selected?.root;
+    setState(() {
+      // Another repository picked: the last one's branch, changes and
+      // history are not its, so none of them stays on screen while its own
+      // are read — a header naming the old branch offered to switch from it.
+      if (root != _loaded) {
+        _status = const [];
+        _log = const [];
+        _branch = '';
+        _branches = const [];
+      }
+    });
     if (root != null && root != _loaded) unawaited(_reload());
   }
 
@@ -497,7 +507,8 @@ class _GitPageState extends State<GitPage> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TuiButton(
-                    label: 'Commit', logName: 'Commit',
+                    label: 'Commit',
+                    logName: 'Commit',
                     prefix: '✓',
                     // Only what is staged goes in, as the editors do it: the
                     // list above says exactly what that is.
@@ -735,7 +746,8 @@ class _Message extends StatelessWidget {
             if (onRetry != null) ...[
               const SizedBox(height: 12),
               TuiButton(
-                label: 'Try again', logName: 'Try again',
+                label: 'Try again',
+                logName: 'Try again',
                 prefix: '↻',
                 variant: TuiButtonVariant.ghost,
                 onPressed: onRetry,

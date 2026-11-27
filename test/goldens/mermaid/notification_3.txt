@@ -1,0 +1,117 @@
+size 1184.5x1960
+line lifeline dashed none-none (147.5,44) (147.5,1916)
+line lifeline dashed none-none (442.5,44) (442.5,1916)
+line lifeline dashed none-none (650.5,44) (650.5,1916)
+line lifeline dashed none-none (907.5,44) (907.5,1916)
+box frame 127.5,112 543x308
+box frameTab 127.5,112 37x24
+line separator dashed none-none (127.5,236) (670.5,236)
+box frame 127.5,678 543x342
+box frameTab 127.5,678 37x24
+line separator dashed none-none (127.5,850) (670.5,850)
+box frame 127.5,1124 543x202
+box frameTab 127.5,1124 37x24
+line separator dashed none-none (127.5,1218) (670.5,1218)
+box frame 127.5,1338 543x200
+box frameTab 127.5,1338 37x24
+box frame 887.5,1610 289x286
+box frameTab 887.5,1610 37x24
+box actorBox 98.5,8 98x36
+text actor 112.5,18 70x16 "Jeansh app"
+box actorBox 362,8 161x36
+text actor 376,18 133x16 "jeansh-notify relay"
+box actorBox 563,8 175x36
+text actor 577,18 147x16 "sshd or Tailscale SSH"
+box actorBox 848,8 119x36
+text actor 862,18 91x16 "shell or tmux"
+box note 71,68 153x30
+text note 81,75 133x16 "LiveSession.connect"
+text message 179.5,160 231x48 "NotifyKeys.forConnect(host.id): diagram 1, if the host has no key\nor FCM has replaced the token"
+line edge solid none-arrow (147.5,214) (442.5,214)
+box badge 138.5,205 18x18
+text number 144,206 7x16 "1"
+text message 273,284 252x64 "TCP, through jump hosts if any, host key check, then auth:\nkey, password, or none for Tailscale SSH"
+line edge solid none-arrow (147.5,354) (650.5,354)
+box badge 138.5,345 18x18
+text number 144,346 7x16 "2"
+text message 353.5,376 91x16 "authenticated"
+line edge dashed none-arrow (650.5,398) (147.5,398)
+box badge 641.5,389 18x18
+text number 647,390 7x16 "3"
+text frameKind 135.5,116 21x16 "par"
+text frameTitle 291.5,116 252x32 "[registration, started first and not awaited yet]"
+text frameTitle 301,240 196x32 "[SSH sign-in (Dartssh2Transport.connect)]"
+box note 8,432 279x46
+text note 18,439 259x32 "beforeShell(this): after auth, before any channel"
+text message 157.5,492 259x64 "wait for the key 3 s more at most. On timeout this connect goes\nwithout it, and registration carries on for the next one"
+line edge solid none-arrow (147.5,562) (181.5,562) (181.5,580) (147.5,580)
+box badge 138.5,553 18x18
+text number 144,554 7x16 "4"
+text message 273,602 252x48 "tcpip-forward 127.0.0.1 port 0 (listen, dartssh2 forwardRemote), 10 s timeout"
+line edge solid none-arrow (147.5,656) (650.5,656)
+box badge 138.5,647 18x18
+text number 144,648 7x16 "5"
+text message 329,712 140x16 "the port P it picked"
+line edge dashed none-arrow (650.5,734) (147.5,734)
+box badge 641.5,725 18x18
+text number 647,726 7x16 "6"
+text message 157.5,756 245x48 "a new DirectNotify for this connection:\nsecret = 32 random bytes, base64url"
+line edge solid none-arrow (147.5,810) (181.5,810) (181.5,828) (147.5,828)
+box badge 138.5,801 18x18
+text number 144,802 7x16 "7"
+text message 374.5,898 49x16 "failure"
+line edge dashed none-arrow (650.5,920) (147.5,920)
+box badge 641.5,911 18x18
+text number 647,912 7x16 "8"
+text message 157.5,942 245x32 "no direct variables, and nothing is said"
+line edge solid none-arrow (147.5,980) (181.5,980) (181.5,998) (147.5,998)
+box badge 138.5,971 18x18
+text number 144,972 7x16 "9"
+text frameKind 135.5,682 21x16 "alt"
+text frameTitle 354.5,682 126x16 "[the host listens]"
+text frameTitle 276.5,854 245x32 "[refused (AllowTcpForwarding no) or no answer in 10 s]"
+box note 8,1032 279x78
+text note 18,1039 259x64 "The variables: LC_SSHBOX_NOTIFY_URL = http://127.0.0.1:P/v1/send and\nLC_SSHBOX_NOTIFY_SECRET when there is a port"
+text message 294,1158 210x32 "session channel: env requests, pty-req, shell"
+line edge solid none-arrow (147.5,1196) (650.5,1196)
+box badge 136.5,1185 22x22
+text number 140.5,1188 14x16 "10"
+text message 276.5,1266 245x32 "session channel: env requests, exec TmuxSession.command"
+line edge solid none-arrow (147.5,1304) (650.5,1304)
+box badge 136.5,1293 22x22
+text number 140.5,1296 14x16 "11"
+text frameKind 135.5,1128 21x16 "alt"
+text frameTitle 372,1128 91x16 "[plain shell]"
+text frameTitle 290.5,1222 217x32 "[tmux (LiveSession._attachTmux, Dartssh2Transport.open)]"
+text message 311.5,1386 175x32 "the channel request fails (SSHChannelRequestError)"
+line edge dashed none-arrow (650.5,1424) (147.5,1424)
+box badge 639.5,1413 22x22
+text number 643.5,1416 14x16 "12"
+text message 280,1446 238x64 "_withEnvironment: the same channel again with no variables at all,\nand no later channel on this connection sends them"
+line edge solid none-arrow (147.5,1516) (650.5,1516)
+box badge 136.5,1505 22x22
+text number 140.5,1508 14x16 "13"
+text frameKind 135.5,1342 21x16 "opt"
+text frameTitle 291.5,1342 252x32 "[the host refuses a variable (sshd AcceptEnv, Tailscale SSH acceptEnv)]"
+text message 670.5,1550 217x32 "start it, with the variables it accepted"
+line edge solid none-arrow (650.5,1588) (907.5,1588)
+box badge 639.5,1577 22x22
+text number 643.5,1580 14x16 "14"
+text message 917.5,1644 182x96 "find tmux by full path. If update-environment lacks FORCE_HYPERLINK:\nset -ga update-environment LC_SSHBOX_NOTIFY_URL LC_SSHBOX_NOTIFY_SECRET"
+line edge solid none-arrow (907.5,1746) (941.5,1746) (941.5,1764) (907.5,1764)
+box badge 896.5,1735 22x22
+text number 900.5,1738 14x16 "15"
+text message 917.5,1786 245x64 "tmux -u -C new-session -A -s name. tmux copies the four into\nthe session when it makes it and at every attach"
+line edge solid none-arrow (907.5,1856) (941.5,1856) (941.5,1874) (907.5,1874)
+box badge 896.5,1845 22x22
+text number 900.5,1848 14x16 "16"
+text frameKind 895.5,1614 21x16 "opt"
+text frameTitle 1029.5,1614 42x16 "[tmux]"
+box actorBox 98.5,1916 98x36
+text actor 112.5,1926 70x16 "Jeansh app"
+box actorBox 362,1916 161x36
+text actor 376,1926 133x16 "jeansh-notify relay"
+box actorBox 563,1916 175x36
+text actor 577,1926 147x16 "sshd or Tailscale SSH"
+box actorBox 848,1916 119x36
+text actor 862,1926 91x16 "shell or tmux"
