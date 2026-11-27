@@ -1754,7 +1754,14 @@ class SessionManager extends ChangeNotifier {
     this.onOpenDropped,
     this.onOpenProblem,
     this.writeLocalOpenSecret,
+    this.savedKey = defaultSavedKey,
   });
+
+  /// Where this manager's tabs are saved. The first window's is
+  /// [defaultSavedKey], the one every build before several windows wrote, so
+  /// what an older build saved comes back as that window's tabs; another
+  /// window has a key of its own, see `WindowRegistry`.
+  String savedKey;
 
   /// Handed to every session: what to say when a `jeansh` request is refused.
   final void Function()? onOpenRefused;
@@ -2226,7 +2233,7 @@ class SessionManager extends ChangeNotifier {
   }
 
   /// Where the open tabs are saved as they change: see [restoreTabs].
-  static const _savedKey = 'sshbox.tabs.v1';
+  static const defaultSavedKey = 'sshbox.tabs.v1';
 
   /// Whether tab changes are saved: from the end of [restoreTabs], so what it
   /// brings back is not written over first, until [shutdown].
@@ -2272,7 +2279,7 @@ class SessionManager extends ChangeNotifier {
     _saved = json;
     unawaited(
       SharedPreferences.getInstance().then(
-        (prefs) => prefs.setString(_savedKey, json),
+        (prefs) => prefs.setString(savedKey, json),
       ),
     );
   }
@@ -2311,7 +2318,7 @@ class SessionManager extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     try {
       final saved = jsonDecode(
-        prefs.getString(_savedKey) ?? '{}',
+        prefs.getString(savedKey) ?? '{}',
       ) as Map<String, dynamic>;
       for (final tab in saved['sessions'] as List? ?? const []) {
         if (tab is! Map<String, dynamic>) continue;
@@ -2361,6 +2368,13 @@ class SessionManager extends ChangeNotifier {
   /// What the app going away does: every connection is let go, and every
   /// tmux session left running on its host for its tab to come back to, as
   /// the tabs were last saved. Only a tab's own close ends its tmux session.
+  /// Closes every tab and saves nothing more: the window that held them is
+  /// gone, and a save after this would bring it back at the next start.
+  Future<void> retire() async {
+    _saving = false;
+    await closeAll();
+  }
+
   Future<void> shutdown() async {
     _saving = false;
     for (final session in _sessions.values.toList()) {

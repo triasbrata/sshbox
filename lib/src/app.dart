@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show FlutterView;
 
 import 'session/open_command.dart' show localHome, writeOpenSecret;
 
@@ -37,6 +38,7 @@ import 'telemetry/input_log.dart' show LogRoutes;
 import 'ui/toast.dart';
 import 'ui/update_dialog.dart';
 import 'update/updater.dart';
+import 'windows/windows.dart';
 import 'telemetry/app_log.dart';
 
 /// What puts a local shell's secret for `jeansh` where its script reads it,
@@ -60,7 +62,26 @@ void Function(String)? localOpenSecretWriter({
 }
 
 class SshboxApp extends StatefulWidget {
-  const SshboxApp({super.key, @visibleForTesting this.transport});
+  const SshboxApp({
+    super.key,
+    @visibleForTesting this.transport,
+    this.windows,
+    this.multiWindow = false,
+    @visibleForTesting this.viewOf,
+  });
+
+  /// The Flutter view with an id, where a test has views the platform does
+  /// not. Null, and the platform's own.
+  final FlutterView? Function(int id)? viewOf;
+
+  /// What opens the app's windows: main gives a desktop its runner's.
+  /// Null, and the app has the one window.
+  final WindowBackend? windows;
+
+  /// Whether the app is the root of several views, one a window, as
+  /// `runWidget` makes it: set by `main` when the runner can open more than
+  /// one. Otherwise it is the one view `runApp` gives it.
+  final bool multiWindow;
 
   /// What every host's tabs connect through: SSH's own, or this machine's
   /// for a local or WSL shell, unless a test brings a stand-in, as
@@ -71,26 +92,89 @@ class SshboxApp extends StatefulWidget {
   State<SshboxApp> createState() => _SshboxAppState();
 }
 
-class _SshboxAppState extends State<SshboxApp> {
+class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
   /// Files another app handed us, waiting for a session to send them to.
   static const _shareChannel = MethodChannel('sshbox/share');
 
-  /// What [openHost] opens a connect sheet from, and what a shared file with
-  /// nowhere to go is said from: both run above the app's own navigator, with
-  /// no context under them.
-  final _navigator = GlobalKey<NavigatorState>();
+  /// Every window of the app. Whatever is not one window's, the hosts, keys,
+  /// settings, chat, the notifications and the update check, is here once.
+  late final WindowSet _windowSet = WindowSet(
+    // main hands over the runner's backend on a desktop; nothing else asks
+    // a platform channel that a widget test never answers.
+    backend: widget.windows ?? const SingleWindow(),
+    multi: widget.multiWindow,
+    first: _makeWindow(SessionManager.defaultSavedKey, null),
+    make: _makeWindow,
+    restore: _restoreWindow,
+    settle: _viewGone,
+  )..mayClose = _mayCloseWindow;
+
+  /// The window the user is in: where a link, a share, a notification tap
+  /// and a key land, and what [openHost] opens a connect sheet from. Each
+  /// runs above the app's own navigator, with no context under it.
+  AppWindow get _window => _windowSet.focused;
+  GlobalKey<NavigatorState> get _navigator => _window.navigator;
+  SessionManager get _sessions => _window.sessions;
+
   final SecretStore _secrets = KeystoreSecretStore();
   late final NotifyKeys _notifyKeys = NotifyKeys(_secrets);
-  late final _resume = ResumeObserver(_sessions.resyncTmuxModes);
+  late final _resume = ResumeObserver(() {
+    for (final window in _windowSet.windows) {
+      window.sessions.resyncTmuxModes();
+    }
+  });
 
-  late final SessionManager _sessions = SessionManager(
-    notifyKeys: _notifyKeys,
-    onNotify: _notifications.showForHost,
-    onOpenRefused: _openRefused,
-    onOpenDropped: _openDropped,
-    onOpenProblem: _openProblem,
-    writeLocalOpenSecret: localOpenSecretWriter(),
-  );
+  /// A window with its own tabs. The tab managers are one a window; the
+  /// callbacks they take say things in the window the user is in.
+  AppWindow _makeWindow(String key, WindowFrame? frame) {
+    final sessions = SessionManager(
+      notifyKeys: _notifyKeys,
+      onNotify: _notifications.showForHost,
+      onOpenRefused: _openRefused,
+      onOpenDropped: _openDropped,
+      onOpenProblem: _openProblem,
+      writeLocalOpenSecret: localOpenSecretWriter(),
+      savedKey: key,
+    );
+    sessionLog.follow(sessions);
+    return AppWindow(id: -1, key: key, sessions: sessions, frame: frame);
+  }
+
+  /// A window taken out of the set leaves the tree in the next frame, and only
+  /// then may the runner take its window down: the engine was seen to take the
+  /// app with it when a view it was still drawing was removed. A frame that
+  /// never comes, as with nothing on screen, is not waited for past a second.
+  Future<void> _viewGone() {
+    final binding = WidgetsBinding.instance;
+    final done = Completer<void>();
+    final limit = Timer(const Duration(seconds: 1), () {
+      if (!done.isCompleted) done.complete();
+    });
+    binding.scheduleFrame();
+    unawaited(
+      binding.endOfFrame.then((_) {
+        if (!done.isCompleted) done.complete();
+      }),
+    );
+    return done.future.whenComplete(limit.cancel);
+  }
+
+  /// Closing a window that is not the last: asked when a tab of it holds a
+  /// live session, whose shell would end with it.
+  Future<bool> _mayCloseWindow(AppWindow window) async {
+    final live = window.sessions.liveCount;
+    final context = window.navigator.currentContext;
+    if (live == 0 || context == null || !context.mounted) return true;
+    return showTuiConfirmDialog(
+      context,
+      title: 'close window',
+      message: 'Close this window?',
+      detail:
+          '$live live ${live == 1 ? 'session' : 'sessions'} in it will end.',
+      confirmLabel: 'Close window',
+      cancelLabel: 'Keep it',
+    );
+  }
 
   /// Requests `jeansh` made that were right and could not be opened.
   void _openDropped(int count, String reason) {
@@ -144,8 +228,9 @@ class _SshboxAppState extends State<SshboxApp> {
     notifyKeys: _notifyKeys,
   );
 
+  /// Android has one window, whose sessions it counts.
   late final SessionKeepAlive _keepAlive = SessionKeepAlive(
-    _sessions,
+    _windowSet.windows.first.sessions,
     portForwards,
   );
 
@@ -154,8 +239,8 @@ class _SshboxAppState extends State<SshboxApp> {
     super.initState();
     _keepAlive.attach();
     WidgetsBinding.instance.addObserver(_resume);
-    sessionLog.follow(_sessions);
-    unawaited(_restoreTabs());
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_windowSet.start());
     unawaited(_startNotifications());
     unawaited(_listenForLinks());
     unawaited(_listenForShares());
@@ -168,6 +253,7 @@ class _SshboxAppState extends State<SshboxApp> {
     localTmux.addListener(_noTmux.clear);
     if (isDesktop) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
+      FocusManager.instance.addEarlyKeyEventHandler(_onNewWindowKey);
     }
     if (defaultTargetPlatform != TargetPlatform.iOS) {
       FocusManager.instance.addEarlyKeyEventHandler(_zoomKeys.handle);
@@ -254,6 +340,62 @@ class _SshboxAppState extends State<SshboxApp> {
     _settingsKeyDown = true;
     if (event is KeyDownEvent) _toggleSettings();
     return KeyEventResult.handled;
+  }
+
+  /// Whether this chord went down here, so its key-up is taken too.
+  bool _newWindowKeyDown = false;
+
+  /// ⌘N on a Mac, Ctrl+Shift+N on Linux and Windows opens an empty window.
+  /// Not Ctrl+N there: that is a shell's next-history key, and a terminal
+  /// has to hear it. Taken early, as Settings' key is, so a terminal holding
+  /// the focus never sees it. Where the runner opens no second window the
+  /// key is not taken at all.
+  KeyEventResult _onNewWindowKey(KeyEvent event) {
+    if (!_windowSet.multi || event.logicalKey != LogicalKeyboardKey.keyN) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyUpEvent) {
+      if (!_newWindowKeyDown) return KeyEventResult.ignored;
+      _newWindowKeyDown = false;
+      return KeyEventResult.handled;
+    }
+    final keys = HardwareKeyboard.instance;
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final chord = mac
+        ? keys.isMetaPressed &&
+              !keys.isControlPressed &&
+              !keys.isAltPressed &&
+              !keys.isShiftPressed
+        : keys.isControlPressed &&
+              keys.isShiftPressed &&
+              !keys.isMetaPressed &&
+              !keys.isAltPressed;
+    if (!chord) return KeyEventResult.ignored;
+    _newWindowKeyDown = true;
+    if (event is KeyDownEvent) {
+      appLog.add('action new window');
+      unawaited(_windowSet.openNew());
+    }
+    return KeyEventResult.handled;
+  }
+
+  /// The app's lifecycle, as the runner's windows drive it, in the app log:
+  /// with several windows it is what says whether frames are drawn at all, and
+  /// a state left hidden by a window closing would stop them in every window.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_windowSet.multi) return;
+    appLog.add(
+      'lifecycle ${state.name}, frames '
+      '${WidgetsBinding.instance.framesEnabled ? 'on' : 'off'}, '
+      '${_windowSet.windows.length} windows',
+    );
+  }
+
+  /// A window's view has come up, or gone: the views to draw are read again.
+  @override
+  void didChangeMetrics() {
+    if (_windowSet.multi && mounted) setState(() {});
   }
 
   /// The `jeansh` command the Settings switch keeps on this computer, when
@@ -396,14 +538,14 @@ class _SshboxAppState extends State<SshboxApp> {
     await showUpdate(context, update);
   }
 
-  /// The tabs open when the app last went away, back as they were: see
-  /// [SessionManager.restoreTabs]. Only this, the one running copy, gets
+  /// A window's tabs open when the app last went away, back as they were:
+  /// see [SessionManager.restoreTabs]. Only this, the one running copy, gets
   /// here: a second hands its intent over before Dart starts.
-  Future<void> _restoreTabs() async {
+  Future<void> _restoreWindow(AppWindow window) async {
     final hosts = await _repository.load();
     // Unsent chat messages of a host deleted while the app was closed.
     unawaited(OutboxStore.shared.sweep({for (final host in hosts) host.id}));
-    return _sessions.restoreTabs(
+    return window.sessions.restoreTabs(
       hosts: hosts,
       databases: await loadDatabases(),
       transport: widget.transport,
@@ -516,7 +658,12 @@ class _SshboxAppState extends State<SshboxApp> {
     String hostId, {
     bool newSession = false,
     bool restoredFirst = false,
+    AppWindow? window,
   }) async {
+    // The window it was asked in, or the one the user is in.
+    window ??= _window;
+    final sessions = window.sessions;
+    final navigator = window.navigator;
     // This machine's own shells are saved nowhere, so the repository has no
     // host to find for them — and none has gone missing either. Otherwise
     // they go as a saved host's do: back to one already open unless another
@@ -524,11 +671,11 @@ class _SshboxAppState extends State<SshboxApp> {
     // from an earlier run before it opens another.
     final local = _localShell(hostId);
     if (local != null) {
-      final restored = restoredFirst ? _sessions.restoredTab(hostId) : null;
+      final restored = restoredFirst ? sessions.restoredTab(hostId) : null;
       if (restored != null) {
-        await _connectRestored(restored);
-      } else if (newSession || _sessions.resume(hostId) == null) {
-        await _openLocal(local);
+        await _connectRestored(window, restored);
+      } else if (newSession || sessions.resume(hostId) == null) {
+        await _openLocal(window, local);
       }
       return;
     }
@@ -542,7 +689,7 @@ class _SshboxAppState extends State<SshboxApp> {
       }
     }
     if (host == null) {
-      final context = _navigator.currentContext;
+      final context = navigator.currentContext;
       if (context != null && context.mounted) {
         showToast(
           context,
@@ -553,18 +700,18 @@ class _SshboxAppState extends State<SshboxApp> {
       return;
     }
 
-    var session = newSession ? null : _sessions.resume(host.id);
+    var session = newSession ? null : sessions.resume(host.id);
     if (session == null) {
-      final context = _navigator.currentContext;
+      final context = navigator.currentContext;
       if (context == null || !context.mounted) return;
-      final restored = restoredFirst ? _sessions.restoredTab(host.id) : null;
+      final restored = restoredFirst ? sessions.restoredTab(host.id) : null;
       if (restored != null) {
-        if (!await _connectRestored(restored)) return;
+        if (!await _connectRestored(window, restored)) return;
         session = restored;
       } else {
         session = await openInSheet(
           context,
-          _sessions,
+          sessions,
           host,
           secrets: _secrets,
           transport: widget.transport,
@@ -582,12 +729,12 @@ class _SshboxAppState extends State<SshboxApp> {
 
   /// Shows [restored], a tab brought back from an earlier run, and connects
   /// it in its sheet. False when the sheet was closed before it connected.
-  Future<bool> _connectRestored(LiveSession restored) async {
-    final context = _navigator.currentContext;
+  Future<bool> _connectRestored(AppWindow window, LiveSession restored) async {
+    final context = window.navigator.currentContext;
     if (context == null || !context.mounted) return false;
     // Taken, so its tab showing opens no sheet of its own over this one.
     restored.takeAutoConnect();
-    _sessions.select(restored.id);
+    window.sessions.select(restored.id);
     // One still connecting is at its sign-in, in the web tab beside it:
     // shown, and left to finish.
     return restored.connecting ||
@@ -595,7 +742,7 @@ class _SshboxAppState extends State<SshboxApp> {
           context,
           restored,
           secrets: _secrets,
-          inTab: (url) => _sessions.openWeb(restored.id, url),
+          inTab: (url) => window.sessions.openWeb(restored.id, url),
         );
   }
 
@@ -606,9 +753,12 @@ class _SshboxAppState extends State<SshboxApp> {
   /// and no sign-in to finish, so the tab opens straight away and whatever the
   /// shell has to say about itself it says in the terminal. A tap when one is
   /// already open adds another, as a tap on a host's card does.
-  Future<void> _openLocal(LocalShell shell) async {
-    final session = _sessions.create(shell.host, transport: shell.transport);
-    _sessions.add(session);
+  Future<void> _openLocal(AppWindow window, LocalShell shell) async {
+    final session = window.sessions.create(
+      shell.host,
+      transport: shell.transport,
+    );
+    window.sessions.add(session);
     await session.connect(secrets: _secrets);
     // tmux asked for and not had, which the page says: see [_localShell].
     if (session.host.useTmux && session.isConnected && session.tmux == null) {
@@ -684,6 +834,8 @@ class _SshboxAppState extends State<SshboxApp> {
     secretNotice.removeListener(_saySecretNotice);
     localTmux.removeListener(_noTmux.clear);
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
+    FocusManager.instance.removeEarlyKeyEventHandler(_onNewWindowKey);
+    WidgetsBinding.instance.removeObserver(this);
     FocusManager.instance.removeEarlyKeyEventHandler(_zoomKeys.handle);
     unawaited(_linkSubscription?.cancel());
     WidgetsBinding.instance.removeObserver(_resume);
@@ -691,12 +843,49 @@ class _SshboxAppState extends State<SshboxApp> {
     unawaited(_keepAlive.shutdown());
     // Not closeAll: that would end every tmux session, and save no tabs to
     // come back to.
-    unawaited(_sessions.shutdown());
+    for (final window in _windowSet.windows) {
+      unawaited(window.sessions.shutdown());
+    }
+    _windowSet.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _windowSet,
+      builder: (context, _) {
+        final windows = _windowSet.windows;
+        if (!_windowSet.multi) return _windowApp(windows.first);
+        // One view a window, each with an app of its own: they share what
+        // the process holds once. A window whose view the engine has not
+        // announced yet waits for it.
+        final dispatcher = WidgetsBinding.instance.platformDispatcher;
+        FlutterView? viewOf(int id) =>
+            (widget.viewOf ?? (id) => dispatcher.view(id: id))(id);
+        return ViewCollection(
+          views: [
+            for (final window in windows)
+              if (window.viewId != null && viewOf(window.viewId!) != null)
+                // No key of its own: a View is keyed by its FlutterView, which
+                // Flutter relies on, so a window moved into another view, as
+                // the first window's is when another closes, is a new window
+                // in that view and not a View given another view to draw in.
+                View(
+                  view: viewOf(window.viewId!)!,
+                  child: KeyedSubtree(
+                    key: ObjectKey(window),
+                    child: _windowApp(window),
+                  ),
+                ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// One window's app: its navigator, its tabs.
+  Widget _windowApp(AppWindow window) {
     // Toasts (see `showToast`), stacked the way `toastConfig` says.
     return ListenableBuilder(
       listenable: Listenable.merge([appTheme, terminalSettings, uiTextSize]),
@@ -710,7 +899,7 @@ class _SshboxAppState extends State<SshboxApp> {
           title: 'Jeansh',
           debugShowCheckedModeBanner: false,
           scrollBehavior: const ZoomScrollBehavior(),
-          navigatorKey: _navigator,
+          navigatorKey: window.navigator,
           navigatorObservers: [LogRoutes()],
           themeMode: look.mode,
           theme: themeOf(Brightness.light),
@@ -741,10 +930,10 @@ class _SshboxAppState extends State<SshboxApp> {
                 // On a desktop, every page and toast clear of the window's
                 // buttons; onboarding, before the tabs, covers them too.
                 child: TitleBarSpace(
-                  navigator: _navigator,
+                  navigator: window.navigator,
                   covered: () =>
                       !onboardingDone.value ||
-                      (_navigator.currentState?.canPop() ?? false),
+                      (window.navigator.currentState?.canPop() ?? false),
                   // Toasts over every page, taking only the touches that land
                   // on one.
                   child: ToastLayer(child: child!),
@@ -761,24 +950,30 @@ class _SshboxAppState extends State<SshboxApp> {
                 : TabsShell(
                     repository: _repository,
                     secrets: _secrets,
-                    sessions: _sessions,
-                    onOpenHost: (hostId) =>
-                        openHost(hostId, newSession: true, restoredFirst: true),
+                    sessions: window.sessions,
+                    onOpenHost: (hostId) => openHost(
+                      hostId,
+                      newSession: true,
+                      restoredFirst: true,
+                      window: window,
+                    ),
                     onDuplicate: (hostId) {
                       appLog.add('action tab duplicate');
-                      return openHost(hostId, newSession: true);
+                      return openHost(hostId, newSession: true, window: window);
                     },
                     // Home draws the Local card on a desktop alone.
                     onOpenLocal: () => openHost(
                       localHostId,
                       newSession: true,
                       restoredFirst: true,
+                      window: window,
                     ),
                     onOpenWsl: Platform.isWindows
                         ? (distro) => openHost(
                             wslHost(distro).id,
                             newSession: true,
                             restoredFirst: true,
+                            window: window,
                           )
                         : null,
                   ),

@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../telemetry/app_log.dart';
 import 'right_click.dart';
 import 'text_size.dart';
 import 'tui.dart';
@@ -37,6 +38,15 @@ const windowButtonsHeight = 40.0;
 /// Whether the window is maximized, as the runner last said.
 final windowMaximized = ValueNotifier(false);
 
+/// The same for the windows after the first, by the id of the view each
+/// draws in; the first window's is [windowMaximized].
+final _otherMaximized = <int, ValueNotifier<bool>>{};
+
+/// Whether the window that draws in view [viewId] is maximized.
+ValueNotifier<bool> windowMaximizedOf(int viewId) => viewId == 0
+    ? windowMaximized
+    : _otherMaximized.putIfAbsent(viewId, () => ValueNotifier(false));
+
 /// Whether the pointer is over the maximize button, as Windows tells it: the
 /// runner answers that spot as the window's own maximize button, so Windows
 /// 11's snap layouts open over it, and the pointer never reaches Flutter
@@ -66,7 +76,13 @@ Future<void> watchTitleBar() async {
       case 'titleBar':
         titleBar.value = _read(call.arguments);
       case 'maximized':
-        windowMaximized.value = call.arguments == true;
+        // True or false for the first window; another says which it is.
+        final said = call.arguments;
+        if (said is Map && said['view'] is int) {
+          windowMaximizedOf(said['view'] as int).value = said['value'] == true;
+        } else {
+          windowMaximized.value = said == true;
+        }
       case 'maximizeHover':
         _maximizeHover.value = call.arguments == true;
     }
@@ -86,8 +102,23 @@ Future<void> watchTitleBar() async {
   return (inset: at('inset'), height: at('height'));
 }
 
-void _ask(String method, [Object? arguments]) =>
-    unawaited(_window.invokeMethod<void>(method, arguments).catchError((_) {}));
+/// What the runner of the window that draws in view [viewId] is sent. The
+/// first window's runner gets the arguments as it always did; another is
+/// told which window it is, beside them.
+@visibleForTesting
+Object? windowArguments(Object? arguments, int viewId) =>
+    viewId == 0 ? arguments : {'view': viewId, 'arguments': arguments};
+
+void _ask(String method, [Object? arguments, int viewId = 0]) {
+  // What a window's own buttons ask, in the app log, for a button that seems
+  // to do nothing.
+  if (method == 'close') appLog.add('win: close button of view $viewId');
+  unawaited(
+    _window
+        .invokeMethod<void>(method, windowArguments(arguments, viewId))
+        .catchError((_) {}),
+  );
+}
 
 /// The last press that moved the window, for telling a double-click.
 ({Duration at, Offset where})? _lastPress;
@@ -109,12 +140,12 @@ void dragWindow(PointerDownEvent event) {
         event.timeStamp - last.at < kDoubleTapTimeout &&
         (event.position - last.where).distance < kDoubleTapSlop) {
       _lastPress = null;
-      _ask('maximize');
+      _ask('maximize', null, event.viewId);
       return;
     }
     _lastPress = (at: event.timeStamp, where: event.position);
   }
-  _ask('drag');
+  _ask('drag', null, event.viewId);
 }
 
 /// Keeps every page clear of the Mac's title bar, as a phone's pages keep
@@ -242,23 +273,27 @@ class WindowButtons extends StatelessWidget {
                 [
                   TuiMenuItem(
                     value: () => zoomUiText(inside, 1),
-                    label: 'Zoom in', logName: 'Zoom in',
+                    label: 'Zoom in',
+                    logName: 'Zoom in',
                     shortcut: 'Ctrl+=',
                   ),
                   TuiMenuItem(
                     value: () => zoomUiText(inside, -1),
-                    label: 'Zoom out', logName: 'Zoom out',
+                    label: 'Zoom out',
+                    logName: 'Zoom out',
                     shortcut: 'Ctrl+-',
                   ),
                   TuiMenuItem(
                     value: () => zoomUiText(inside, 0),
-                    label: 'Actual size', logName: 'Actual size',
+                    label: 'Actual size',
+                    logName: 'Actual size',
                     shortcut: 'Ctrl+0',
                   ),
                   const TuiMenuDivider(),
                   TuiMenuItem(
                     value: () => checkForUpdates(inside),
-                    label: 'Check for updates…', logName: 'Check for updates',
+                    label: 'Check for updates…',
+                    logName: 'Check for updates',
                   ),
                 ],
               );
@@ -268,17 +303,17 @@ class WindowButtons extends StatelessWidget {
         _WindowButton(
           icon: Icons.remove,
           label: 'Minimize',
-          onTap: () => _ask('minimize'),
+          onTap: () => _ask('minimize', null, View.of(context).viewId),
         ),
         ValueListenableBuilder(
-          valueListenable: windowMaximized,
+          valueListenable: windowMaximizedOf(View.of(context).viewId),
           builder: (context, maximized, _) => _MaximizeButton(
             child: _WindowButton(
               icon: maximized ? Icons.filter_none : Icons.crop_square,
               iconSize: maximized ? 13 : 15,
               label: maximized ? 'Restore' : 'Maximize',
               hover: _maximizeHover,
-              onTap: () => _ask('maximize'),
+              onTap: () => _ask('maximize', null, View.of(context).viewId),
             ),
           ),
         ),
@@ -286,7 +321,7 @@ class WindowButtons extends StatelessWidget {
           icon: Icons.close,
           label: 'Close',
           danger: true,
-          onTap: () => _ask('close'),
+          onTap: () => _ask('close', null, View.of(context).viewId),
         ),
       ],
     ),
@@ -318,7 +353,7 @@ class _MaximizeButton extends StatelessWidget {
         for (final edge in [rect.left, rect.top, rect.right, rect.bottom])
           (edge * ratio).roundToDouble(),
       ]);
-      _ask('maximizeButton', sent);
+      _ask('maximizeButton', sent, View.of(context).viewId);
     });
     return child;
   }
