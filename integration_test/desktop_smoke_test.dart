@@ -1964,6 +1964,163 @@ Future<void> _macWidenWindow(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 500));
 }
 
+
+// ---- Packed scrollback (#351): helpers -----------------------------------
+
+/// What line [n] of the packed-scrollback tests' output reads. A colour for
+/// the line, a background behind the wide characters, bold and underline on
+/// the last word, and [pad] after it where a line is to wrap.
+String _packedLine(int n, String pad) =>
+    '\x1b[3${n % 7 + 1}mline $n \x1b[4${n % 5 + 1}m日本語\x1b[49m '
+    '\x1b[1;4mbold\x1b[0m${pad.isEmpty ? '' : ' $pad'}';
+
+/// What [_packedLine] reads once drawn, escapes gone.
+String _packedText(int n, String pad) =>
+    'line $n 日本語 bold${pad.isEmpty ? '' : ' $pad'}';
+
+/// A file holding [count] lines of [_packedLine], for the shell to `cat`.
+File _packedFile(int count, String pad) {
+  final file = File('${_scratch().path}/out.txt');
+  file.writeAsStringSync(
+    '${[for (var n = 0; n < count; n++) _packedLine(n, pad)].join('\n')}\n',
+  );
+  return file;
+}
+
+/// A terminal that packs nothing, given the same output: what a line should
+/// read cell by cell, the packed one's twin. Packing is switched off for as
+/// long as it is written to or resized, which is synchronous, so the app's
+/// own terminals are not caught in it.
+class _Twin {
+  _Twin(int count, String pad, int cols, int rows) {
+    _unpacked(() {
+      terminal = Terminal(maxLines: 10000)..resize(cols, rows);
+      terminal.write(
+        '${[for (var n = 0; n < count; n++) _packedLine(n, pad)].join('\r\n')}'
+        '\r\n',
+      );
+    });
+  }
+
+  late final Terminal terminal;
+
+  void resize(int cols, int rows) =>
+      _unpacked(() => terminal.resize(cols, rows));
+
+  static void _unpacked(void Function() body) {
+    Buffer.compactionEnabled = false;
+    try {
+      body();
+    } finally {
+      Buffer.compactionEnabled = true;
+    }
+  }
+}
+
+/// The row of [terminal]'s main buffer that starts line [n] of the output.
+int _rowOfLine(Terminal terminal, int n) {
+  final lines = terminal.buffer.lines;
+  final start = RegExp('^line $n ');
+  for (var i = 0; i < lines.length; i++) {
+    if (!lines[i].isWrapped && start.hasMatch(lines[i].getText())) return i;
+  }
+  return -1;
+}
+
+/// How many lines of [terminal]'s buffer are held packed, read off without
+/// unpacking any of them.
+int _packedCount(Terminal terminal) {
+  final lines = terminal.buffer.lines;
+  var packed = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].isPacked) packed++;
+  }
+  return packed;
+}
+
+/// Where two lines differ, cell by cell over [cols], or null where they read
+/// the same: the character, its width, both colours and its attributes.
+String? _lineDiff(BufferLine a, BufferLine b, int cols) {
+  if (a.isWrapped != b.isWrapped) {
+    return 'wrapped ${a.isWrapped} v ${b.isWrapped}';
+  }
+  for (var i = 0; i < cols && i < a.length && i < b.length; i++) {
+    if (a.getCodePoint(i) != b.getCodePoint(i) ||
+        a.getWidth(i) != b.getWidth(i) ||
+        a.getForeground(i) != b.getForeground(i) ||
+        a.getBackground(i) != b.getBackground(i) ||
+        a.getAttributes(i) != b.getAttributes(i)) {
+      return 'col $i: '
+          'char ${a.getCodePoint(i)} v ${b.getCodePoint(i)}, '
+          'width ${a.getWidth(i)} v ${b.getWidth(i)}, '
+          'fg ${a.getForeground(i)} v ${b.getForeground(i)}, '
+          'bg ${a.getBackground(i)} v ${b.getBackground(i)}, '
+          'attrs ${a.getAttributes(i)} v ${b.getAttributes(i)}';
+    }
+  }
+  return null;
+}
+
+/// The rows from line 0 to line [last] of [view] against [twin]'s: every cell
+/// alike. Returns what differed first, as a line, or null.
+String? _packedAgainstTwin(Terminal view, Terminal twin, int last, int cols) {
+  final at = _rowOfLine(view, 0);
+  final twinAt = _rowOfLine(twin, 0);
+  final end = _rowOfLine(twin, last);
+  if (at < 0 || twinAt < 0 || end < 0) {
+    return 'no line 0 or line $last found ($at, $twinAt, $end)';
+  }
+  for (var k = 0; k <= end - twinAt; k++) {
+    final diff = _lineDiff(
+      view.buffer.lines[at + k],
+      twin.buffer.lines[twinAt + k],
+      cols,
+    );
+    if (diff != null) return 'row $k from line 0: $diff';
+  }
+  return null;
+}
+
+/// The viewport's rows as one string per row, every cell's character and
+/// look in it, so two takings of it can be compared whole.
+List<String> _viewportLook(Terminal terminal) {
+  final lines = terminal.buffer.lines;
+  final top = lines.length - terminal.viewHeight;
+  return [
+    for (var i = top; i < lines.length; i++)
+      [
+        for (var c = 0; c < terminal.viewWidth && c < lines[i].length; c++)
+          '${lines[i].getCodePoint(c)}/${lines[i].getForeground(c)}/'
+              '${lines[i].getBackground(c)}/${lines[i].getAttributes(c)}',
+      ].join(' '),
+  ];
+}
+
+/// [view]'s shell made to `cat` [file], and waited for until the last of its
+/// [count] lines is drawn.
+Future<void> _catPacked(
+  WidgetTester tester,
+  TerminalView view,
+  File file,
+  int count,
+) async {
+  _run(view, 'cat ${file.path}');
+  final last = RegExp('^line ${count - 1} ');
+  await _until(
+    tester,
+    () {
+      final lines = view.terminal.buffer.lines;
+      for (var i = lines.length - 1; i >= 0 && i > lines.length - 60; i--) {
+        if (last.hasMatch(lines[i].getText())) return true;
+      }
+      return false;
+    },
+    'the last line of the output to be drawn',
+    timeout: const Duration(seconds: 60),
+  );
+  await tester.pump(const Duration(seconds: 1));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -4200,6 +4357,253 @@ touch '${done.path}'
       await tester.pump(const Duration(seconds: 1));
     },
   );
+  // #351: scrollback held packed. 3200 lines of colour, bold, underline, a
+  // background and wide characters go through a real Local shell's pty; once
+  // they have left the viewport the buffer holds them packed (read off
+  // without unpacking any). A twin terminal that packs nothing is given the
+  // same output and is the truth, cell by cell: character, width, both
+  // colours, attributes. Positive: every old line is the twin's, a mouse
+  // selection across old lines copies their text, and the buffer really did
+  // hold them packed. Negative: the viewport's rows, never packed, look the
+  // same after the view was taken to the top and back, and are not packed.
+  // Mutation: a pack that writes no colour or attributes (line.dart).
+  _test(
+    'scrollback held packed keeps its colours, attributes and wide '
+    'characters, and the bottom rows never change',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      const count = 3200;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final file = _packedFile(count, '');
+      await _catPacked(tester, view, file, count);
+
+      final terminal = view.terminal;
+      final lines = terminal.buffer.lines;
+      final packed = _packedCount(terminal);
+      debugPrint(
+        'packed scrollback: $packed of ${lines.length} lines packed, '
+        'viewport ${terminal.viewHeight} rows',
+      );
+      expect(
+        packed,
+        greaterThan(lines.length - terminal.viewHeight - 100),
+        reason: 'scrollback was not held packed: $packed of ${lines.length}',
+      );
+      for (var i = lines.length - terminal.viewHeight; i < lines.length; i++) {
+        expect(lines[i].isPacked, isFalse, reason: 'viewport row $i is packed');
+      }
+      final bottom = _viewportLook(terminal);
+
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      final diff = _packedAgainstTwin(
+        terminal,
+        twin.terminal,
+        count - 20,
+        terminal.viewWidth,
+      );
+      expect(
+        diff,
+        isNull,
+        reason: 'a packed line differs from the unpacked twin: $diff',
+      );
+      debugPrint(
+        'packed scrollback: all ${count - 20} old lines equal the twin',
+      );
+
+      // To the top, as a scroll does, and what is drawn there.
+      final scrollable = tester.state<ScrollableState>(
+        find
+            .descendant(
+              of: find.byType(TerminalView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      scrollable.position.jumpTo(scrollable.position.minScrollExtent);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(scrollable.position.pixels, 0, reason: 'not scrolled to the top');
+
+      final first = _rowOfLine(terminal, 0);
+      expect(first, greaterThanOrEqualTo(0));
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col, int row) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      final mouse = await tester.startGesture(
+        cell(0, first),
+        kind: PointerDeviceKind.mouse,
+      );
+      // Down the old lines, then along the last one to the end of its text:
+      // "line 4 日本語 bold" is 18 cells.
+      for (var row = first + 1; row <= first + 4; row++) {
+        await mouse.moveTo(cell(0, row));
+        await tester.pump();
+      }
+      for (var col = 1; col < 18; col++) {
+        await mouse.moveTo(cell(col, first + 4));
+        await tester.pump();
+      }
+      await mouse.up();
+      String? copied;
+      await _until(
+        tester,
+        () async => (copied = await _clipboard()) != 'untouched',
+        'the selection of old lines to be copied',
+      );
+      expect(
+        copied,
+        [for (var n = 0; n < 5; n++) _packedText(n, '')].join('\n'),
+        reason: 'a selection across old lines did not copy their text',
+      );
+
+      // And back down: the bottom rows as they were, never packed.
+      scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        _viewportLook(terminal),
+        bottom,
+        reason: 'the visible bottom rows changed after a trip to the top',
+      );
+      for (var i = lines.length - terminal.viewHeight; i < lines.length; i++) {
+        expect(lines[i].isPacked, isFalse, reason: 'viewport row $i is packed');
+      }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #351, step b: long scrollback re-wrapped by a real window resize. 3200
+  // lines of 120 cells wrap on either width; the window is made narrower, so
+  // the terminal has fewer columns, then wider than it began, and each time
+  // every old line is the twin's, which is resized the same, cell by cell,
+  // with the scrollback packed again after each reflow. Negative: the lines
+  // do not change when nothing resizes (the first check, before it).
+  _test(
+    'long packed scrollback re-wraps as it did when the window is made '
+    'narrower, then wider',
+    skip: Platform.isLinux ? null : 'a window is resized here through xdotool',
+    (tester) async {
+      const count = 3200;
+      final pad = 'x' * 100;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await _catPacked(tester, view, _packedFile(count, pad), count);
+      final terminal = view.terminal;
+      final cols = terminal.viewWidth;
+      final rows = terminal.viewHeight;
+      final twin = _Twin(count, pad, cols, rows);
+
+      String? same(int width) =>
+          _packedAgainstTwin(terminal, twin.terminal, count - 40, width);
+      expect(same(cols), isNull, reason: 'before any resize, at $cols columns');
+
+      final window = await _window();
+      final rect = await _windowRect();
+      addTearDown(
+        () => _xdo([
+          'windowsize',
+          '--sync',
+          window,
+          '${rect.width.round()}',
+          '${rect.height.round()}',
+        ]),
+      );
+      Future<void> resizeTo(double width) async {
+        await _xdo([
+          'windowsize',
+          '--sync',
+          window,
+          '${width.round()}',
+          '${rect.height.round()}',
+        ]);
+        await _until(
+          tester,
+          () => terminal.viewWidth != cols || width >= rect.width,
+          "the terminal to take the window's new width",
+        );
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      await resizeTo(rect.width * 0.6);
+      final narrow = terminal.viewWidth;
+      expect(narrow, lessThan(cols), reason: 'the window did not narrow');
+      twin.resize(narrow, terminal.viewHeight);
+      debugPrint(
+        'packed scrollback: narrowed $cols -> $narrow columns, '
+        '${_packedCount(terminal)} of ${terminal.buffer.lines.length} packed',
+      );
+      expect(
+        _packedCount(terminal),
+        greaterThan(terminal.buffer.lines.length ~/ 2),
+        reason: 'a reflow left the scrollback unpacked',
+      );
+      expect(same(narrow), isNull, reason: 'narrow, at $narrow columns');
+
+      await resizeTo(rect.width * 1.3);
+      final wide = terminal.viewWidth;
+      expect(wide, greaterThan(cols), reason: 'the window did not widen');
+      twin.resize(wide, terminal.viewHeight);
+      expect(same(wide), isNull, reason: 'wide, at $wide columns');
+      debugPrint(
+        'packed scrollback: re-wrapped at $narrow and $wide columns, '
+        'equal to the twin',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #351, step c: a tmux tab's attach fill. 300 lines are written in a tmux
+  // pane, the tab is cut and reconnected, and the new terminal is drawn from
+  // tmux's capture: the history is there, with its colours, as the twin
+  // reads it, and the scrollback in it is held packed.
+  _test(
+    'a reattached tmux tab still shows its history, in colour, packed',
+    skip: Platform.isLinux
+        ? null
+        : "tmux on the run's private server is the Linux run's",
+    (tester) async {
+      const count = 300;
+      addTearDown(_killSshboxTmux);
+      await _launch(tester);
+      var view = await _localShell(tester, tmux: true);
+      await _catPacked(tester, view, _packedFile(count, ''), count);
+      view = await _reattach(tester, view);
+      final terminal = view.terminal;
+      await _until(
+        tester,
+        () => _rowOfLine(terminal, count - 1) >= 0,
+        'the capture to bring back the last line',
+      );
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      final packed = _packedCount(terminal);
+      debugPrint(
+        'packed scrollback: tmux fill $packed of '
+        '${terminal.buffer.lines.length} lines packed',
+      );
+      expect(
+        packed,
+        greaterThan(100),
+        reason: 'the attach fill was not packed',
+      );
+      final diff = _packedAgainstTwin(
+        terminal,
+        twin.terminal,
+        count - 20,
+        terminal.viewWidth,
+      );
+      expect(
+        diff,
+        isNull,
+        reason: 'the attach fill differs from the twin: $diff',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #274, 1: a picture pasted into a tmux tab after a reconnect. The tab's
   // terminal is rebuilt from a capture, which holds no modes, so its own
   // bracketed-paste flag is false however the program in the pane is set; the
