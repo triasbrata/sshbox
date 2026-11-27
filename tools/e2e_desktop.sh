@@ -150,6 +150,7 @@ mw_phases() {
         echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit, no crash line in stderr"
       else
         echo "❌ multi-window: $rounds of 10 A+B+C rounds, $crashes crash lines"
+        echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ' | tail -c 6000)"
         rc=1
       fi
     else

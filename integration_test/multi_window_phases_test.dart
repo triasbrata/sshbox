@@ -115,16 +115,19 @@ Finder _semantic(String label) => find.byWidgetPredicate(
 );
 
 List<int> _views() =>
-    {
-      for (final e in _close.evaluate()) View.of(e).viewId,
-    }.toList()..sort();
+    {for (final e in _close.evaluate()) View.of(e).viewId}.toList()..sort();
 
 List<Element> _in(Finder finder, int viewId) => [
   for (final e in finder.evaluate())
     if (View.of(e).viewId == viewId) e,
 ];
 
-Future<Element> _first(WidgetTester tester, Finder f, int view, String what) async {
+Future<Element> _first(
+  WidgetTester tester,
+  Finder f,
+  int view,
+  String what,
+) async {
   await _until(tester, () => _in(f, view).isNotEmpty, '$what in view $view');
   return _in(f, view).first;
 }
@@ -220,32 +223,48 @@ void main() {
     skip: _phase.isEmpty || !Platform.isLinux,
     (tester) async {
       await _launch(tester);
-      switch (_phase) {
-        case 't1':
-          await _t1(tester);
-        case 't2':
-          await _t2(tester);
-        case 't3':
-          await _t3(tester);
-        case 't4':
-          await _t4(tester);
-        case 'save':
-          await _save(tester);
-        case 'restore':
-          await _restore(tester);
-        case 'buttons':
-          await _buttons(tester);
-        case 'bisect':
-          await _bisect(tester);
-        case 'churn':
-          await _churn(tester);
-        case 'last':
-          await _last(tester);
-        default:
-          fail('No phase $_phase');
+      try {
+        await _runPhase(tester);
+      } catch (_) {
+        // What the app's own log says of every close, from the click on.
+        final wins = appLog.current
+            .split('\n')
+            .where((l) => l.contains('win:'))
+            .toList();
+        for (final line in wins.skip(wins.length > 80 ? wins.length - 80 : 0)) {
+          _trace('app log: $line');
+        }
+        rethrow;
       }
     },
   );
+}
+
+Future<void> _runPhase(WidgetTester tester) async {
+  switch (_phase) {
+    case 't1':
+      await _t1(tester);
+    case 't2':
+      await _t2(tester);
+    case 't3':
+      await _t3(tester);
+    case 't4':
+      await _t4(tester);
+    case 'save':
+      await _save(tester);
+    case 'restore':
+      await _restore(tester);
+    case 'buttons':
+      await _buttons(tester);
+    case 'bisect':
+      await _bisect(tester);
+    case 'churn':
+      await _churn(tester);
+    case 'last':
+      await _last(tester);
+    default:
+      fail('No phase $_phase');
+  }
 }
 
 /// 5, the first half: two windows with their own tabs and frames, and a
@@ -315,7 +334,9 @@ Future<void> _restore(WidgetTester tester) async {
   final views = _views();
   await _until(
     tester,
-    () => _in(_tabClose, views[0]).length == 1 && _in(_tabClose, views[1]).isEmpty,
+    () =>
+        _in(_tabClose, views[0]).length == 1 &&
+        _in(_tabClose, views[1]).isEmpty,
     'A\'s one tab and B\'s none (now ${_in(_tabClose, views[0]).length} and '
     '${_in(_tabClose, views[1]).length})',
   );
@@ -342,7 +363,9 @@ Future<void> _buttons(WidgetTester tester) async {
     'B to maximize (${await _state(ids[1])})',
   );
   expect(await _state(ids[0]), isNot(contains('MAXIMIZED')), reason: 'A too');
-  debugPrint('multi-window: B ${await _state(ids[1])}; A ${await _state(ids[0])}');
+  debugPrint(
+    'multi-window: B ${await _state(ids[1])}; A ${await _state(ids[0])}',
+  );
 
   await _click(
     tester,
@@ -355,11 +378,16 @@ Future<void> _buttons(WidgetTester tester) async {
     () async => (await _state(ids[1])).startsWith('IsUnMapped'),
     'B to minimize (${await _state(ids[1])})',
   );
-  expect((await _state(ids[0])).startsWith('IsViewable'), isTrue,
-      reason: 'A was minimized with B: ${await _state(ids[0])}');
+  expect(
+    (await _state(ids[0])).startsWith('IsViewable'),
+    isTrue,
+    reason: 'A was minimized with B: ${await _state(ids[0])}',
+  );
   expect(await _rect(ids[0]), aRect, reason: 'A moved or changed size');
-  debugPrint('multi-window: B minimized ${await _state(ids[1])}, '
-      'A ${await _state(ids[0])}');
+  debugPrint(
+    'multi-window: B minimized ${await _state(ids[1])}, '
+    'A ${await _state(ids[0])}',
+  );
 
   // Back, and its Close closes it alone.
   await _xdo(['windowmap', ids[1]]);
@@ -422,9 +450,7 @@ Future<void> _last(WidgetTester tester) async {
       _in(find.byType(TerminalView), view).first.widget as TerminalView;
   await _until(
     tester,
-    () =>
-        _in(find.byType(TerminalView), b).isNotEmpty &&
-        _drew(shellIn(b)),
+    () => _in(find.byType(TerminalView), b).isNotEmpty && _drew(shellIn(b)),
     'B\'s shell to draw its prompt',
   );
   final pid1 = _note('pid1');
@@ -470,43 +496,46 @@ Future<void> _last(WidgetTester tester) async {
   final left = await _windows();
   // An experiment only watches: what it changes is what is looked at.
   final strict = (Platform.environment['JEANSH_WIN_EXPERIMENT'] ?? '').isEmpty;
-  if (strict) expect(left, [xa], reason: 'the window left is not the first one: $left');
+  if (strict)
+    expect(left, [xa], reason: 'the window left is not the first one: $left');
   final now = await _rect(xa);
   _trace('the first window is at $now, B was at $bRect');
-  if (strict) expect(now, bRect, reason: 'the first window is not at B\'s old frame');
+  if (strict)
+    expect(now, bRect, reason: 'the first window is not at B\'s old frame');
   // Negative: nothing left over, mapped or not, parked or not.
   final all = await Process.run('xdotool', ['search', '--name', r'^Jeansh']);
   final named = '${all.stdout}'.trim().split('\n').where((x) => x.isNotEmpty);
   _trace('windows named Jeansh*, mapped or not: ${named.length}');
-  if (strict) expect(named, hasLength(1), reason: 'a window is left over: $named');
+  if (strict)
+    expect(named, hasLength(1), reason: 'a window is left over: $named');
 
   // Frames come, and B's tab is in window 0, the same shell.
   final frame = await _pumps(tester);
   _trace('a frame after the first window closed: $frame');
   _trace(
-    'views: ${[
-      for (final v in PlatformDispatcher.instance.views) '${v.viewId} ${v.physicalSize}',
-    ]}, first View keys: ${_views()}',
+    'views: ${[for (final v in PlatformDispatcher.instance.views) '${v.viewId} ${v.physicalSize}']}, first View keys: ${_views()}',
   );
   _trace(
     'framesEnabled ${WidgetsBinding.instance.framesEnabled}, lifecycle '
     '${WidgetsBinding.instance.lifecycleState}',
   );
-  for (final line in appLog.current
-      .split('\n')
-      .where((l) => l.contains('lifecycle'))
-      .toList()
-      .reversed
-      .take(8)
-      .toList()
-      .reversed) {
+  for (final line
+      in appLog.current
+          .split('\n')
+          .where((l) => l.contains('lifecycle'))
+          .toList()
+          .reversed
+          .take(8)
+          .toList()
+          .reversed) {
     _trace('app log: $line');
   }
   if (!frame) {
     // No frame: is the window dead to input too, or only the test's frames
     // gone? A click in its middle (the shell's tab fills it) and a command
     // typed, answered by a file, with no pump waited for.
-    IntegrationTestWidgetsFlutterBinding.instance
+    IntegrationTestWidgetsFlutterBinding
+            .instance
             .shouldPropagateDevicePointerEvents =
         true;
     final size = now.split(' ');
@@ -548,7 +577,11 @@ Future<void> _last(WidgetTester tester) async {
     );
     fail('no frame came after the first window closed (input answered: $up)');
   }
-  await _until(tester, () => _in(_tabClose, 0).length == 1, 'B\'s tab in window 0');
+  await _until(
+    tester,
+    () => _in(_tabClose, 0).length == 1,
+    'B\'s tab in window 0',
+  );
   await _until(
     tester,
     () => _in(find.byType(TerminalView), 0).isNotEmpty,
@@ -556,7 +589,8 @@ Future<void> _last(WidgetTester tester) async {
   );
   // Real input: a click on the terminal and a command typed to it, answered
   // by a file; no pump is waited for.
-  final box = _in(find.byType(TerminalView), 0).first.renderObject! as RenderBox;
+  final box =
+      _in(find.byType(TerminalView), 0).first.renderObject! as RenderBox;
   final at = box.localToGlobal(box.size.center(Offset.zero));
   final ratio = tester.binding.platformDispatcher.view(id: 0)!.devicePixelRatio;
   final binding = IntegrationTestWidgetsFlutterBinding.instance;
@@ -617,7 +651,12 @@ Future<void> _last(WidgetTester tester) async {
         'echo ended >> ${marker.path}',
   ], mode: ProcessStartMode.detached);
   marker.writeAsStringSync('ready\n', mode: FileMode.append);
-  await _click(tester, xa, 0, await _first(tester, _close, 0, 'the last Close'));
+  await _click(
+    tester,
+    xa,
+    0,
+    await _first(tester, _close, 0, 'the last Close'),
+  );
   final asked = _in(find.byType(TuiDialog), 0).isNotEmpty;
   if (asked) marker.writeAsStringSync('asked\n', mode: FileMode.append);
   // No frame is waited for: the window may be gone, and a pump would wait.
@@ -706,8 +745,17 @@ Future<void> _bisect(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
   final a0 = _views().single;
   if (live && target == 'A') {
-    await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'A\'s card'));
-    await _until(tester, () => _in(_tabClose, a0).length == 1, 'A\'s shell tab');
+    await _click(
+      tester,
+      ids[0],
+      a0,
+      await _first(tester, _card, a0, 'A\'s card'),
+    );
+    await _until(
+      tester,
+      () => _in(_tabClose, a0).length == 1,
+      'A\'s shell tab',
+    );
     await tester.pump(const Duration(seconds: 3));
   }
   await _newWindow(tester, ids[0], 2);
@@ -716,7 +764,12 @@ Future<void> _bisect(WidgetTester tester) async {
   final a = views[0];
   final b = views[1];
   if (live && target == 'B') {
-    await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
+    await _click(
+      tester,
+      ids[1],
+      b,
+      await _first(tester, _card, b, 'B\'s card'),
+    );
     await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
     await tester.pump(const Duration(seconds: 3));
   }
@@ -937,12 +990,8 @@ Future<void> _t4(WidgetTester tester) async {
   );
   await tester.pump(const Duration(seconds: 1));
 
-  Future<void> closeB() async => _click(
-    tester,
-    ids[1],
-    b,
-    await _first(tester, _close, b, 'B\'s Close'),
-  );
+  Future<void> closeB() async =>
+      _click(tester, ids[1], b, await _first(tester, _close, b, 'B\'s Close'));
   // Asked, and Keep it keeps B and its shell.
   await closeB();
   await _until(
@@ -980,4 +1029,3 @@ Future<void> _t4(WidgetTester tester) async {
   expect(_in(find.text('Home'), a), isNotEmpty, reason: 'A is gone too');
   _trace('t4: Close window closed B alone');
 }
-
