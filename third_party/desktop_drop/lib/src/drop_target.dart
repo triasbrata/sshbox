@@ -136,6 +136,11 @@ class _DropTargetState extends State<DropTarget> {
   }
 
   void _onDropEvent(DropEvent event) {
+    // An event is for one window: a target in another does not hear it.
+    final view = View.maybeOf(context);
+    if (view != null && view.viewId != DesktopDrop.instance.eventView) {
+      return;
+    }
     final renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null) {
       return;
