@@ -107,7 +107,8 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in save restore buttons churn last; do
+  for phase in ${E2E_MW_PHASES:-save restore buttons churn last}; do
+    echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
@@ -122,6 +123,18 @@ mw_phases() {
         tail -n 80 "$data/last.log"
         rc=1
       fi
+    elif [ "$phase" = bisect ]; then
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/bisect.log" || true
+      echo "BISECT RESULT: $(grep -a bisect "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+      if [ -n "$BISECT_LOG" ]; then
+        echo "--- the jeansh: lines of the app's stderr, in order:"
+        grep -a "jeansh:" "$data/bisect.log" | tail -n 600
+        echo "--- the last 60 lines of the output:"
+        tail -n 60 "$data/bisect.log"
+      fi
+      rm -f "$data/jeansh-e2e-mw-trace.txt"
     elif [ "$phase" = churn ]; then
       # The app's stderr is in flutter test's output, kept to be read for a
       # crash line.

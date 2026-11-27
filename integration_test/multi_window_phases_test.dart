@@ -226,6 +226,8 @@ void main() {
           await _restore(tester);
         case 'buttons':
           await _buttons(tester);
+        case 'bisect':
+          await _bisect(tester);
         case 'churn':
           await _churn(tester);
         case 'last':
@@ -426,6 +428,17 @@ Future<void> _last(WidgetTester tester) async {
     'B\'s shell to write its process id',
   );
   final bRect = await _rect(xb);
+  // The control for the pixel check below: a window that paints changes
+  // its pixels when a command is typed into it.
+  final before = await _grabWindow(bRect, 'control1');
+  shellIn(b).terminal.textInput('echo JEANSH_CONTROL');
+  shellIn(b).terminal.keyInput(TerminalKey.enter);
+  await tester.pump(const Duration(seconds: 1));
+  await Future<void>.delayed(const Duration(seconds: 1));
+  final after = await _grabWindow(bRect, 'control2');
+  final controlChanged =
+      before != null && after != null && !_same(before, after);
+  _trace('control: a window that paints changed its pixels: $controlChanged');
   _trace('B has a shell, pid ${pid1.readAsStringSync().trim()}, frame $bRect');
 
   // Close the first window: asked, as it holds a live shell.
@@ -446,22 +459,20 @@ Future<void> _last(WidgetTester tester) async {
 
   // Positive: window 0's own X window is the one left, at B's old frame.
   final left = await _windows();
-  expect(left, [xa], reason: 'the window left is not the first one: $left');
+  // An experiment only watches: what it changes is what is looked at.
+  final strict = (Platform.environment['JEANSH_WIN_EXPERIMENT'] ?? '').isEmpty;
+  if (strict) expect(left, [xa], reason: 'the window left is not the first one: $left');
   final now = await _rect(xa);
   _trace('the first window is at $now, B was at $bRect');
-  expect(now, bRect, reason: 'the first window is not at B\'s old frame');
+  if (strict) expect(now, bRect, reason: 'the first window is not at B\'s old frame');
   // Negative: nothing left over, mapped or not, parked or not.
   final all = await Process.run('xdotool', ['search', '--name', r'^Jeansh']);
   final named = '${all.stdout}'.trim().split('\n').where((x) => x.isNotEmpty);
   _trace('windows named Jeansh*, mapped or not: ${named.length}');
-  expect(named, hasLength(1), reason: 'a window is left over: $named');
+  if (strict) expect(named, hasLength(1), reason: 'a window is left over: $named');
 
   // Frames come, and B's tab is in window 0, the same shell.
-  WidgetsBinding.instance.scheduleFrame();
-  final frame = await Future.any([
-    WidgetsBinding.instance.endOfFrame.then((_) => true),
-    Future<bool>.delayed(const Duration(seconds: 8), () => false),
-  ]);
+  final frame = await _pumps(tester);
   _trace('a frame after the first window closed: $frame');
   _trace(
     'views: ${[
@@ -518,6 +529,7 @@ Future<void> _last(WidgetTester tester) async {
     final shot1 = await _grabWindow(now, 'paint1');
     await _xdo(['type', '--delay', '30', 'echo JEANSH_PAINT_CHECK']);
     await _xdo(['key', 'Return']);
+    await _pumps(tester);
     await Future<void>.delayed(const Duration(seconds: 2));
     final shot2 = await _grabWindow(now, 'paint2');
     _trace(
@@ -652,7 +664,7 @@ bool _drew(TerminalView view) {
 /// the display; null when it cannot.
 Future<List<int>?> _grabWindow(String rect, String name) async {
   final r = rect.split(' ');
-  final file = _note(name);
+  final file = File('${_dir.path}/jeansh-e2e-mw-$name.png');
   final done = await Process.run('ffmpeg', [
     '-loglevel', 'error', '-y', '-f', 'x11grab', '-draw_mouse', '0', //
     '-video_size', '${r[2]}x${r[3]}', //
@@ -673,3 +685,73 @@ bool _same(List<int> a, List<int> b) {
   }
   return true;
 }
+
+/// What makes the first window's close stall the frames, when the second's
+/// does not: which window closes (BISECT_TARGET A or B), whether it holds a
+/// live shell (BISECT_LIVE 1 or 0), and how (BISECT_HOW button, the app's
+/// own ✕, or wm, the window manager's delete). The answer is one trace line.
+Future<void> _bisect(WidgetTester tester) async {
+  final target = Platform.environment['BISECT_TARGET'] ?? 'A';
+  final live = Platform.environment['BISECT_LIVE'] == '1';
+  final how = Platform.environment['BISECT_HOW'] ?? 'button';
+  var ids = await _windowsAre(tester, 1);
+  final a0 = _views().single;
+  if (live && target == 'A') {
+    await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'A\'s card'));
+    await _until(tester, () => _in(_tabClose, a0).length == 1, 'A\'s shell tab');
+    await tester.pump(const Duration(seconds: 3));
+  }
+  await _newWindow(tester, ids[0], 2);
+  ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  if (live && target == 'B') {
+    await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
+    await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
+    await tester.pump(const Duration(seconds: 3));
+  }
+  final x = target == 'A' ? ids[0] : ids[1];
+  final v = target == 'A' ? a : b;
+  if (how == 'button') {
+    await _click(tester, x, v, await _first(tester, _close, v, 'its Close'));
+  } else {
+    await _xdo(['windowfocus', x]);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _xdo(['key', 'alt+F4']);
+  }
+  if (live) {
+    await _until(
+      tester,
+      () => _in(find.byType(TuiDialog), v).isNotEmpty,
+      'the question before the window closes',
+    );
+    await _click(
+      tester,
+      x,
+      v,
+      await _first(tester, _button('Close window'), v, 'Close window'),
+    );
+  }
+  // Counted with no pump, which may not come back.
+  var windows = 99;
+  var pumped = true;
+  for (var i = 0; i < 100 && windows != 1; i++) {
+    pumped = await _pumps(tester) && pumped;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    windows = (await _windows()).length;
+  }
+  _trace('the pump came back throughout the close: $pumped');
+  final frame = await _pumps(tester);
+  _trace(
+    'bisect target=$target live=${live ? 1 : 0} how=$how windows=$windows '
+    'frame=$frame',
+  );
+}
+
+/// Whether the test's own pump comes back: the binding draws only when it
+/// is pumped, so this, and not a frame waited for, says whether frames work.
+Future<bool> _pumps(WidgetTester tester) => Future.any([
+  tester.pump(const Duration(milliseconds: 50)).then((_) => true),
+  Future<bool>.delayed(const Duration(seconds: 10), () => false),
+]);
