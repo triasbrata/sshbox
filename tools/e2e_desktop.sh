@@ -107,7 +107,8 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in save restore buttons churn last; do
+  for phase in ${E2E_MW_PHASES:-save restore buttons churn last}; do
+    echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
