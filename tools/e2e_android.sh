@@ -2656,6 +2656,19 @@ print(sum(1 for l in lines if l.strip() and json.loads(l).get('ev') == 'received
 PY
 }
 
+# How many times the socket was given a message it had already taken (the
+# session drops it by uuid, as the real one does, and says so here).
+agg_dups() {
+  sudo python3 - "/home/$SSH_USER/.e2e-agg/received.log" <<'PY'
+import json, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    lines = []
+print(sum(1 for l in lines if l.strip() and json.loads(l).get('ev') == 'duplicate'))
+PY
+}
+
 # How many nodes of the screen say exactly TEXT: the user's bubble, drawn once.
 agg_ui() { # text
   adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
@@ -2702,6 +2715,7 @@ chat_aggregator() {
   agg_check "2: said it is a duplicate" "$(grep -c '"duplicate":true' "$out")" 1
   agg_check "2: still one record" "$(agg_records 'aggregator one')" 1
   agg_check "2: the socket was still given it once" "$(agg_received 'aggregator one')" 1
+  agg_check "2: and not given it again, even to be dropped" "$(agg_dups)" 0
   rm -f "$out"
   echo "::endgroup::"
 
