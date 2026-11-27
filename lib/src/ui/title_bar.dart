@@ -106,7 +106,7 @@ Future<void> watchTitleBar() async {
 /// told which window it is, beside them.
 @visibleForTesting
 Object? windowArguments(Object? arguments, int viewId) =>
-    viewId == 0 ? arguments : {'view': viewId, 'arguments': arguments};
+    arguments;
 
 void _ask(String method, [Object? arguments, int viewId = 0]) => unawaited(
   _window
