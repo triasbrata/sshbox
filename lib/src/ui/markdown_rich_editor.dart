@@ -320,7 +320,7 @@ class _LiveController extends TextEditingController {
       swapBuilder,
       sectionBuilder: sectionBuilder,
       active: pinned,
-      blankSections: !SemanticsBinding.instance.semanticsEnabled,
+      blankSections: false,
     );
   }
 }
