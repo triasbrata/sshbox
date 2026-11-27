@@ -153,7 +153,13 @@ mw_phases() {
         rc=1
       fi
     else
-      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data flutter test \
+      # The first four checks are independent: a data folder each, so one
+      # that fails leaves no window behind for the next.
+      case "$phase" in
+        t[1-4]) home=$(mktemp -d) ;;
+        *) home=$data ;;
+      esac
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
         --dart-define=JEANSH_E2E_MWINDOW=$phase || {
           rc=1

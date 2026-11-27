@@ -778,6 +778,19 @@ int _caretN(TerminalView view) {
   return count;
 }
 
+/// The second window closed by its own ✕, so the next phase starts from one.
+Future<void> _closeSecond(WidgetTester tester) async {
+  final ids = await _windows();
+  final views = _views();
+  await _click(
+    tester,
+    ids[1],
+    views[1],
+    await _first(tester, _close, views[1], 'the second window\'s Close'),
+  );
+  await _windowsAre(tester, 1);
+}
+
 Future<void> _openSecond(WidgetTester tester) async {
   final ids = await _windowsAre(tester, 1);
   await _newWindow(tester, ids[0], 2);
@@ -824,6 +837,7 @@ Future<void> _t1(WidgetTester tester) async {
   await tester.pump(const Duration(seconds: 1));
   expect(_caretN(term()), 1, reason: 'the terminal got ^N from Ctrl+Shift+N');
   _trace('t1: the terminal heard nothing of Ctrl+Shift+N');
+  await _closeSecond(tester);
 }
 
 /// 2. The UI text size changed in A shows in B at once, and B's tabs are as
@@ -851,7 +865,8 @@ Future<void> _t2(WidgetTester tester) async {
   List<String> texts(int view) => [
     for (final e in _in(find.byType(Text), view))
       if ((e.widget as Text).data case final t?)
-        if (!t.startsWith('UI text size')) t,
+        // Not a toast, and not the spinner's glyph, which turns.
+        if (!t.startsWith('UI text size') && t.length > 1) t,
   ];
   final tabsB = texts(b);
   _trace('t2: 100 px of text is $a0 in A and $b0 in B');
@@ -868,6 +883,7 @@ Future<void> _t2(WidgetTester tester) async {
   // Negative: B's tabs and rows are the same ones.
   expect(texts(b), tabsB, reason: 'B\'s tabs or rows changed');
   await uiTextSize.choose(1);
+  await _closeSecond(tester);
 }
 
 /// 3. A Local shell tab opened in A is not in B, whose Home still lists the
@@ -896,6 +912,10 @@ Future<void> _t3(WidgetTester tester) async {
   expect(inB, 1, reason: 'B shows A\'s tab');
   expect(_in(_card, b), hasLength(1));
   expect(_in(_tabClose, b), isEmpty, reason: 'B has a tab');
+  // Back to nothing: A's tab closed, then the second window.
+  await _click(tester, ids[0], a, _in(_tabClose, a).first);
+  await _until(tester, () => _in(_tabClose, a).isEmpty, 'A\'s tab to close');
+  await _closeSecond(tester);
 }
 
 /// 4. Closing B while it holds a live shell asks first: Keep it keeps B and
