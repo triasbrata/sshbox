@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -13,6 +14,8 @@ import 'save_chord.dart';
 import 'termul/termul_palette.dart';
 import 'termul/termul_theme.dart';
 import 'termul/tui_checkbox.dart';
+import 'termul/tui_menu.dart';
+import 'termul/tui_tooltip.dart';
 
 export 'markdown_live.dart' show MdLink;
 
@@ -82,10 +85,12 @@ class MarkdownRichEditor extends StatefulWidget {
   final TextStyle? codeFont;
 
   /// ponytail: the whole document is one paragraph, laid out again on every
-  /// key, at a cost that grows with how much markup it has: about 100 ms a
-  /// key for an 83 KB README in a debug build (see the PR). Past this a file
+  /// key, at a cost that grows with its length. Sections away from the caret
+  /// are shaped as blanks, so a key in the 83 KB README costs about 17 ms in
+  /// a debug widget test, and 240 KB about 45 ms, what 160 KB cost before
+  /// (test/markdown_rich_speed_test.dart, RICH_BENCH=1). Past this a file
   /// opens in Source, which lays out only the lines on screen.
-  static const limit = 160 * 1024;
+  static const limit = 240 * 1024;
 
   /// Whether the formatting goes in a bar floating over a selection, as on
   /// Medium, rather than in the bar over the keyboard.
@@ -317,6 +322,7 @@ class _LiveController extends TextEditingController {
       swapBuilder,
       sectionBuilder: sectionBuilder,
       active: pinned,
+      blankSections: !SemanticsBinding.instance.semanticsEnabled,
     );
   }
 }
@@ -325,6 +331,15 @@ class _LiveController extends TextEditingController {
 const _hide = 1;
 const _widget = 2;
 const _section = 3;
+
+/// [run] as spaces, its line breaks kept.
+String _blank(String run) {
+  final out = Uint16List(run.length);
+  for (var k = 0; k < run.length; k++) {
+    out[k] = run.codeUnitAt(k) == 0x0A ? 0x0A : 0x20;
+  }
+  return String.fromCharCodes(out);
+}
 
 /// The text drawn, from [from] to [to]: [live] styled by [look], with what
 /// [ends] does not touch hidden or swapped. Exactly as long as the text, a
@@ -336,6 +351,9 @@ const _section = 3;
 /// out once, and the rest of it one hidden run: what is shaped again on a key
 /// is then the section being typed in and a few runs a section, not the whole
 /// document.
+///
+/// [blankSections] puts spaces in place of that hidden run's characters,
+/// its line breaks kept: off while a screen reader reads the field's text.
 @visibleForTesting
 TextSpan liveSpan(
   MdLive live,
@@ -347,6 +365,7 @@ TextSpan liveSpan(
   int? to,
   Widget Function(MdRange section)? sectionBuilder,
   Set<int> active = const {},
+  bool blankSections = false,
 }) {
   final l = look;
   final t = live.text;
@@ -406,11 +425,13 @@ TextSpan liveSpan(
   }
 
   final children = <InlineSpan>[];
+  var afterSection = false;
   bool inComposing(int k) =>
       composing.isValid && k >= composing.start && k < composing.end;
   var i = from;
   while (i < end) {
     if (draw[i] == _section) {
+      afterSection = true;
       children.add(
         WidgetSpan(
           alignment: PlaceholderAlignment.top,
@@ -454,7 +475,17 @@ TextSpan liveSpan(
     }
     var style = d == _hide ? l.hidden : l.of(m);
     if (c) style = style.copyWith(decoration: TextDecoration.underline);
-    children.add(TextSpan(text: t.substring(i, j), style: style));
+    final run = t.substring(i, j);
+    children.add(
+      TextSpan(
+        // A section drawn apart keeps its text in the field only to keep
+        // every offset where it is: as spaces, with its line breaks, it is
+        // shaped in a fraction of the time, and nothing shows it.
+        text: blankSections && afterSection && d == _hide ? _blank(run) : run,
+        style: style,
+      ),
+    );
+    afterSection = false;
     i = j;
   }
   return TextSpan(style: l.root, children: children);
@@ -488,7 +519,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     super.initState();
     widget.controller?._state = this;
     _text.addListener(_onText);
-    SemanticsBinding.instance.addSemanticsEnabledListener(_placeTaskNodes);
+    SemanticsBinding.instance.addSemanticsEnabledListener(_onSemantics);
     _focus.addListener(() {
       _text.focused = _focus.hasFocus;
       RichChords.want(this, _focus.hasFocus ? _onChord : null);
@@ -518,7 +549,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _scroll.dispose();
     _settle?.cancel();
     _bar.dispose();
-    SemanticsBinding.instance.removeSemanticsEnabledListener(_placeTaskNodes);
+    SemanticsBinding.instance.removeSemanticsEnabledListener(_onSemantics);
     _taskNodes.dispose();
     super.dispose();
   }
@@ -930,6 +961,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   final _stackKey = GlobalKey();
   bool _taskNodesDue = false;
 
+  /// A screen reader come or gone: the field's text is drawn again, with or
+  /// without the sections' own characters, and the task nodes placed.
+  void _onSemantics() {
+    _text.restyle();
+    _placeTaskNodes();
+  }
+
   /// Places the task boxes' nodes after the frame lays the boxes out, while
   /// a screen reader or anything else asks for semantics: otherwise nothing.
   void _placeTaskNodes() {
@@ -1197,8 +1235,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           // Prose: the keyboard may help as it does in a notes app.
           autocorrect: true,
           enableSuggestions: true,
+          // But never a character not typed: iOS would make `--` a dash and
+          // `"` a curly quote, which are other bytes in the file.
+          smartDashesType: SmartDashesType.disabled,
+          smartQuotesType: SmartQuotesType.disabled,
           cursorColor: p.accent,
           inputFormatters: [_Edits(_onEdit)],
+          contextMenuBuilder: _contextMenu,
           scrollPadding: const EdgeInsets.all(48),
           // A page, not a field: none of the app's field box, its fill or
           // the accent line it draws round a focused field.
@@ -1326,6 +1369,56 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           ),
         );
       },
+    );
+  }
+
+  /// The selection menu in termul's face: the field's own cut, copy, paste
+  /// and select all, and on a desktop, under a divider, the formatting the
+  /// floating bar and the chords give, with their keys.
+  Widget _contextMenu(BuildContext context, EditableTextState editable) {
+    final mac =
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    String key(String k) => mac ? '⌘$k' : 'Ctrl+$k';
+    final desktop = MarkdownRichEditor.floatingBar;
+    TuiTextMenuItem format(String label, String k, VoidCallback run) =>
+        TuiTextMenuItem(
+          label: label,
+          shortcut: k.isEmpty ? null : key(k),
+          logName: label.toLowerCase(),
+          onPressed: () {
+            editable.hideToolbar();
+            run();
+          },
+        );
+    return TuiTextMenu(
+      anchors: editable.contextMenuAnchors,
+      panel: desktop,
+      items: [
+        for (final item in editable.contextMenuButtonItems)
+          TuiTextMenuItem(
+            label: item.label ?? richMenuLabel(item.type),
+            shortcut: switch (item.type) {
+              ContextMenuButtonType.cut => key('X'),
+              ContextMenuButtonType.copy => key('C'),
+              ContextMenuButtonType.paste => key('V'),
+              ContextMenuButtonType.selectAll => key('A'),
+              _ => null,
+            },
+            logName: item.type.name,
+            onPressed: item.onPressed ?? () {},
+          ),
+        if (desktop) ...[
+          null,
+          format('Bold', 'B', () => _toggleInline('**', MdMark.bold)),
+          format('Italic', 'I', () => _toggleInline('_', MdMark.italic)),
+          format('Code', 'E', () => _toggleInline('`', MdMark.code)),
+          format('Link', 'K', () => unawaited(_editLink())),
+          format('Heading 1', '', () => _toggleHeading(1)),
+          format('Heading 2', '', () => _toggleHeading(2)),
+          format('Quote', '', _toggleQuote),
+        ],
+      ],
     );
   }
 
@@ -1759,7 +1852,15 @@ TextEditingValue? toggleInline(
   final len = marker.length;
   // The span already round the selection, found by its hidden markers.
   for (final pair in _spans(live, bit)) {
-    final (open, close) = pair;
+    var (open, close) = pair;
+    // `***x***` is bold and italic in one pair of markers: taking one off
+    // takes its own part of them, one character for italic and two for
+    // bold, and leaves the other.
+    if (open.end - open.start == 3 && close.end - close.start == 3) {
+      final k = bit == MdMark.italic ? 1 : 2;
+      open = MdRange(open.start, open.start + k);
+      close = MdRange(close.end - k, close.end);
+    }
     if (open.start <= sel.start &&
         sel.end <= close.end &&
         (sel.isCollapsed ? true : sel.start >= open.start)) {
@@ -1798,6 +1899,7 @@ TextEditingValue? toggleInline(
   final edits = <(int, int)>[];
   for (final line in live.lines) {
     if (line.end < sel.start || line.start > sel.end) continue;
+    if (!_prose(line.kind)) continue;
     var s = sel.start > line.content ? sel.start : line.content;
     var e = sel.end < line.end ? sel.end : line.end;
     while (s < e && t[s].trim().isEmpty) {
@@ -1821,6 +1923,18 @@ TextEditingValue? toggleInline(
     selection: TextSelection(baseOffset: first + len, extentOffset: last),
   );
 }
+
+/// Whether a line of [kind] takes inline marks and a heading's `#`: not a
+/// fence's or an indented block's code, a table's row, HTML, front matter,
+/// a rule, a setext underline or a link definition, which a marker would
+/// break or change the meaning of.
+bool _prose(MdLineKind kind) => switch (kind) {
+  MdLineKind.paragraph ||
+  MdLineKind.heading ||
+  MdLineKind.listItem ||
+  MdLineKind.blank => true,
+  _ => false,
+};
 
 /// The open and close markers of every span carrying [bit].
 Iterable<(MdRange, MdRange)> _spans(MdLive live, int bit) sync* {
@@ -1851,7 +1965,7 @@ TextEditingValue toggleHeading(TextEditingValue value, MdLive live, int level) {
   final sel = value.selection;
   final lines = live.lines
       .where((l) => l.end >= sel.start && l.start <= sel.end)
-      .where((l) => l.kind != MdLineKind.blank)
+      .where((l) => l.kind != MdLineKind.blank && _prose(l.kind))
       .toList();
   if (lines.isEmpty) return value;
   final off = lines.every(
@@ -1882,8 +1996,11 @@ TextEditingValue toggleHeading(TextEditingValue value, MdLive live, int level) {
 TextEditingValue toggleQuote(TextEditingValue value, MdLive live) {
   final t = value.text;
   final sel = value.selection;
+  // A quote may hold a fence, a table or HTML, but front matter quoted is
+  // front matter no longer.
   final lines = live.lines
       .where((l) => l.end >= sel.start && l.start <= sel.end)
+      .where((l) => l.kind != MdLineKind.frontMatter)
       .toList();
   if (lines.isEmpty) return value;
   final off = lines.every((l) => l.quote != null);
@@ -2011,15 +2128,19 @@ class MarkdownRichBar extends StatelessWidget {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   children: [
-                    IconButton(
+                    TuiIconButton(
+                      icon: '↶',
                       tooltip: 'Undo',
+                      size: 44,
+                      iconSize: 18,
                       onPressed: canUndo() ? onUndo : null,
-                      icon: const Icon(Icons.undo),
                     ),
-                    IconButton(
+                    TuiIconButton(
+                      icon: '↷',
                       tooltip: 'Redo',
+                      size: 44,
+                      iconSize: 18,
                       onPressed: canRedo() ? onRedo : null,
-                      icon: const Icon(Icons.redo),
                     ),
                     const SizedBox(width: 6),
                     ..._formatButtons(controller),
@@ -2033,3 +2154,19 @@ class MarkdownRichBar extends StatelessWidget {
     );
   }
 }
+
+/// The word a selection menu row of [type] shows, where the field gives
+/// none of its own.
+@visibleForTesting
+String richMenuLabel(ContextMenuButtonType type) => switch (type) {
+  ContextMenuButtonType.cut => 'Cut',
+  ContextMenuButtonType.copy => 'Copy',
+  ContextMenuButtonType.paste => 'Paste',
+  ContextMenuButtonType.selectAll => 'Select all',
+  ContextMenuButtonType.delete => 'Delete',
+  ContextMenuButtonType.lookUp => 'Look up',
+  ContextMenuButtonType.searchWeb => 'Search web',
+  ContextMenuButtonType.share => 'Share',
+  ContextMenuButtonType.liveTextInput => 'Scan text',
+  ContextMenuButtonType.custom => '',
+};

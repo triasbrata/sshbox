@@ -5696,7 +5696,7 @@ class ClaudeChat extends ChangeNotifier {
             id: block['id'] as String? ?? '',
             name: block['name'] as String? ?? 'tool',
             input: switch (block['input']) {
-              final Map<String, dynamic> input => input,
+              final Map<String, dynamic> input => trimToolInput(input),
               _ => const {},
             },
           );
@@ -6288,6 +6288,29 @@ class ClaudeChat extends ChangeNotifier {
       ..declined = true;
     notifyListeners();
     return true;
+  }
+
+  /// The most of one string in a tool's input a chat holds: a Write of a big
+  /// file would otherwise stay in memory, whole, for as long as the chat lives.
+  static const inputStringLimit = 32 * 1024;
+
+  /// [input] with each string value cut to [inputStringLimit], as a result is
+  /// cut to [_resultLimit]. A map with nothing long comes back as it is.
+  static Map<String, dynamic> trimToolInput(Map<String, dynamic> input) {
+    if (!input.values.any(
+      (value) => value is String && value.length > inputStringLimit,
+    )) {
+      return input;
+    }
+    return {
+      for (final entry in input.entries)
+        entry.key: switch (entry.value) {
+          final String value when value.length > inputStringLimit =>
+            '${value.substring(0, inputStringLimit)}'
+                '\n… ${value.length - inputStringLimit} more characters',
+          final other => other,
+        },
+    };
   }
 
   /// A result is a string, or the blocks a tool answered with. Either way

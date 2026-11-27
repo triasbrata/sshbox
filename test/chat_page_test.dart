@@ -6,16 +6,20 @@ import 'dart:ui' as ui;
 
 import 'fake_drop.dart';
 import 'fake_file_browser.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sshbox/src/files/file_browser.dart' show FileBrowser, FileBrowserException;
+import 'package:sshbox/src/files/file_browser.dart'
+    show FileBrowser, FileBrowserException;
 import 'package:sshbox/src/files/transfers.dart' show transfers;
 import 'package:flutter/gestures.dart';
-import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show DebugSemanticsDumpOrder, RenderParagraph, RenderRepaintBoundary;
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart' show MarkdownBody;
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart'
+    show MarkdownBody;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sshbox/src/telemetry/app_log.dart';
 import 'package:sshbox/src/chat/claude_chat.dart';
@@ -253,25 +257,18 @@ class _Shell
   String? listing;
 
   /// What the CLI answers `initialize` with: its slash commands.
-  String slashListing = '${jsonEncode({
-    'type': 'control_response',
-    'response': {
-      'response': {
-        'commands': [
-          {
-            'name': 'model',
-            'description': 'Set the AI model for Claude Code',
-            'builtin': true,
+  String slashListing =
+      '${jsonEncode({
+        'type': 'control_response',
+        'response': {
+          'response': {
+            'commands': [
+              {'name': 'model', 'description': 'Set the AI model for Claude Code', 'builtin': true},
+              {'name': 'compact', 'description': 'Free up context by summarizing the conversation', 'builtin': true},
+            ],
           },
-          {
-            'name': 'compact',
-            'description': 'Free up context by summarizing the conversation',
-            'builtin': true,
-          },
-        ],
-      },
-    },
-  })}\n';
+        },
+      })}\n';
 
   /// What finding an interactive session's tmux pane answers: none, unless a
   /// test puts it in one.
@@ -353,9 +350,9 @@ class _Shell
       );
     }
     if (command.contains('/subagents/') && command.contains('wc -c')) {
-      final file = RegExp(
-        r'subagents/".{0,8}?(agent-[0-9A-Za-z_-]+)\.jsonl',
-      ).firstMatch(command)?.group(1);
+      final file = RegExp(r'subagents/".{0,8}?(agent-[0-9A-Za-z_-]+)\.jsonl')
+          .firstMatch(command)
+          ?.group(1);
       final lines = subAgentLines[file] ?? const <String>[];
       final all = lines.isEmpty ? '' : '${lines.join('\n')}\n';
       final bytes = utf8.encode(all);
@@ -559,7 +556,10 @@ Map<String, Object?> _finished(String id, String name, {int started = 0}) => {
 /// The ⋮ beside the box: a focusable control that is not a text field, and
 /// whose press only opens its menu.
 final _menuGlyph = find
-    .descendant(of: find.byType(MenuButton<Object>), matching: find.byType(Text))
+    .descendant(
+      of: find.byType(MenuButton<Object>),
+      matching: find.byType(Text),
+    )
     .first;
 
 /// Picks the finished session [name] from the list, on a phone's drawer:
@@ -784,7 +784,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -827,33 +829,27 @@ void main() {
     addTearDown(tester.view.reset);
     final shell = _Shell()
       ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')])
-      ..slashListing = '${jsonEncode({
-        'type': 'control_response',
-        'response': {
-          'response': {
-            'commands': [
-              for (final name in ['compact', 'context', 'code-review'])
-                {
-                  'name': name,
-                  'description': 'What /$name does, said at some length so '
-                      'it cannot fit a phone',
-                  'argumentHint': '<optional custom summarization '
-                      'instructions>',
-                  'builtin': true,
-                },
-              {
-                'name': 'a-skill-whose-name-is-much-too-long-for-a-phone',
-                'description': 'A skill',
+      ..slashListing =
+          '${jsonEncode({
+            'type': 'control_response',
+            'response': {
+              'response': {
+                'commands': [
+                  for (final name in ['compact', 'context', 'code-review']) {'name': name, 'description': 'What /$name does, said at some length so '
+                        'it cannot fit a phone', 'argumentHint': '<optional custom summarization '
+                        'instructions>', 'builtin': true},
+                  {'name': 'a-skill-whose-name-is-much-too-long-for-a-phone', 'description': 'A skill'},
+                ],
               },
-            ],
-          },
-        },
-      })}\n';
+            },
+          })}\n';
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     // A chat with nothing in it yet, the keyboard up: what it says scrolls
@@ -894,27 +890,24 @@ void main() {
     addTearDown(tester.view.reset);
     final shell = _Shell()
       ..listing = jsonEncode([_finished('cf58d27a', 'Zsh config fix')])
-      ..slashListing = '${jsonEncode({
-        'type': 'control_response',
-        'response': {
-          'response': {
-            'commands': [
-              for (final name in ['compact', 'context'])
-                {
-                  'name': name,
-                  'description': 'What /$name does',
-                  'argumentHint': '<instructions>',
-                  'builtin': true,
-                },
-            ],
-          },
-        },
-      })}\n';
+      ..slashListing =
+          '${jsonEncode({
+            'type': 'control_response',
+            'response': {
+              'response': {
+                'commands': [
+                  for (final name in ['compact', 'context']) {'name': name, 'description': 'What /$name does', 'argumentHint': '<instructions>', 'builtin': true},
+                ],
+              },
+            },
+          })}\n';
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -953,12 +946,15 @@ void main() {
     final session = LiveSession(host: _host, transport: (_, _) => shell);
     addTearDown(session.dispose);
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
 
     bool sendOn() =>
-        tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.send))
+        tester
+            .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.send))
             .onPressed !=
         null;
     // Not ready, as between turns or before the connection is up: the box
@@ -1069,7 +1065,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -1148,7 +1146,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -1233,7 +1233,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await _continue(tester, 'Zsh config fix');
@@ -1298,16 +1300,15 @@ void main() {
     // Nothing went to either process in the meantime: the old one's reply
     // never came, and the new one was never answered for it.
     expect(
-      shell.written
-          .skip(before)
-          .where((l) => l.contains('control_response')),
+      shell.written.skip(before).where((l) => l.contains('control_response')),
       isEmpty,
     );
   });
 
   testWidgets('a message that was not delivered says why and can be sent '
-      'again or removed, and Retry goes through the chat\'s one way in',
-      (tester) async {
+      'again or removed, and Retry goes through the chat\'s one way in', (
+    tester,
+  ) async {
     tester.view
       ..physicalSize = const Size(1280, 800)
       ..devicePixelRatio = 1;
@@ -1335,7 +1336,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text('the nightly build'));
@@ -1408,7 +1411,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await tester.pump();
       await _continue(tester, 'Zsh config fix');
@@ -1463,10 +1468,8 @@ void main() {
         )
         .first;
 
-    String composer(WidgetTester tester) => tester
-        .widget<TextField>(find.byType(TextField).last)
-        .controller!
-        .text;
+    String composer(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField).last).controller!.text;
 
     Map<String, dynamic>? reply(_Shell shell) {
       for (final line in shell.written) {
@@ -1590,10 +1593,7 @@ void main() {
       tester,
     ) async {
       await asked(tester);
-      await focusOn(
-        tester,
-        find.byIcon(Icons.add_photo_alternate_outlined),
-      );
+      await focusOn(tester, find.byIcon(Icons.add_photo_alternate_outlined));
       await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
       await tester.pump();
       expect(composer(tester), 'h');
@@ -1650,7 +1650,9 @@ void main() {
     addTearDown(session.dispose);
     await session.connect(secrets: _NoSecrets());
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+      MaterialApp(
+        home: Scaffold(body: ChatPage(session: session)),
+      ),
     );
     await tester.pump();
     await tester.tap(find.text('SESSIONS ON THIS HOST'));
@@ -1688,8 +1690,10 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Send answers'));
     await wait(4);
     expect(
-      find.textContaining('Not answered: “the deploy” is not waiting for an '
-          'answer but for permission prompt'),
+      find.textContaining(
+        'Not answered: “the deploy” is not waiting for an '
+        'answer but for permission prompt',
+      ),
       findsNWidgets(2),
     );
     expect(shell.typed, isEmpty);
@@ -1847,9 +1851,7 @@ void main() {
     expect(find.textContaining('watched live'), findsNothing);
     expect(find.textContaining('continued where it stopped'), findsNothing);
     expect(
-      tester
-          .widget<TuiChatSessionList>(find.byType(TuiChatSessionList))
-          .hint,
+      tester.widget<TuiChatSessionList>(find.byType(TuiChatSessionList)).hint,
       isNull,
     );
   });
@@ -2498,8 +2500,9 @@ void main() {
       expect(node('labels: Array(1)'), findsOneWidget);
     });
 
-    testWidgets('an MCP tool is titled server · tool, with what it is about',
-        (tester) async {
+    testWidgets('an MCP tool is titled server · tool, with what it is about', (
+      tester,
+    ) async {
       await opened(tester, 'mcp__tracker__file_issue', {
         'title': 'Nightly is red',
       }, titled: 'tracker · file_issue');
@@ -2563,9 +2566,15 @@ void main() {
     testWidgets('a JSON result of a tool with no renderer is a tree too', (
       tester,
     ) async {
-      await opened(tester, 'Mystery', {
-        'q': 'x',
-      }, result: jsonEncode({'rows': [1, 2], 'ok': true}));
+      await opened(
+        tester,
+        'Mystery',
+        {'q': 'x'},
+        result: jsonEncode({
+          'rows': [1, 2],
+          'ok': true,
+        }),
+      );
       expect(node('rows: Array(2)'), findsOneWidget);
       expect(node('ok: true'), findsOneWidget);
     });
@@ -3416,9 +3425,7 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('a drag within one cell copies what it covers', (
-      tester,
-    ) async {
+    testWidgets('a drag within one cell copies what it covers', (tester) async {
       final copied = _useFakeClipboard();
       await pump(tester, table);
       final (a, b) = ends(tester, 'second row');
@@ -3516,7 +3523,10 @@ void main() {
       expect(copied, hasLength(1));
       expect(copied.single, contains('alpha'));
       expect(copied.single, contains('beta'));
-      expect(copied.single.indexOf('alpha'), lessThan(copied.single.indexOf('beta')));
+      expect(
+        copied.single.indexOf('alpha'),
+        lessThan(copied.single.indexOf('beta')),
+      );
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     testWidgets('cells copy apart: a tab between the cells of a row and a '
@@ -3526,7 +3536,10 @@ void main() {
       final (a, _) = ends(tester, 'Name');
       final (_, b) = ends(tester, 'second row');
       await dragThenCopy(tester, a, b);
-      expect(copied.single, 'Name\tNote\nalpha\tfirst code_one() cell\nbeta\tsecond row');
+      expect(
+        copied.single,
+        'Name\tNote\nalpha\tfirst code_one() cell\nbeta\tsecond row',
+      );
     }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
     testWidgets('two paragraphs copy with a newline between them', (
@@ -4065,9 +4078,7 @@ void main() {
         tester,
       ) async {
         final box = await pumpChat(tester);
-        Focus.of(
-          tester.element(_menuGlyph),
-        ).requestFocus();
+        Focus.of(tester.element(_menuGlyph)).requestFocus();
         await tester.pump();
 
         await tester.sendKeyEvent(LogicalKeyboardKey.space);
@@ -4122,7 +4133,9 @@ void main() {
         addTearDown(session.dispose);
         await session.connect(secrets: _NoSecrets());
         await tester.pumpWidget(
-          MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+          MaterialApp(
+            home: Scaffold(body: ChatPage(session: session)),
+          ),
         );
         await tester.pump();
         await _continue(tester, 'Notes');
@@ -4131,7 +4144,10 @@ void main() {
         return shell;
       }
 
-      Future<void> chord(WidgetTester tester, LogicalKeyboardKey modifier) async {
+      Future<void> chord(
+        WidgetTester tester,
+        LogicalKeyboardKey modifier,
+      ) async {
         await tester.sendKeyDownEvent(modifier);
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await tester.sendKeyUpEvent(modifier);
@@ -4187,7 +4203,8 @@ void main() {
         expect(shell.written, hasLength(1));
         expect(
           (((jsonDecode(shell.written.single.trim()) as Map)['message']
-                  as Map)['content'] as List)
+                      as Map)['content']
+                  as List)
               .single['text'],
           'one\ntwo',
         );
@@ -4225,7 +4242,8 @@ void main() {
         expect(shell.written, hasLength(1));
         expect(
           (((jsonDecode(shell.written.single.trim()) as Map)['message']
-                  as Map)['content'] as List)
+                      as Map)['content']
+                  as List)
               .single['text'],
           '/compact',
         );
@@ -4237,8 +4255,10 @@ void main() {
         addTearDown(() => chatEnterSends.value = false);
         final shell = await typed(tester, '/xyz');
         await tester.pump();
-        expect(find.text('No command chat can run starts with /xyz'),
-            findsOneWidget);
+        expect(
+          find.text('No command chat can run starts with /xyz'),
+          findsOneWidget,
+        );
 
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await tester.pump();
@@ -4296,7 +4316,10 @@ void main() {
         of: find.byType(TuiChatBubble),
         matching: find.byType(MermaidBlock),
       );
-      expect(tester.widget<MermaidBlock>(diagram).source, 'graph TD\n  A --> B\n');
+      expect(
+        tester.widget<MermaidBlock>(diagram).source,
+        'graph TD\n  A --> B\n',
+      );
     });
 
     testWidgets('stray stars and underscores read as written', (tester) async {
@@ -4447,7 +4470,6 @@ void main() {
       expect(find.textContaining('input needed'), findsNothing);
     });
 
-
     Future<_Shell> watchingOnScreen(WidgetTester tester) async {
       final shell = _Shell()
         ..history = _nightlyHistory
@@ -4456,7 +4478,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       await tester.tap(find.text('SESSIONS ON THIS HOST'));
@@ -4591,7 +4615,8 @@ void main() {
                 'id': 'toolu_tall',
                 'name': 'Bash',
                 'input': {
-                  'command': [for (var i = 0; i < 80; i++) 'echo tall $i'].join('\n'),
+                  'command': [for (var i = 0; i < 80; i++) 'echo tall $i']
+                      .join('\n'),
                 },
               },
             ],
@@ -4602,7 +4627,11 @@ void main() {
           'message': {
             'role': 'user',
             'content': [
-              {'type': 'tool_result', 'tool_use_id': 'toolu_tall', 'content': 'ok'},
+              {
+                'type': 'tool_result',
+                'tool_use_id': 'toolu_tall',
+                'content': 'ok',
+              },
             ],
           },
         });
@@ -4656,7 +4685,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
       await tester.enterText(find.byType(TextField), said);
@@ -4714,9 +4745,7 @@ void main() {
     });
 
     testWidgets('the jump button shows only away from the end, counts what '
-        'came in, and tapping it lands at the end and follows', (
-      tester,
-    ) async {
+        'came in, and tapping it lands at the end and follows', (tester) async {
       final shell = await watchingOnScreen(tester);
       for (var n = 1; n <= 3; n++) {
         await longReply(tester, shell, n);
@@ -4810,8 +4839,9 @@ void main() {
       expect(position.pixels, kept);
     });
 
-    testWidgets('scrolled up, a long reply leaves the reader where they are',
-        (tester) async {
+    testWidgets('scrolled up, a long reply leaves the reader where they are', (
+      tester,
+    ) async {
       final shell = await watchingOnScreen(tester);
       for (var n = 1; n <= 3; n++) {
         await longReply(tester, shell, n);
@@ -4922,8 +4952,7 @@ void main() {
 
     /// Focus on the ⋮: a control that is not a text field.
     Future<void> focusAButton(WidgetTester tester) async {
-      Focus.of(tester.element(_menuGlyph))
-          .requestFocus();
+      Focus.of(tester.element(_menuGlyph)).requestFocus();
       await tester.pump();
       expect(box(tester).focusNode!.hasFocus, isFalse);
     }
@@ -5090,7 +5119,14 @@ void main() {
         'presses it and is not the box\'s', (tester) async {
       final copied = _useFakeClipboard();
       await pumpChat(tester, answer: 'Run:\n\n```sh\necho hi\n```\n');
-      Focus.of(tester.element(find.byIcon(Icons.content_copy))).requestFocus();
+      Focus.of(
+        tester.element(
+          find.descendant(
+            of: find.byTooltip('Copy code'),
+            matching: find.text('⎘'),
+          ),
+        ),
+      ).requestFocus();
       await tester.pump();
 
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -5373,27 +5409,8 @@ void main() {
       String? waitingFor,
     }) =>
         '${jsonEncode([
-          {
-            'pid': 4079548,
-            'id': '81badf4a',
-            'cwd': '/srv/app',
-            'kind': 'background',
-            'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
-            'name': 'the nightly build',
-            'status': status,
-            'state': state,
-            'waitingFor': ?waitingFor,
-          },
-          {
-            'pid': 4079549,
-            'id': 'cccc3333',
-            'cwd': '/srv/app',
-            'kind': 'background',
-            'sessionId': 'cccc3333-0000-4000-8000-000000000000',
-            'name': 'the other one',
-            'status': 'idle',
-            'state': 'done',
-          },
+          {'pid': 4079548, 'id': '81badf4a', 'cwd': '/srv/app', 'kind': 'background', 'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070', 'name': 'the nightly build', 'status': status, 'state': state, 'waitingFor': ?waitingFor},
+          {'pid': 4079549, 'id': 'cccc3333', 'cwd': '/srv/app', 'kind': 'background', 'sessionId': 'cccc3333-0000-4000-8000-000000000000', 'name': 'the other one', 'status': 'idle', 'state': 'done'},
         ])}\n--- pins\n["81badf4a"]\n';
 
     Finder mark(String label) => find.bySemanticsLabel(label);
@@ -5414,7 +5431,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
 
@@ -5468,17 +5487,17 @@ void main() {
       await tester.tap(find.text('the nightly build'));
       await _settlePickUp(tester);
       expect(mark('Done, idle, not opened since'), findsNothing);
-      expect(mark('Done, idle'), findsNWidgets(2));      semantics.dispose();
+      expect(mark('Done, idle'), findsNWidgets(2));
+      semantics.dispose();
     });
 
-    testWidgets('nothing is asked for while the tab is hidden', (
-      tester,
-    ) async {
+    testWidgets('nothing is asked for while the tab is hidden', (tester) async {
       tester.view
         ..physicalSize = const Size(1280, 800)
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      final shell = _Shell()..listing = listed(status: 'busy', state: 'working');
+      final shell = _Shell()
+        ..listing = listed(status: 'busy', state: 'working');
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
@@ -5592,7 +5611,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       await tester.tap(find.text('the nightly build'));
@@ -5629,7 +5650,9 @@ void main() {
       expect(find.text('⎿ ■ Doing 1'), findsOneWidget);
       expect(find.text('  □ Task 2'), findsOneWidget);
       expect(
-        tester.widget<TuiText>(find.widgetWithText(TuiText, '⎿ ■ Doing 1')).bold,
+        tester
+            .widget<TuiText>(find.widgetWithText(TuiText, '⎿ ■ Doing 1'))
+            .bold,
         isTrue,
       );
 
@@ -5696,7 +5719,10 @@ void main() {
       );
       await _settlePickUp(tester);
       expect(shell.commands.any((c) => c.contains('/tasks')), isTrue);
-      expect(find.text('8 tasks (2 done, 1 in progress, 5 open)'), findsOneWidget);
+      expect(
+        find.text('8 tasks (2 done, 1 in progress, 5 open)'),
+        findsOneWidget,
+      );
       expect(find.text('⎿ ■ Doing early c'), findsOneWidget);
       expect(find.text('  □ early 4'), findsOneWidget);
       expect(find.text('  … 2 completed'), findsOneWidget);
@@ -5797,10 +5823,7 @@ void main() {
       bool failed = false,
     }) async {
       await OutboxStore.shared.save(
-        OutboxStore.keyOf(
-          _host.id,
-          'cf58d27a-0000-4000-8000-000000000000',
-        ),
+        OutboxStore.keyOf(_host.id, 'cf58d27a-0000-4000-8000-000000000000'),
         OutboxBox(
           entries: [
             OutboxEntry(
@@ -5849,12 +5872,13 @@ void main() {
       final next = clipboard(tester);
       await continued(tester);
       // The box let go: the focus on a button, as after a tab or a click.
-      Focus.of(
-        tester.element(find.byIcon(Icons.add_photo_alternate_outlined)),
-      ).requestFocus();
+      Focus.of(tester.element(find.byIcon(Icons.add_photo_alternate_outlined)))
+          .requestFocus();
       await tester.pump();
-      expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
-          isFalse);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+        isFalse,
+      );
 
       next.add('shot.png');
       await paste(tester);
@@ -5901,8 +5925,9 @@ void main() {
     });
 
     testWidgets('a picture message that could not go has Retry and Remove, '
-        'and Retry sends it again with its picture, through the one way in',
-        (tester) async {
+        'and Retry sends it again with its picture, through the one way in', (
+      tester,
+    ) async {
       final next = clipboard(tester);
       final shell = await continued(tester);
       next.add('shot.png');
@@ -5982,7 +6007,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await tester.pump();
       await tester.tap(find.text('SESSIONS ON THIS HOST'));
@@ -6457,7 +6484,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       return shell;
@@ -6672,9 +6701,7 @@ void main() {
     });
 
     testWidgets('a session that is only watched, open at a terminal in no '
-        'pane, shows its model and cannot change it from here', (
-      tester,
-    ) async {
+        'pane, shows its model and cannot change it from here', (tester) async {
       final shell = await open(
         tester,
         running: {
@@ -6985,17 +7012,14 @@ void main() {
       );
       Focus.of(tester.element(find.byType(ContextGauge))).requestFocus();
       final detector = tester.element(gauge);
-      FocusScope.of(detector).requestFocus(
-        Focus.of(detector, scopeOk: false),
-      );
+      FocusScope.of(detector).requestFocus(Focus.of(detector, scopeOk: false));
       await tester.pump();
       expect(find.textContaining('Usage'), findsNothing);
-      bool outlined() =>
-          tester
-              .widget<DecoratedBox>(find.byKey(const ValueKey('gauge-focus')))
-              .decoration
-              .toString()
-              .contains('Border');
+      bool outlined() => tester
+          .widget<DecoratedBox>(find.byKey(const ValueKey('gauge-focus')))
+          .decoration
+          .toString()
+          .contains('Border');
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       expect(find.textContaining('Usage'), findsOneWidget);
@@ -7383,7 +7407,12 @@ void main() {
       );
       await drop(tester, [file.path]);
       expect(shell.uploaded.single, endsWith('-my "q" notes.txt'));
-      expect(box(tester), matches(RegExp(r'^keep this sentence "/tmp/\d+-my \\"q\\" notes\.txt" $')));
+      expect(
+        box(tester),
+        matches(
+          RegExp(r'^keep this sentence "/tmp/\d+-my \\"q\\" notes\.txt" $'),
+        ),
+      );
     }, variant: linux);
 
     for (final (label, host) in [
@@ -7414,7 +7443,10 @@ void main() {
       final png = File('${dir.path}/a\u202egnp.png')..writeAsBytesSync([1]);
       await drop(tester, [spoof.path, c1.path, png.path]);
       expect(box(tester), isEmpty);
-      expect(find.textContaining('holds a control character'), findsNWidgets(3));
+      expect(
+        find.textContaining('holds a control character'),
+        findsNWidgets(3),
+      );
       expect(shell.uploaded, isEmpty);
       await tester.pumpAndSettle(const Duration(seconds: 6));
     }, variant: linux);
@@ -7649,7 +7681,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
       await tester.tap(find.text('Zsh config fix'));
@@ -7719,8 +7753,11 @@ void main() {
   group('chat performance, measured', () {
     final on = Platform.environment['CHAT_BENCH'] != null;
 
-    Map<String, Object?> text(String id, String body, {String role = 'assistant'}) =>
-        role == 'user'
+    Map<String, Object?> text(
+      String id,
+      String body, {
+      String role = 'assistant',
+    }) => role == 'user'
         ? {
             'type': 'user',
             'message': {'role': 'user', 'content': body},
@@ -7793,7 +7830,9 @@ void main() {
 
     String pct(List<int> us, double q) {
       final sorted = [...us]..sort();
-      return (sorted[((sorted.length - 1) * q).round()] / 1000).toStringAsFixed(1);
+      return (sorted[((sorted.length - 1) * q).round()] / 1000).toStringAsFixed(
+        1,
+      );
     }
 
     String stats(List<int> us) =>
@@ -7811,8 +7850,11 @@ void main() {
       return rows.take(8).map((e) => '${e.key}=${e.value}').join(' ');
     }
 
-    Future<List<int>> frames(WidgetTester tester, int n,
-        [Duration step = const Duration(milliseconds: 16)]) async {
+    Future<List<int>> frames(
+      WidgetTester tester,
+      int n, [
+      Duration step = const Duration(milliseconds: 16),
+    ]) async {
       final us = <int>[];
       for (var i = 0; i < n; i++) {
         final w = Stopwatch()..start();
@@ -7845,7 +7887,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       return shell;
@@ -7889,7 +7933,9 @@ void main() {
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       expect(
@@ -7908,7 +7954,9 @@ void main() {
         if (element.widget is ChatPage) page++;
       };
       addTearDown(() => debugOnRebuildDirtyWidget = null);
-      final asked = shell.commands.where((c) => c.contains('agents --json')).length;
+      final asked = shell.commands
+          .where((c) => c.contains('agents --json'))
+          .length;
       await tester.pump(const Duration(seconds: 6));
       await _frames(tester);
       expect(
@@ -7941,105 +7989,126 @@ void main() {
       expect(page, 0);
     });
 
-    testWidgets('open a long session', (tester) async {
-      final history = longHistory(2000);
-      final rss0 = ProcessInfo.currentRss;
-      final shell = await pickUp(tester, history);
-      rebuilds.clear();
-      count();
-      final w = Stopwatch()..start();
-      await tester.tap(find.text('the nightly build'));
-      await tester.pump();
-      final first = w.elapsedMilliseconds;
-      await _settlePickUp(tester);
-      final total = w.elapsedMilliseconds;
-      debugOnRebuildDirtyWidget = null;
-      // ignore: avoid_print
-      print('BENCH open: transcript=${utf8.encode(history).length ~/ 1024}KB '
+    testWidgets(
+      'open a long session',
+      (tester) async {
+        final history = longHistory(2000);
+        final rss0 = ProcessInfo.currentRss;
+        final shell = await pickUp(tester, history);
+        rebuilds.clear();
+        count();
+        final w = Stopwatch()..start();
+        await tester.tap(find.text('the nightly build'));
+        await tester.pump();
+        final first = w.elapsedMilliseconds;
+        await _settlePickUp(tester);
+        final total = w.elapsedMilliseconds;
+        debugOnRebuildDirtyWidget = null;
+        // ignore: avoid_print
+        print(
+          'BENCH open: transcript=${utf8.encode(history).length ~/ 1024}KB '
           'lines=2000 first-pump=${first}ms settled=${total}ms '
           'elements=${tester.allElements.length} '
           'rss+${(ProcessInfo.currentRss - rss0) ~/ (1024 * 1024)}MB '
-          'commands=${shell.commands.length}\nBENCH open rebuilds: ${top()}');
-    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+          'commands=${shell.commands.length}\nBENCH open rebuilds: ${top()}',
+        );
+      },
+      skip: !on,
+      timeout: const Timeout(Duration(minutes: 5)),
+    );
 
-    testWidgets('stream 200 events into a conversation, and scroll', (
-      tester,
-    ) async {
-      final shell = await pickUp(tester, longHistory(500));
-      await tester.tap(find.text('the nightly build'));
-      await _settlePickUp(tester);
-      await _frames(tester);
-      rebuilds.clear();
-      count();
-      final per = <int>[];
-      for (var i = 0; i < 200; i++) {
-        final w = Stopwatch()..start();
-        shell.follow?.add(
-          Uint8List.fromList(
-            utf8.encode(
-              '${jsonEncode(text('s$i', '$prose\nstreamed event $i'))}\n',
+    testWidgets(
+      'stream 200 events into a conversation, and scroll',
+      (tester) async {
+        final shell = await pickUp(tester, longHistory(500));
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        await _frames(tester);
+        rebuilds.clear();
+        count();
+        final per = <int>[];
+        for (var i = 0; i < 200; i++) {
+          final w = Stopwatch()..start();
+          shell.follow?.add(
+            Uint8List.fromList(
+              utf8.encode(
+                '${jsonEncode(text('s$i', '$prose\nstreamed event $i'))}\n',
+              ),
             ),
-          ),
-        );
-        await tester.pump(const Duration(milliseconds: 16));
-        per.add(w.elapsedMicroseconds);
-      }
-      debugOnRebuildDirtyWidget = null;
-      // ignore: avoid_print
-      print('BENCH stream (500-entry session, 200 events, follow on): '
+          );
+          await tester.pump(const Duration(milliseconds: 16));
+          per.add(w.elapsedMicroseconds);
+        }
+        debugOnRebuildDirtyWidget = null;
+        // ignore: avoid_print
+        print(
+          'BENCH stream (500-entry session, 200 events, follow on): '
           '${stats(per)}\nBENCH stream rebuilds (total over 200 events): ${top()}\n'
-          'BENCH per event: ${rebuilds.entries.map((e) => '${e.key}=${(e.value / 200).toStringAsFixed(1)}').take(6).join(' ')}');
-
-      // Scrolling through it.
-      rebuilds.clear();
-      count();
-      final scroll = <int>[];
-      for (var i = 0; i < 8; i++) {
-        await tester.fling(
-          find.byType(CustomScrollView),
-          const Offset(0, 600),
-          2500,
+          'BENCH per event: ${rebuilds.entries.map((e) => '${e.key}=${(e.value / 200).toStringAsFixed(1)}').take(6).join(' ')}',
         );
-        scroll.addAll(await frames(tester, 40));
-      }
-      debugOnRebuildDirtyWidget = null;
-      // ignore: avoid_print
-      print('BENCH scroll (8 flings): ${stats(scroll)}\n'
-          'BENCH scroll rebuilds: ${top()}');
-    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
 
-    testWidgets('an idle minute', (tester) async {
-      final shell = await pickUp(tester, longHistory(200));
-      await tester.tap(find.text('the nightly build'));
-      await _settlePickUp(tester);
-      final before = shell.commands.length;
-      rebuilds.clear();
-      count();
-      final us = <int>[];
-      for (var s = 0; s < 60; s++) {
-        final w = Stopwatch()..start();
-        await tester.pump(const Duration(seconds: 1));
-        us.add(w.elapsedMicroseconds);
-      }
-      debugOnRebuildDirtyWidget = null;
-      final polled = shell.commands.skip(before).toList();
-      final kinds = <String, int>{};
-      for (final c in polled) {
-        final k = c.contains('agents --json')
-            ? 'agents'
-            : c.contains('/usage')
-            ? 'usage'
-            : c.contains('/tasks')
-            ? 'tasks'
-            : c.contains(' -f ')
-            ? 'follow'
-            : 'other';
-        kinds[k] = (kinds[k] ?? 0) + 1;
-      }
-      // ignore: avoid_print
-      print('BENCH idle 60s: frames ${stats(us)} host commands=${polled.length} '
-          '$kinds\nBENCH idle rebuilds: ${top()}');
-    }, skip: !on, timeout: const Timeout(Duration(minutes: 5)));
+        // Scrolling through it.
+        rebuilds.clear();
+        count();
+        final scroll = <int>[];
+        for (var i = 0; i < 8; i++) {
+          await tester.fling(
+            find.byType(CustomScrollView),
+            const Offset(0, 600),
+            2500,
+          );
+          scroll.addAll(await frames(tester, 40));
+        }
+        debugOnRebuildDirtyWidget = null;
+        // ignore: avoid_print
+        print(
+          'BENCH scroll (8 flings): ${stats(scroll)}\n'
+          'BENCH scroll rebuilds: ${top()}',
+        );
+      },
+      skip: !on,
+      timeout: const Timeout(Duration(minutes: 5)),
+    );
+
+    testWidgets(
+      'an idle minute',
+      (tester) async {
+        final shell = await pickUp(tester, longHistory(200));
+        await tester.tap(find.text('the nightly build'));
+        await _settlePickUp(tester);
+        final before = shell.commands.length;
+        rebuilds.clear();
+        count();
+        final us = <int>[];
+        for (var s = 0; s < 60; s++) {
+          final w = Stopwatch()..start();
+          await tester.pump(const Duration(seconds: 1));
+          us.add(w.elapsedMicroseconds);
+        }
+        debugOnRebuildDirtyWidget = null;
+        final polled = shell.commands.skip(before).toList();
+        final kinds = <String, int>{};
+        for (final c in polled) {
+          final k = c.contains('agents --json')
+              ? 'agents'
+              : c.contains('/usage')
+              ? 'usage'
+              : c.contains('/tasks')
+              ? 'tasks'
+              : c.contains(' -f ')
+              ? 'follow'
+              : 'other';
+          kinds[k] = (kinds[k] ?? 0) + 1;
+        }
+        // ignore: avoid_print
+        print(
+          'BENCH idle 60s: frames ${stats(us)} host commands=${polled.length} '
+          '$kinds\nBENCH idle rebuilds: ${top()}',
+        );
+      },
+      skip: !on,
+      timeout: const Timeout(Duration(minutes: 5)),
+    );
   });
 
   group('the folder a new chat starts in', () {
@@ -8066,7 +8135,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
@@ -8147,8 +8218,10 @@ void main() {
       await tester.tap(find.text('USE THIS FOLDER'));
       await _frames(tester);
       expect(find.text('▸ dev'), findsOneWidget);
-      expect(find.textContaining('will not start in the home folder'),
-          findsNothing);
+      expect(
+        find.textContaining('will not start in the home folder'),
+        findsNothing,
+      );
     });
 
     testWidgets('a folder an earlier session ran in is offered', (
@@ -8232,7 +8305,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       await _continue(tester, 'Zsh');
@@ -8342,7 +8417,9 @@ void main() {
       final message = tester.getSemantics(find.text('check nginx').first);
       expect(message.label, 'check nginx');
       expect(message.label, isNot(contains('Edit')));
-      final edit = tester.getSemantics(find.bySemanticsLabel('Edit this message'));
+      final edit = tester.getSemantics(
+        find.bySemanticsLabel('Edit this message'),
+      );
       expect(edit.label, 'Edit this message');
       expect(edit.id, isNot(message.id));
       semantics.dispose();
@@ -8390,7 +8467,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _frames(tester);
       await tester.tap(find.text('the nightly build'));
@@ -8440,14 +8519,17 @@ void main() {
         ..devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final shell = _Shell()
-        ..listing = listingText ??
+        ..listing =
+            listingText ??
             '${jsonEncode([row('aaaa1111', 'run one'), row('bbbb2222', 'pin one'), row('cccc3333', 'old one', live: false)])}'
-            '\n--- pins\n["bbbb2222"]\n';
+                '\n--- pins\n["bbbb2222"]\n';
       final session = LiveSession(host: _host, transport: (_, _) => shell);
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
       return shell;
@@ -8500,8 +8582,9 @@ void main() {
       );
     });
 
-    testWidgets('Expand brings the list back, and New chat starts a new one',
-        (tester) async {
+    testWidgets('Expand brings the list back, and New chat starts a new one', (
+      tester,
+    ) async {
       await page(tester);
       await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
       await _frames(tester);
@@ -8522,7 +8605,11 @@ void main() {
       addTearDown(tester.view.reset);
       final shell = _Shell()
         ..listing = jsonEncode([
-          {...row('aaaa1111', 'busy one'), 'status': 'busy', 'state': 'working'},
+          {
+            ...row('aaaa1111', 'busy one'),
+            'status': 'busy',
+            'state': 'working',
+          },
           {...row('bbbb2222', 'asking one'), 'waitingFor': 'permission prompt'},
           {...row('cccc3333', 'dead one', live: false), 'state': 'stopped'},
         ]);
@@ -8530,7 +8617,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
       await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
@@ -8578,7 +8667,9 @@ void main() {
       addTearDown(session.dispose);
       await session.connect(secrets: _NoSecrets());
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: ChatPage(session: session))),
+        MaterialApp(
+          home: Scaffold(body: ChatPage(session: session)),
+        ),
       );
       await _settlePickUp(tester);
       // Seen working, then finished by the next look, while y is the one open.
@@ -8590,12 +8681,18 @@ void main() {
       await _frames(tester);
       await tester.tap(find.bySemanticsLabel('Collapse the sessions'));
       await _frames(tester);
-      expect(find.byTooltip('x one, Done, idle, not opened since'), findsOneWidget);
+      expect(
+        find.byTooltip('x one, Done, idle, not opened since'),
+        findsOneWidget,
+      );
       expect(find.byTooltip('y one, Done, idle'), findsOneWidget);
       // Opened from its icon: the dot goes.
       await tester.tap(find.byTooltip('x one, Done, idle, not opened since'));
       await _settlePickUp(tester);
-      expect(find.byTooltip('x one, Done, idle, not opened since'), findsNothing);
+      expect(
+        find.byTooltip('x one, Done, idle, not opened since'),
+        findsNothing,
+      );
       expect(find.byTooltip('x one, Done, idle'), findsOneWidget);
     });
 
@@ -8610,7 +8707,8 @@ void main() {
       expect(find.byTooltip('old one, Finished'), findsNothing);
       final failed = find.byWidgetPredicate(
         (w) =>
-            w is TuiTooltip && w.message.startsWith('Could not list the sessions'),
+            w is TuiTooltip &&
+            w.message.startsWith('Could not list the sessions'),
       );
       expect(failed, findsOneWidget);
 
@@ -8633,7 +8731,9 @@ void main() {
       await _frames(tester);
       expect(find.byTooltip('old one, Finished'), findsOneWidget);
       final stale = find.byWidgetPredicate(
-        (w) => w is TuiTooltip && w.message.startsWith('The list may be out of date'),
+        (w) =>
+            w is TuiTooltip &&
+            w.message.startsWith('The list may be out of date'),
       );
       expect(stale, findsOneWidget);
 
@@ -8772,15 +8872,9 @@ void main() {
       await _frames(tester);
       expect(find.text('Current session  65% used'), findsOneWidget);
       expect(find.text('Current week (all models)  28% used'), findsOneWidget);
-      expect(
-        find.text('resets Oct 2, 3:59pm (Asia/Example)'),
-        findsOneWidget,
-      );
+      expect(find.text('resets Oct 2, 3:59pm (Asia/Example)'), findsOneWidget);
       expect(find.textContaining('as of '), findsOneWidget);
-      expect(
-        shell.commands.where((c) => c.contains('/usage')),
-        hasLength(1),
-      );
+      expect(shell.commands.where((c) => c.contains('/usage')), hasLength(1));
     });
 
     // The gauge sits near the middle of a phone's composer, and a popup with
@@ -8901,69 +8995,75 @@ void main() {
         expect(rect.left, greaterThanOrEqualTo(0), reason: '$label at $rect');
         expect(rect.bottom, lessThanOrEqualTo(1760), reason: '$label at $rect');
         expect(rect.right, lessThanOrEqualTo(880), reason: '$label at $rect');
-        expect(rect.top, greaterThan(275), reason: 'below the tab strip, $rect');
+        expect(
+          rect.top,
+          greaterThan(275),
+          reason: 'below the tab strip, $rect',
+        );
       }
       semantics.dispose();
     });
 
     for (final shown in [true, false]) {
-      testWidgets('a turn ending ${shown ? 'on a chat on show asks' : 'in a '
-          'chat nobody is looking at does not ask'} for the plan\'s usage', (
-        tester,
-      ) async {
-        tester.view
-          ..physicalSize = const Size(1280, 800)
-          ..devicePixelRatio = 1;
-        addTearDown(tester.view.reset);
-        final shell = _Shell()
-          ..usageOut = 'Current session: 10% used'
-          ..history = history(90000)
-          ..listing = jsonEncode([
-            {
-              'pid': 4079548,
-              'id': '81badf4a',
-              'cwd': '/srv/app',
-              'kind': 'background',
-              'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
-              'name': 'the nightly build',
-              'status': 'busy',
-              'state': 'working',
-            },
-          ]);
-        final session = LiveSession(host: _host, transport: (_, _) => shell);
-        addTearDown(session.dispose);
-        await session.connect(secrets: _NoSecrets());
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TickerMode(
-                enabled: shown,
-                child: ChatPage(session: session),
+      testWidgets(
+        'a turn ending ${shown ? 'on a chat on show asks' : 'in a '
+                  'chat nobody is looking at does not ask'} for the plan\'s usage',
+        (tester) async {
+          tester.view
+            ..physicalSize = const Size(1280, 800)
+            ..devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          final shell = _Shell()
+            ..usageOut = 'Current session: 10% used'
+            ..history = history(90000)
+            ..listing = jsonEncode([
+              {
+                'pid': 4079548,
+                'id': '81badf4a',
+                'cwd': '/srv/app',
+                'kind': 'background',
+                'sessionId': '81badf4a-7e9f-4f01-b098-6968dbe5f070',
+                'name': 'the nightly build',
+                'status': 'busy',
+                'state': 'working',
+              },
+            ]);
+          final session = LiveSession(host: _host, transport: (_, _) => shell);
+          addTearDown(session.dispose);
+          await session.connect(secrets: _NoSecrets());
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: TickerMode(
+                  enabled: shown,
+                  child: ChatPage(session: session),
+                ),
               ),
             ),
-          ),
-        );
-        await _frames(tester);
-        await tester.tap(find.text('the nightly build'));
-        await _settlePickUp(tester);
-        int asked() => shell.commands.where((c) => c.contains('/usage')).length;
-        expect(asked(), 0);
+          );
+          await _frames(tester);
+          await tester.tap(find.text('the nightly build'));
+          await _settlePickUp(tester);
+          int asked() =>
+              shell.commands.where((c) => c.contains('/usage')).length;
+          expect(asked(), 0);
 
-        // A turn, and its end.
-        shell
-          ..adds({
-            'type': 'user',
-            'message': {'role': 'user', 'content': 'run it'},
-          })
-          ..adds({
-            'type': 'system',
-            'subtype': 'turn_duration',
-            'durationMs': 1000,
-          });
-        await _settlePickUp(tester);
-        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-        expect(asked(), shown ? 1 : 0);
-      });
+          // A turn, and its end.
+          shell
+            ..adds({
+              'type': 'user',
+              'message': {'role': 'user', 'content': 'run it'},
+            })
+            ..adds({
+              'type': 'system',
+              'subtype': 'turn_duration',
+              'durationMs': 1000,
+            });
+          await _settlePickUp(tester);
+          await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+          expect(asked(), shown ? 1 : 0);
+        },
+      );
     }
 
     testWidgets('hidden under the pointer, the popup goes and does not come '
@@ -9118,10 +9218,7 @@ void main() {
 
       expect(find.text('Conversation compacted ▸'), findsOneWidget);
       // The second has no summary yet, so nothing to open.
-      expect(
-        find.text('Conversation compacted automatically'),
-        findsOneWidget,
-      );
+      expect(find.text('Conversation compacted automatically'), findsOneWidget);
       expect(
         find.bySemanticsLabel('Conversation compacted automatically'),
         findsOneWidget,
@@ -9184,14 +9281,18 @@ void main() {
       await tester.tap(find.byType(ContextGauge));
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
-      expect(find.text("Claude Code didn't report plan usage."), findsOneWidget);
+      expect(
+        find.text("Claude Code didn't report plan usage."),
+        findsOneWidget,
+      );
       expect(find.text('Context  90k / 200k (45%)'), findsOneWidget);
     });
 
     testWidgets('what the host says is drawn as text', (tester) async {
       await watching(
         tester,
-        usage: 'Current <b>session</b> **x**: 5% used · resets [a](javascript:1)',
+        usage:
+            'Current <b>session</b> **x**: 5% used · resets [a](javascript:1)',
       );
       await tester.tap(find.byType(ContextGauge));
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
@@ -9201,12 +9302,15 @@ void main() {
   });
 
   group('a sub-agent\'s work', () {
-    String meta(String toolUseId, String description, {String type = 'Explore'}) =>
-        jsonEncode({
-          'agentType': type,
-          'description': description,
-          'toolUseId': toolUseId,
-        });
+    String meta(
+      String toolUseId,
+      String description, {
+      String type = 'Explore',
+    }) => jsonEncode({
+      'agentType': type,
+      'description': description,
+      'toolUseId': toolUseId,
+    });
     String listLine(String file, String json) =>
         [file, json, '4', '2000', '2026-10-02T08:23:25.503Z'].join('\t');
     Map<String, Object?> side(Map<String, Object?> event) => {
@@ -9256,7 +9360,10 @@ void main() {
         ])
         ..subAgentsOut = [
           listLine('agent-aaa111', meta('toolu_one', 'survey the repo')),
-          listLine('agent-bbb222', meta('toolu_two', 'dig deeper', type: 'general-purpose')),
+          listLine(
+            'agent-bbb222',
+            meta('toolu_two', 'dig deeper', type: 'general-purpose'),
+          ),
         ].join('\n')
         ..subAgentLines['agent-aaa111'] = [
           side({
@@ -9322,10 +9429,7 @@ void main() {
       fixedClock(tester);
       await watching(tester);
       expect(find.text('Open sub-agent: survey the repo'), findsOneWidget);
-      expect(
-        find.text('Explore · running · 4 tools · 2m ago'),
-        findsOneWidget,
-      );
+      expect(find.text('Explore · running · 4 tools · 2m ago'), findsOneWidget);
     });
 
     testWidgets('opening it shows its work as chat draws one, read-only, under '
@@ -9346,17 +9450,21 @@ void main() {
       final shell = await watching(tester);
       await openFirst(tester);
       shell.subAgentLines['agent-aaa111']!.add(
-        jsonEncode(side({
-          'type': 'assistant',
-          'message': {
-            'id': 'sa2',
-            'content': [
-              {'type': 'text', 'text': 'Found the thing.'},
-            ],
-          },
-        })),
+        jsonEncode(
+          side({
+            'type': 'assistant',
+            'message': {
+              'id': 'sa2',
+              'content': [
+                {'type': 'text', 'text': 'Found the thing.'},
+              ],
+            },
+          }),
+        ),
       );
-      await tester.pump(ClaudeChat.subAgentEvery + const Duration(milliseconds: 100));
+      await tester.pump(
+        ClaudeChat.subAgentEvery + const Duration(milliseconds: 100),
+      );
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.text('Found the thing.'), findsOneWidget);
@@ -9433,14 +9541,18 @@ void main() {
         ..add(jsonEncode(tall(1)));
       await openFirst(tester);
       final view = find.byType(ListView).last;
-      ScrollPosition position() => tester.state<ScrollableState>(
-        find.descendant(of: view, matching: find.byType(Scrollable)).first,
-      ).position;
+      ScrollPosition position() => tester
+          .state<ScrollableState>(
+            find.descendant(of: view, matching: find.byType(Scrollable)).first,
+          )
+          .position;
       expect(position().maxScrollExtent - position().pixels, lessThan(2));
 
       // More arrives while the reader is at the end: followed.
       shell.subAgentLines['agent-aaa111']!.add(jsonEncode(tall(2)));
-      await tester.pump(ClaudeChat.subAgentEvery + const Duration(milliseconds: 100));
+      await tester.pump(
+        ClaudeChat.subAgentEvery + const Duration(milliseconds: 100),
+      );
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(find.textContaining('Tall 2 goes on.'), findsWidgets);
@@ -9451,7 +9563,9 @@ void main() {
       await tester.pump();
       final kept = position().pixels;
       shell.subAgentLines['agent-aaa111']!.add(jsonEncode(tall(3)));
-      await tester.pump(ClaudeChat.subAgentEvery + const Duration(milliseconds: 100));
+      await tester.pump(
+        ClaudeChat.subAgentEvery + const Duration(milliseconds: 100),
+      );
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await _frames(tester);
       expect(position().pixels, kept);
