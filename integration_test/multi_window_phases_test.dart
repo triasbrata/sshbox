@@ -105,6 +105,18 @@ Future<String> _xdoWindows(List<String> a) async {
   return '';
 }
 
+/// Where the two windows stand: side by side on Linux's 1280 wide display, and
+/// within the 1024 wide screen of the Windows runner, where a window placed
+/// further right has its buttons off the screen.
+final _aX = Platform.isWindows ? '10' : '20';
+final _aY = Platform.isWindows ? '10' : '20';
+final _aW = Platform.isWindows ? '490' : '600';
+final _aH = '450';
+final _bX = Platform.isWindows ? '520' : '650';
+final _bY = Platform.isWindows ? '10' : '40';
+final _bW = Platform.isWindows ? '490' : '600';
+final _bH = '450';
+
 /// The Windows windows in the order they were first seen.
 final _winOrder = <String>[];
 
@@ -255,10 +267,10 @@ Future<void> _newWindow(WidgetTester tester, String from, int count) async {
   await _until(tester, () => _views().length == count, 'a view a window');
   // Side by side, so a click in one lands on it and not on the one over it.
   if (count == 2) {
-    await _xdo(['windowmove', ids[1], '650', '40']);
-    await _xdo(['windowsize', ids[1], '600', '450']);
-    await _xdo(['windowmove', ids[0], '20', '20']);
-    await _xdo(['windowsize', ids[0], '600', '450']);
+    await _xdo(['windowmove', ids[1], _bX, _bY]);
+    await _xdo(['windowsize', ids[1], _bW, _bH]);
+    await _xdo(['windowmove', ids[0], _aX, _aY]);
+    await _xdo(['windowsize', ids[0], _aW, _aH]);
     // Both windows laid out at their new size before anything is clicked: a
     // click aimed at where a button was before the resize lands beside it.
     await tester.pump(const Duration(seconds: 1));
@@ -352,9 +364,9 @@ Future<void> _runPhase(WidgetTester tester) async {
 Future<void> _save(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
   _trace('save step 1');
-  await _xdo(['windowmove', ids[0], '20', '20']);
+  await _xdo(['windowmove', ids[0], _aX, _aY]);
   _trace('save step 2');
-  await _xdo(['windowsize', ids[0], '600', '450']);
+  await _xdo(['windowsize', ids[0], _aW, _aH]);
   _trace('save step 3');
   await _until(tester, () => _views().isNotEmpty, 'A to be drawn');
   _trace('save step 4');
@@ -371,9 +383,9 @@ Future<void> _save(WidgetTester tester) async {
   final views = _views();
   _trace('save step 9');
   a = views[0];
-  await _xdo(['windowmove', ids[1], '650', '40']);
+  await _xdo(['windowmove', ids[1], _bX, _bY]);
   _trace('save step 10');
-  await _xdo(['windowsize', ids[1], '600', '450']);
+  await _xdo(['windowsize', ids[1], _bW, _bH]);
   _trace('save step 11');
   // A third window, closed again before the app goes.
   await _newWindow(tester, ids[1], 3);
