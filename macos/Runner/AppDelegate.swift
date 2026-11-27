@@ -28,9 +28,13 @@ class AppDelegate: FlutterAppDelegate {
   @IBAction func zoomReset(_ sender: Any?) { menu("zoomReset") }
 
   private func menu(_ method: String) {
-    guard let flutter = mainFlutterWindow?.contentViewController as? FlutterViewController
+    // The engine's, which every window shares: the first window may be gone.
+    guard
+      let messenger = Windows.shared.engine?.binaryMessenger
+        ?? (mainFlutterWindow?.contentViewController as? FlutterViewController)?.engine
+        .binaryMessenger
     else { return }
-    FlutterMethodChannel(name: "sshbox/menu", binaryMessenger: flutter.engine.binaryMessenger)
+    FlutterMethodChannel(name: "sshbox/menu", binaryMessenger: messenger)
       .invokeMethod(method, arguments: nil)
   }
 }

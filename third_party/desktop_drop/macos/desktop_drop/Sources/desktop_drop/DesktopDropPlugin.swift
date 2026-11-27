@@ -18,18 +18,34 @@ private func findFlutterViewController(_ viewController: NSViewController?) -> F
 }
 
 public class DesktopDropPlugin: NSObject, FlutterPlugin {
-  public static func register(with registrar: FlutterPluginRegistrar) {
-    guard let flutterView = registrar.view else { return }
-    guard let flutterWindow = flutterView.window else { return }
-    guard let vc = findFlutterViewController(flutterWindow.contentViewController) else { return }
+  /// The plugin's one channel, which every window's drop target says its
+  /// events on.
+  private static var channel: FlutterMethodChannel?
 
+  public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "desktop_drop", binaryMessenger: registrar.messenger)
 
     let instance = DesktopDropPlugin()
-      
+
       channel.setMethodCallHandler(instance.handle(_:result:))
-      
-    let d = DropTarget(frame: vc.view.bounds, channel: channel)
+
+    registrar.addMethodCallDelegate(instance, channel: channel)
+    Self.channel = channel
+
+    // The engine's own first view, where it has one. With several views on
+    // the engine it has none, and the app attaches a target to each window's
+    // view as it opens it, with `attach(to:)`.
+    guard let flutterView = registrar.view else { return }
+    guard let flutterWindow = flutterView.window else { return }
+    guard let vc = findFlutterViewController(flutterWindow.contentViewController) else { return }
+    attach(to: vc)
+  }
+
+  /// A drop target over [controller]'s view, whose events name the view.
+  public static func attach(to controller: FlutterViewController) {
+    guard let channel else { return }
+    let d = DropTarget(
+      frame: controller.view.bounds, channel: channel, viewId: controller.viewIdentifier)
     d.autoresizingMask = [.width, .height]
 
     // Register for all relevant types (promises, URLs, and legacy filename arrays)
@@ -38,9 +54,7 @@ public class DesktopDropPlugin: NSObject, FlutterPlugin {
     types.append(NSPasteboard.PasteboardType("NSFilenamesPboardType")) // legacy multi-file array
     d.registerForDraggedTypes(types)
 
-    vc.view.addSubview(d)
-
-    registrar.addMethodCallDelegate(instance, channel: channel)
+    controller.view.addSubview(d)
   }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult){
@@ -79,11 +93,21 @@ public class DesktopDropPlugin: NSObject, FlutterPlugin {
 
 class DropTarget: NSView {
   private let channel: FlutterMethodChannel
+  private let viewId: Int
   private let itemsLock = NSLock()
 
-  init(frame frameRect: NSRect, channel: FlutterMethodChannel) {
+  init(frame frameRect: NSRect, channel: FlutterMethodChannel, viewId: Int) {
     self.channel = channel
+    self.viewId = viewId
     super.init(frame: frameRect)
+  }
+
+  /// An event, after the view it is for: a channel keeps its messages in
+  /// order, so the Dart side reads the view first, and gives the event to
+  /// the drop targets of that window alone.
+  private func tell(_ method: String, _ arguments: Any?) {
+    channel.invokeMethod("view", arguments: viewId)
+    channel.invokeMethod(method, arguments: arguments)
   }
 
   required init?(coder: NSCoder) {
@@ -91,17 +115,17 @@ class DropTarget: NSView {
   }
 
   override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-    channel.invokeMethod("entered", arguments: convertPoint(sender.draggingLocation))
+    tell("entered", convertPoint(sender.draggingLocation))
     return .copy
   }
 
   override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-    channel.invokeMethod("updated", arguments: convertPoint(sender.draggingLocation))
+    tell("updated", convertPoint(sender.draggingLocation))
     return .copy
   }
 
   override func draggingExited(_ sender: NSDraggingInfo?) {
-    channel.invokeMethod("exited", arguments: nil)
+    tell("exited", nil)
   }
 
   /// Create a per-drop destination for promised files (avoids name collisions).
@@ -191,7 +215,7 @@ class DropTarget: NSView {
     }
 
     group.notify(queue: .main) {
-      self.channel.invokeMethod("performOperation_macos", arguments: items)
+      self.tell("performOperation_macos", items)
     }
     return true
   }

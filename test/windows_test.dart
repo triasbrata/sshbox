@@ -39,6 +39,12 @@ class _Runner implements WindowBackend {
   @override
   Future<bool> get supported async => canOpen;
 
+  /// 0 where the runner has an implicit view, as Linux's and Windows' do.
+  int first = 0;
+
+  @override
+  Future<int> get firstView async => first;
+
   @override
   Stream<WindowEvent> get events => say.stream;
 
@@ -176,6 +182,14 @@ void main() {
         expect(runner.opened, isEmpty);
       },
     );
+
+    test('the first window draws in the view the runner says', () async {
+      final runner = _Runner()..first = 1;
+      final set = _set(runner);
+      expect(set.windows.single.viewId, 0);
+      await set.start();
+      expect(set.windows.single.viewId, 1);
+    });
 
     test('brings back what an older build saved as the one window', () async {
       // The key every build before several windows saved its tabs under, and
@@ -504,6 +518,25 @@ void main() {
       expect(calls[2].arguments, 3);
     });
 
+    test(
+      'asks which view the first window draws in, and says 0 when not told',
+      () async {
+        final backend = ChannelWindowBackend(channel);
+        expect(await backend.firstView, 0);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async => 1);
+        expect(await backend.firstView, 1);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              throw PlatformException(code: 'no');
+            });
+        expect(await backend.firstView, 0);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+        expect(await backend.firstView, 0);
+      },
+    );
+
     test('is single where the runner has no half of it', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
@@ -561,6 +594,7 @@ void main() {
     test('opens nothing and says nothing', () async {
       const single = SingleWindow();
       expect(await single.supported, isFalse);
+      expect(await single.firstView, 0);
       expect(await single.open(), isNull);
       await single.close(0);
       await single.activate(0);

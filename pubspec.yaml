@@ -202,6 +202,11 @@ dependency_overrides:
   # we move to xterm2 >= 5.3.0, which has the same fix.
   xterm2:
     path: third_party/xterm2
+  # file_picker_darwin 1.1.0 with the key window for a dialog's sheet where
+  # the registrar has no view, as with several windows on a Mac — see
+  # third_party/file_picker_darwin/JEANSH.md.
+  file_picker_darwin:
+    path: third_party/file_picker_darwin
 
 flutter:
 

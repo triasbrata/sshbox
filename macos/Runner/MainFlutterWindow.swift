@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import desktop_drop
 import UniformTypeIdentifiers
 
 class MainFlutterWindow: NSWindow {
@@ -7,7 +8,16 @@ class MainFlutterWindow: NSWindow {
   private var titleBar: TitleBar?
 
   override func awakeFromNib() {
-    let flutterViewController = FlutterViewController()
+    // Several windows, where this Flutter can turn the engine's views on:
+    // the engine is made here, with that on, since it cannot be once a view
+    // is on it. Otherwise the engine comes with the view controller as it
+    // always did, and the app has the one window.
+    let engine = Windows.makeEngine()
+    let flutterViewController =
+      engine.map { FlutterViewController(engine: $0, nibName: nil, bundle: nil) }
+      ?? FlutterViewController()
+    // The window can be closed while others stay up, and is then let go.
+    isReleasedWhenClosed = false
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
@@ -17,8 +27,19 @@ class MainFlutterWindow: NSWindow {
     NativeCrashesChannel.register(
       with: flutterViewController.registrar(forPlugin: "NativeCrashes"))
 
-    titleBar = TitleBar(window: self, controller: flutterViewController)
+    let windowChannel = FlutterMethodChannel(
+      name: "sshbox/window", binaryMessenger: flutterViewController.engine.binaryMessenger)
+    let bar = TitleBar(window: self, controller: flutterViewController, channel: windowChannel)
+    titleBar = bar
     WindowPlace.restore(self)
+    if let engine {
+      // The engine has no first view for the plugin to find, so each
+      // window's is handed to it.
+      DesktopDropPlugin.attach(to: flutterViewController)
+      Windows.shared.adopt(
+        engine: engine, window: self, controller: flutterViewController, titleBar: bar,
+        channel: windowChannel)
+    }
 
     // The same channel and method Android's MainActivity answers, so the Dart
     // side has one path: the copy is taken here and only its path crosses.
@@ -139,6 +160,12 @@ final class TitleBar {
   private weak var controller: FlutterViewController?
   private let channel: FlutterMethodChannel
 
+  /// Every window's, by the id of the view it draws in, and the first's:
+  /// the one channel's calls name the view they are for, and a call that
+  /// names none is the first window's.
+  private static var all: [Int: TitleBar] = [:]
+  private static var first: TitleBar?
+
   /// What the Dart side is told while full screen hides the buttons.
   private static let hidden: [String: Double] = ["inset": 0, "height": 0]
 
@@ -147,29 +174,38 @@ final class TitleBar {
   /// numbers until then, for a window that opens in full screen.
   private var measured: [String: Double] = ["inset": 78, "height": 28]
 
-  init(window: NSWindow, controller: FlutterViewController) {
+  /// Answers the calls the tab strip makes on `sshbox/window`, each for the
+  /// window whose view it names.
+  static func route(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+    var target = first
+    if let named = call.arguments as? [String: Any], let view = named["view"] as? Int {
+      target = all[view]
+    }
+    guard let target else { return result(nil) }
+    target.handle(call.method, result)
+  }
+
+  /// A window going: its view's calls are answered no more.
+  static func forget(viewIdentifier: Int) {
+    let gone = all.removeValue(forKey: viewIdentifier)
+    if first === gone { first = all.values.first }
+  }
+
+  init(window: NSWindow, controller: FlutterViewController, channel: FlutterMethodChannel) {
     self.window = window
     self.controller = controller
-    channel = FlutterMethodChannel(
-      name: "sshbox/window", binaryMessenger: controller.engine.binaryMessenger)
+    self.channel = channel
 
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.titlebarSeparatorStyle = .none
     window.styleMask.insert(.fullSizeContentView)
 
-    channel.setMethodCallHandler { [weak self] call, result in
-      guard let self else { return result(nil) }
-      switch call.method {
-      case "titleBar":
-        result(self.window.styleMask.contains(.fullScreen) ? Self.hidden : self.measure())
-      case "drag":
-        self.drag()
-        result(nil)
-      default:
-        result(FlutterMethodNotImplemented)
-      }
+    if Self.first == nil {
+      Self.first = self
+      channel.setMethodCallHandler { call, result in Self.route(call, result) }
     }
+    Self.all[controller.viewIdentifier] = self
 
     // Full screen hides the buttons with the title bar and gives their room
     // back: once it is there, and before it leaves, so on neither way does a
@@ -185,6 +221,18 @@ final class TitleBar {
     ) { [weak self] _ in
       guard let self else { return }
       self.channel.invokeMethod("titleBar", arguments: self.measured)
+    }
+  }
+
+  private func handle(_ method: String, _ result: FlutterResult) {
+    switch method {
+    case "titleBar":
+      result(window.styleMask.contains(.fullScreen) ? Self.hidden : measure())
+    case "drag":
+      drag()
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
     }
   }
 
@@ -251,6 +299,259 @@ final class TitleBar {
         clickCount: 1, pressure: 0)
     else { return }
     controller.mouseUp(with: up)
+  }
+}
+
+/// More than one window, on the one engine: every window has a
+/// FlutterViewController of its own on it. The engine's views are turned on
+/// by a call Flutter does not publish yet, `enableMultiView`, so it is asked
+/// for only where the engine answers to it — a Flutter without it leaves the
+/// app one window, and the Dart side, told the runner opens no more, offers
+/// no key for one.
+///
+/// With the views on, the engine has no first view of its own: every window,
+/// the first included, draws in a view numbered from 1, and a plugin that
+/// asks its registrar for "the" view, as the file dialogs' and drag and
+/// drop's do, is given none. The ones this app uses are patched to find the
+/// window in front instead (third_party/).
+final class Windows {
+  static let shared = Windows()
+
+  /// Set once the engine runs with several views.
+  private(set) var engine: FlutterEngine?
+  private var channel: FlutterMethodChannel?
+  private var windowChannel: FlutterMethodChannel?
+  private var entries: [Int: Entry] = [:]
+  private var nextId = 1
+  /// Windows the app has said may close, rather than be asked.
+  private var allowed: Set<Int> = []
+  /// Whether the app has asked for several windows: before it has, a window
+  /// closes as it always did.
+  private var multi = false
+
+  private final class Entry {
+    let id: Int
+    let window: NSWindow
+    var controller: FlutterViewController?
+    let observer: WindowObserver
+    init(id: Int, window: NSWindow, controller: FlutterViewController, observer: WindowObserver) {
+      self.id = id
+      self.window = window
+      self.controller = controller
+      self.observer = observer
+    }
+  }
+
+  /// Whether [object] answers to [selector]: the guard the engine's
+  /// unpublished call is made behind. A Flutter that has dropped or renamed
+  /// it gives false, and nothing else is done.
+  static func responds(_ object: NSObject, to selector: Selector) -> Bool {
+    object.responds(to: selector)
+  }
+
+  private static let enableMultiView = NSSelectorFromString("enableMultiView")
+
+  /// The engine, running, with its views on, or nil where this Flutter
+  /// cannot: then the view controller makes its own engine.
+  static func makeEngine() -> FlutterEngine? {
+    let engine = FlutterEngine(name: "io.flutter", project: nil, allowHeadlessExecution: true)
+    guard responds(engine, to: enableMultiView) else { return nil }
+    _ = engine.perform(enableMultiView)
+    // Running before any view is added, so each view added is told to the
+    // engine as it is.
+    guard engine.run(withEntrypoint: nil) else { return nil }
+    return engine
+  }
+
+  /// The window the xib made, now that its engine and view are up.
+  func adopt(
+    engine: FlutterEngine, window: NSWindow, controller: FlutterViewController,
+    titleBar: TitleBar, channel windowChannel: FlutterMethodChannel
+  ) {
+    self.engine = engine
+    self.windowChannel = windowChannel
+    let observer = WindowObserver(id: 0, windows: self)
+    window.delegate = observer
+    entries[0] = Entry(id: 0, window: window, controller: controller, observer: observer)
+    let channel = FlutterMethodChannel(
+      name: "sshbox/windows", binaryMessenger: engine.binaryMessenger)
+    self.channel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      self?.handle(call, result) ?? result(nil)
+    }
+  }
+
+  private func handle(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+    switch call.method {
+    case "supported":
+      multi = engine != nil
+      result(multi)
+    case "firstView":
+      result(entries[0]?.controller?.viewIdentifier ?? 0)
+    case "open":
+      result(open(frame: call.arguments as? [String: Any]))
+    case "close":
+      if let id = call.arguments as? Int, let entry = entries[id] {
+        allowed.insert(id)
+        entry.window.close()
+      }
+      result(nil)
+    case "activate":
+      if let id = call.arguments as? Int, let entry = entries[id] {
+        if entry.window.isMiniaturized { entry.window.deminiaturize(nil) }
+        entry.window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+      }
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  /// A window after the first, at [frame] when the app sent one that is
+  /// anywhere on a screen, else a little lower and to the right of the last.
+  private func open(frame: [String: Any]?) -> Int? {
+    guard let engine else { return nil }
+    let id = nextId
+    nextId += 1
+    let controller = FlutterViewController(engine: engine, nibName: nil, bundle: nil)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.isRestorable = false
+    window.title = "Jeansh"
+    window.contentViewController = controller
+    window.minSize = NSSize(width: 300, height: 200)
+    if let rect = Self.rect(of: frame) {
+      window.setFrame(Self.fitted(rect), display: false)
+    } else {
+      window.center()
+      if let last = entries.values.map({ $0.window }).max(by: { $0.frame.minX < $1.frame.minX }) {
+        window.setFrameTopLeftPoint(
+          NSPoint(x: last.frame.minX + 30, y: last.frame.maxY - 30))
+      }
+    }
+    guard let windowChannel else { return nil }
+    _ = TitleBar(window: window, controller: controller, channel: windowChannel)
+    DesktopDropPlugin.attach(to: controller)
+    let observer = WindowObserver(id: id, windows: self)
+    window.delegate = observer
+    entries[id] = Entry(id: id, window: window, controller: controller, observer: observer)
+    if frame?["maximized"] as? Bool == true { window.zoom(nil) }
+    window.makeKeyAndOrderFront(nil)
+    channel?.invokeMethod(
+      "opened", arguments: ["id": id, "viewId": controller.viewIdentifier])
+    return id
+  }
+
+  /// A frame the app sent, if it is one: numbers within ±100000 and a size
+  /// of at least 200 by 150.
+  private static func rect(of frame: [String: Any]?) -> NSRect? {
+    guard let frame else { return nil }
+    func number(_ key: String) -> Double? {
+      guard let value = (frame[key] as? NSNumber)?.doubleValue, abs(value) <= 100000
+      else { return nil }
+      return value
+    }
+    guard
+      let x = number("x"), let y = number("y"),
+      let width = number("width"), let height = number("height"),
+      width >= 200, height >= 150
+    else { return nil }
+    return NSRect(x: x, y: y, width: width, height: height)
+  }
+
+  /// [rect] no bigger than the screen its top strip is on, and wholly on it;
+  /// when that strip is on none — a screen unplugged — the main screen,
+  /// centred. As the first window's place is kept (WindowPlace).
+  private static func fitted(_ rect: NSRect) -> NSRect {
+    let strip = NSRect(x: rect.minX, y: rect.maxY - 40, width: rect.width, height: 40)
+    let on = NSScreen.screens.first { $0.visibleFrame.intersects(strip) }
+    guard let area = (on ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+    else { return rect }
+    let width = min(rect.width, area.width)
+    let height = min(rect.height, area.height)
+    let x = on == nil
+      ? area.midX - width / 2 : min(max(rect.minX, area.minX), area.maxX - width)
+    let y = on == nil
+      ? area.midY - height / 2 : min(max(rect.minY, area.minY), area.maxY - height)
+    return NSRect(x: x, y: y, width: width, height: height)
+  }
+
+  // What the windows' delegates say.
+
+  /// Whether window [id] may close now. Once the app has asked for several
+  /// windows it decides, and is asked; it answers with `close`.
+  func shouldClose(_ id: Int) -> Bool {
+    if !multi || allowed.contains(id) { return true }
+    channel?.invokeMethod("closeRequested", arguments: id)
+    return false
+  }
+
+  func didClose(_ id: Int) {
+    guard let entry = entries.removeValue(forKey: id) else { return }
+    allowed.remove(id)
+    if let view = entry.controller?.viewIdentifier { TitleBar.forget(viewIdentifier: view) }
+    entry.window.delegate = nil
+    // Its view goes with it, and the engine stays for the others.
+    entry.window.contentViewController = nil
+    entry.controller = nil
+    channel?.invokeMethod("closed", arguments: id)
+  }
+
+  func didFocus(_ id: Int) {
+    channel?.invokeMethod("focused", arguments: id)
+  }
+
+  func didMove(_ id: Int) {
+    guard multi, let window = entries[id]?.window, !window.styleMask.contains(.fullScreen),
+      !window.isMiniaturized
+    else { return }
+    let frame = window.frame
+    channel?.invokeMethod(
+      "moved",
+      arguments: [
+        "id": id, "x": frame.minX, "y": frame.minY, "width": frame.width,
+        "height": frame.height, "maximized": window.isZoomed,
+      ])
+  }
+}
+
+/// One window's delegate: what it hears of the window, said to [Windows].
+final class WindowObserver: NSObject, NSWindowDelegate {
+  private let id: Int
+  private unowned let windows: Windows
+  private var pending: DispatchWorkItem?
+
+  init(id: Int, windows: Windows) {
+    self.id = id
+    self.windows = windows
+  }
+
+  func windowShouldClose(_ sender: NSWindow) -> Bool { windows.shouldClose(id) }
+
+  func windowWillClose(_ notification: Notification) {
+    pending?.cancel()
+    windows.didClose(id)
+  }
+
+  func windowDidBecomeKey(_ notification: Notification) { windows.didFocus(id) }
+
+  func windowDidMove(_ notification: Notification) { moved() }
+
+  func windowDidResize(_ notification: Notification) { moved() }
+
+  /// Once the window has held still: a drag says it once.
+  private func moved() {
+    pending?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.windows.didMove(self.id)
+    }
+    pending = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
   }
 }
 

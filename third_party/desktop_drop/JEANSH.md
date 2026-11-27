@@ -13,3 +13,17 @@ does not get the plugin at all.
 
 To move to a newer version, copy it here the same way and take `android` out
 of its pubspec again.
+
+## Several windows
+
+A second change, for the app's several windows on one engine:
+
+- macOS: with the engine's views on, the registrar has no view, so the
+  plugin no longer looks for one only. `DesktopDropPlugin.attach(to:)` puts
+  a drop target on a window's Flutter view, and the app calls it for each
+  window; its events say which view they are for with a "view" call before
+  each one.
+- Dart: `DesktopDrop.eventView` holds that view (0 where the platform does not
+  say: Linux and Windows attach to the first window's view alone), and a
+  `DropTarget` ignores an event for a view it is not in, so a file dropped on
+  one window is not handed to the targets of another.

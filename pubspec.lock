@@ -241,12 +241,11 @@ packages:
     source: hosted
     version: "12.2.0"
   file_picker_darwin:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: file_picker_darwin
-      sha256: "5c32c9400f5c8976c9dd7aa34693c7d2f0c853c28704a1c1409029cb760f5251"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/file_picker_darwin"
+      relative: true
+    source: path
     version: "1.1.0"
   file_picker_linux:
     dependency: transitive

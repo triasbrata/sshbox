@@ -123,6 +123,12 @@ abstract interface class WindowBackend {
   /// Whether this runner can open more than one window.
   Future<bool> get supported;
 
+  /// Flutter's id for the view of the window the app starts with: 0, the
+  /// engine's implicit view, where a runner has one. A Mac, which opens
+  /// windows by turning the engine's several views on, has none, and its
+  /// first window's view is 1.
+  Future<int> get firstView;
+
   Stream<WindowEvent> get events;
 
   /// Opens a window, at [frame] when given; its [WindowOpened] follows.
@@ -140,6 +146,9 @@ class SingleWindow implements WindowBackend {
 
   @override
   Future<bool> get supported async => false;
+
+  @override
+  Future<int> get firstView async => 0;
 
   @override
   Stream<WindowEvent> get events => const Stream.empty();
@@ -186,6 +195,17 @@ class ChannelWindowBackend implements WindowBackend {
       return false;
     } on PlatformException {
       return false;
+    }
+  }
+
+  @override
+  Future<int> get firstView async {
+    try {
+      return await _channel.invokeMethod<int>('firstView') ?? 0;
+    } on MissingPluginException {
+      return 0;
+    } on PlatformException {
+      return 0;
     }
   }
 
@@ -386,6 +406,8 @@ class WindowSet extends ChangeNotifier {
       await restore(first);
       return;
     }
+    first.viewId = await backend.firstView;
+    notifyListeners();
     final saved = await registry.load();
     if (saved.isNotEmpty) {
       first
