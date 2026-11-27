@@ -260,7 +260,7 @@ void main() {
 
   testWidgets(
     'multi-window phase $_phase',
-    skip: _phase.isEmpty || !Platform.isLinux,
+    skip: _phase.isEmpty || !(Platform.isLinux || Platform.isWindows),
     (tester) async {
       await _launch(tester);
       try {
@@ -1171,17 +1171,31 @@ Future<void> _drop(WidgetTester tester) async {
     ..writeAsStringSync(_dragSource);
   final process = await Process.start('python3', [source.path, file.path]);
   try {
-    await _xdo(['search', '--sync', '--onlyvisible', '--name', r'^e2e drag source$']);
+    final sourceId = (await _xdo([
+      'search',
+      '--sync',
+      '--onlyvisible',
+      '--name',
+      r'^e2e drag source$',
+    ])).split('\n').first;
     await Future<void>.delayed(const Duration(milliseconds: 500));
+    // Where the source really is: a window manager places it where it likes.
+    final geometry = await _xdo(['getwindowgeometry', '--shell', sourceId]);
+    int geo(String key) =>
+        int.parse(RegExp('$key=(-?\\d+)').firstMatch(geometry)!.group(1)!);
+    final sx = geo('X') + geo('WIDTH') ~/ 2;
+    final sy = geo('Y') + geo('HEIGHT') ~/ 2;
+    _trace('drop: the drag source is at $sx,$sy; the second window is '
+        '${await _rect(ids[1])}');
     final r = (await _rect(ids[1])).split(' ').map(int.parse).toList();
     final cx = r[0] + r[2] ~/ 2;
     final cy = r[1] + r[3] ~/ 2;
-    await _xdo(['mousemove', '100', '810']);
+    await _xdo(['mousemove', '$sx', '$sy']);
     await _xdo(['mousedown', '1']);
     for (final (x, y) in [
-      (110, 805),
-      (130, 790),
-      (300, 650),
+      (sx + 10, sy - 5),
+      (sx + 30, sy - 20),
+      (sx + 200, sy - 150),
       (cx - 200, cy + 150),
       (cx - 5, cy - 5),
       (cx, cy),
@@ -1197,11 +1211,19 @@ Future<void> _drop(WidgetTester tester) async {
     process.kill();
   }
   final name = 'dropped-on-the-second.txt';
-  await _until(
-    tester,
-    () => _shellText(shellIn(b)).contains(name),
-    'the second window\'s shell to be handed the dropped path',
-  );
+  try {
+    await _until(
+      tester,
+      () => _shellText(shellIn(b)).contains(name),
+      'the second window\'s shell to be handed the dropped path',
+    );
+  } on TestFailure {
+    _trace(
+      'drop: the path reached the first window: '
+      '${_shellText(shellIn(a)).contains(name)}; the second window: false',
+    );
+    rethrow;
+  }
   await tester.pump(const Duration(seconds: 1));
   _trace('drop: the second window\'s shell got the path');
   expect(
