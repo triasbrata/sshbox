@@ -2729,6 +2729,11 @@ chat_aggregator() {
   agg_control idle true
   flow chat_aggregator -e STEP=see "${s[@]}" -e "SEE=(?i)Echo: aggregator late" \
     -e SHOT=late || status=1
+  # Longer than the 15 s an idle session may sit on a message before it is
+  # taken to be holding it: a message the helper cannot see delivered would
+  # turn into "Not taken" by then.
+  sleep 20
+  flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Not taken" -e SHOT=nottaken || status=1
   flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Not delivered" -e SHOT=notlost || status=1
   flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Queued: it runs after" -e SHOT=sent || status=1
   agg_check "3: recorded once when the turn ended" "$(agg_records 'aggregator late')" 1
