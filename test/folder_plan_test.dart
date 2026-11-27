@@ -128,4 +128,94 @@ void main() {
       ),
     );
   });
+
+  test('the folder itself unread is an error, not an empty plan', () async {
+    final b = _Tree();
+    b.denied.add('/r');
+    await expectLater(
+      planFolder(b, '/r'),
+      throwsA(
+        isA<FileBrowserException>()
+            .having(
+              (e) => e.message,
+              'message',
+              'Could not read r: '
+                  'Permission denied.',
+            )
+            .having((e) => e.fault, 'fault', FileBrowserFault.permissionDenied),
+      ),
+    );
+  });
+
+  group('names this computer can hold', () {
+    FolderPlan plan(List<String> files, [List<String> folders = const []]) {
+      final p = FolderPlan();
+      for (final rel in files) {
+        p.files.add((remote: '/r/$rel', rel: rel, size: 1));
+      }
+      p.folders.addAll(folders);
+      return p;
+    }
+
+    test('where case is folded, the second of a pair is skipped and named', () {
+      final p = plan(['README', 'readme', 'sub/A.txt', 'SUB/a.txt', 'b']);
+      fitLocalNames(p, foldCase: true, windows: false);
+      expect(p.files.map((f) => f.rel), ['README', 'sub/A.txt', 'b']);
+      expect(p.skipped, [
+        'readme (would overwrite README on this computer)',
+        'SUB/a.txt (would overwrite sub/A.txt on this computer)',
+      ]);
+      expect(p.totalBytes, 3, reason: 'a skipped file is not counted');
+    });
+
+    test('on Windows, names it cannot hold are skipped with why', () {
+      final p = plan(
+        [
+          'notes:v2',
+          'a.',
+          'b ',
+          'con',
+          'CON.txt',
+          'lpt1',
+          'q?',
+          'x<y',
+          'tab\tname',
+          'bad:dir/f',
+          'console',
+          'ok.txt',
+          'Ok.TXT',
+        ],
+        ['e|', 'fine'],
+      );
+      fitLocalNames(p, foldCase: true, windows: true);
+      expect(p.files.map((f) => f.rel), ['console', 'ok.txt']);
+      expect(p.folders, ['fine']);
+      expect(
+        p.skipped,
+        containsAll([
+          'notes:v2 (a character Windows does not allow)',
+          'a. (Windows drops its last dot or space)',
+          'b  (Windows drops its last dot or space)',
+          'con (a name Windows keeps for a device)',
+          'CON.txt (a name Windows keeps for a device)',
+          'lpt1 (a name Windows keeps for a device)',
+          'q? (a character Windows does not allow)',
+          'x<y (a character Windows does not allow)',
+          'tab\tname (a character Windows does not allow)',
+          'bad:dir/f (a character Windows does not allow)',
+          'e| (a character Windows does not allow)',
+          'Ok.TXT (would overwrite ok.txt on this computer)',
+        ]),
+      );
+      expect(p.skipped, hasLength(12));
+    });
+
+    test('where names keep their case, nothing changes', () {
+      final p = plan(['README', 'readme', 'notes:v2'], ['e|']);
+      fitLocalNames(p, foldCase: false, windows: false);
+      expect(p.files.map((f) => f.rel), ['README', 'readme', 'notes:v2']);
+      expect(p.folders, ['e|']);
+      expect(p.skipped, isEmpty);
+    });
+  });
 }
