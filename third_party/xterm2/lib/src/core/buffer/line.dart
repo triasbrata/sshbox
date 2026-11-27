@@ -616,9 +616,10 @@ class BufferLine with IndexedItem {
       }
       if (length == 0) break;
       _writeVarint(runs, i - runStart);
-      _writeVarint(runs, cells[runStart * _cellSize + _cellForeground]);
-      _writeVarint(runs, cells[runStart * _cellSize + _cellBackground]);
-      _writeVarint(runs, cells[runStart * _cellSize + _cellAttributes]);
+      // MUTATION: the pack drops the attribute runs.
+      _writeVarint(runs, 0);
+      _writeVarint(runs, 0);
+      _writeVarint(runs, 0);
       runCount++;
       runStart = i;
     }
