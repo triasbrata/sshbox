@@ -671,6 +671,20 @@ static void place_window(GtkWindow* window, FlValue* frame) {
   if (maximized) gtk_window_maximize(window);
 }
 
+// EXPERIMENT, never merged: JEANSH_WIN_EXPERIMENT names, separated by commas,
+// which of hide-extra (a window the app closes is hidden and never destroyed),
+// delayed-destroy (hidden at once, destroyed a second later) and no-place (the
+// first window is not moved or resized) are on.
+static gboolean experiment(const gchar* name) {
+  const gchar* on = g_getenv("JEANSH_WIN_EXPERIMENT");
+  return on != nullptr && strstr(on, name) != nullptr;
+}
+
+static gboolean destroy_later(gpointer window) {
+  gtk_widget_destroy(GTK_WIDGET(window));
+  return G_SOURCE_REMOVE;
+}
+
 static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
                             gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
@@ -702,7 +716,14 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
         gtk_window_close(self->window);
       }
     } else if (extra != nullptr) {
-      gtk_widget_destroy(GTK_WIDGET(extra->window));
+      if (experiment("hide-extra")) {
+        gtk_widget_hide(GTK_WIDGET(extra->window));
+      } else if (experiment("delayed-destroy")) {
+        gtk_widget_hide(GTK_WIDGET(extra->window));
+        g_timeout_add(1000, destroy_later, extra->window);
+      } else {
+        gtk_widget_destroy(GTK_WIDGET(extra->window));
+      }
     }
     fl_method_call_respond_success(call, nullptr, nullptr);
   } else if (strcmp(method, "place") == 0 && args != nullptr &&
@@ -711,6 +732,7 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     if (idv != nullptr && fl_value_get_type(idv) == FL_VALUE_TYPE_INT) {
       gint id = static_cast<gint>(fl_value_get_int(idv));
       ExtraWindow* extra = id == 0 ? nullptr : extra_by_id(self, id);
+      if (!experiment("no-place"))
       place_window(id == 0 ? self->window
                            : (extra != nullptr ? extra->window : nullptr),
                    args);
