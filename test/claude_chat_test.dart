@@ -8830,9 +8830,14 @@ void main() {
       final said = chat.entries.whereType<ChatSaid>().single;
       expect(said.delivery, Delivery.failed);
       expect(said.why, contains('started a turn'));
-      final entry = (await onDiskOnce(
-        (box) => box.entries.singleOrNull?.attempts == 2,
-      )).entries.single;
+      // attempts reads 2 from the moment the last automatic try is scheduled,
+      // while the entry is still marked as going again; the file holds the
+      // final state only once the failure of that try is saved too, which
+      // goes to the disk in the background.
+      final entry = (await onDiskOnce((box) {
+        final e = box.entries.singleOrNull;
+        return e != null && e.attempts == 2 && e.failed;
+      })).entries.single;
       expect(entry.failed, isTrue);
       expect(entry.attempts, 2);
     });
@@ -10063,7 +10068,8 @@ void main() {
       chat.send('first');
       chat.send('second');
       chat.send('third');
-      await wait();
+      // All three are kept on the disk, in the background, and none typed.
+      await onDiskOnce((box) => box.entries.length == 3);
       expect(host.paneTyping, isEmpty);
       expect((await onDisk()).entries, hasLength(3));
 
@@ -10072,17 +10078,21 @@ void main() {
       host.down = false;
       await chat.resume();
       for (final (i, words) in ['second', 'third'].indexed) {
-        await wait();
+        // Until it is typed, not for a fixed time: how long the host takes
+        // to answer is the machine's. The next goes only once this one is
+        // recorded, so a second one arriving early would show here.
+        await until(() => host.paneTyping.length >= i + 1);
         expect(host.paneTyping, hasLength(i + 1), reason: words);
         host.adds(userLine('r${i + 2}', words));
       }
-      await wait();
+      final box = await onDiskOnce(
+        (box) => box.entries.isEmpty && box.consumed.contains('r3'),
+      );
 
       expect([for (final t in host.paneTyping) t.stdin.join()], [
         'second',
         'third',
       ]);
-      final box = await onDisk();
       expect(box.entries, isEmpty);
       expect(box.consumed, containsAll(['r1', 'r2', 'r3']));
     });
