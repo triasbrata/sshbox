@@ -518,6 +518,34 @@ void main() {
       );
     });
 
+    test('a close asked for while another is finishing is answered', () async {
+      final runner = _Runner();
+      final gate = Completer<void>();
+      final set = WindowSet(
+        backend: runner,
+        first: _make(SessionManager.defaultSavedKey, null),
+        make: _make,
+        restore: (_) async {},
+        settle: () => gate.future,
+      );
+      await set.start();
+      final first = set.windows.single;
+      final second = (await set.openNew())!;
+      final third = (await set.openNew())!;
+      final closingFirst = set.closeWindow(first);
+      await pumpEventQueue();
+      // The second window is the first now, on screen where the user clicks
+      // its close while the first one's closing is still being finished.
+      expect(set.windows.first, same(second));
+      final closingSecond = set.closeWindow(second);
+      await pumpEventQueue();
+      expect(set.windows, [third]);
+      gate.complete();
+      await closingFirst;
+      await closingSecond;
+      expect(set.windows.single.id, 0);
+    });
+
     test('a window that never moved leaves the first where it was', () async {
       final runner = _Runner();
       final set = _set(runner);

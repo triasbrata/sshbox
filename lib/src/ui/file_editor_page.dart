@@ -2155,27 +2155,39 @@ class _MarkdownImageState extends State<_MarkdownImage> {
 MarkdownStyleSheet _markdownSheet(BuildContext context) {
   final terminal = terminalSettings.value;
   final theme = Theme.of(context);
-  final scheme = theme.colorScheme;
+  final p = TermulThemeData.of(context).palette;
   final body = theme.textTheme.bodyMedium!;
-  // The package's own picks a fixed blue for links and a colour that
-  // vanishes on a dark page for checkboxes.
+  // termul's palette throughout: the theme leaves Material's own greys for
+  // a code block's fill and edge, and the package picks a fixed blue for
+  // links and a colour that vanishes on a dark page for checkboxes.
   return MarkdownStyleSheet.fromTheme(theme).copyWith(
     a: TextStyle(
-      color: scheme.primary,
+      color: p.accent,
       decoration: TextDecoration.underline,
-      decorationColor: scheme.primary,
+      decorationColor: p.accent,
     ),
     code: body.copyWith(
       fontFamily: terminal.fontFamily,
       fontFamilyFallback: terminal.fontFamilyFallback,
       fontSize: body.fontSize! * 0.9,
-      backgroundColor: scheme.surfaceContainerHighest,
+      backgroundColor: p.surface,
     ),
     codeblockDecoration: BoxDecoration(
-      color: scheme.surfaceContainerHighest,
-      border: Border.all(color: scheme.outlineVariant),
+      color: p.surface,
+      border: Border.all(color: p.border),
     ),
-    checkbox: body.copyWith(color: scheme.primary),
+    tableBorder: TableBorder.all(color: p.border),
+    tableHead: body.copyWith(fontWeight: FontWeight.w600, color: p.text),
+    tableBody: body.copyWith(color: p.text),
+    tableHeadAlign: TextAlign.left,
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    blockquoteDecoration: BoxDecoration(
+      border: Border(left: BorderSide(color: p.border, width: 3)),
+    ),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: p.border)),
+    ),
+    checkbox: body.copyWith(color: p.accent),
     // Sized to what they hold, so a wide one scrolls sideways the way a code
     // block does, rather than squeezing.
     tableColumnWidth: const IntrinsicColumnWidth(),
@@ -2330,20 +2342,15 @@ class _CodeBlockState extends State<_CodeBlock> {
       // Beside the code, not over it: an overlay would cover the first line
       // of a wide block and take the drag that scrolls it. 40 dp square, so a
       // one-line block does not grow to fit a full-sized button.
-      IconButton(
+      TuiIconButton(
+        icon: '⎘',
         tooltip: 'Copy code',
+        size: 40,
         onPressed: () => copyAndSay(
           context,
           'code block',
           () => Clipboard.setData(ClipboardData(text: widget.source)),
         ),
-        icon: const Icon(Icons.content_copy, size: 18),
-        // onSurfaceVariant on the block's surfaceContainerHighest: the pair
-        // Material keeps legible either way round, light theme or dark.
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-        visualDensity: VisualDensity.compact,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints.tightFor(width: 40, height: 40),
       ),
     ],
   );

@@ -1174,6 +1174,35 @@ void main() {
     Finder rendered(Finder finder) =>
         find.descendant(of: find.byType(MarkdownBody), matching: finder);
 
+    testWidgets('a code block, a table and a quote draw in termul\'s palette, '
+        'not Material\'s greys', (tester) async {
+      await pumpReadme(
+        tester,
+        '```sh\necho hi\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
+      );
+      final bodies = tester.widgetList<MarkdownBody>(find.byType(MarkdownBody));
+      expect(bodies, isNotEmpty);
+      final p = TermulThemeData.of(
+        tester.element(find.byType(MarkdownBody).first),
+      ).palette;
+      final theme = Theme.of(tester.element(find.byType(MarkdownBody).first));
+      expect(p.surface, isNot(theme.colorScheme.surfaceContainerHighest));
+      for (final body in bodies) {
+        final sheet = body.styleSheet!;
+        final code = sheet.codeblockDecoration! as BoxDecoration;
+        expect(code.color, p.surface);
+        expect((code.border! as Border).top.color, p.border);
+        expect(sheet.tableBorder!.top.color, p.border);
+        expect(sheet.code!.backgroundColor, p.surface);
+        expect(sheet.a!.color, p.accent);
+        expect(sheet.checkbox!.color, p.accent);
+        final quote = sheet.blockquoteDecoration! as BoxDecoration;
+        expect((quote.border! as Border).left.color, p.border);
+        final rule = sheet.horizontalRuleDecoration! as BoxDecoration;
+        expect((rule.border! as Border).top.color, p.border);
+      }
+    });
+
     testWidgets('only a Markdown file has rich text, and opens in it', (
       tester,
     ) async {

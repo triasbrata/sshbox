@@ -6,6 +6,8 @@
 // A control's Semantics is its own node (container: true), so its word is
 // not merged into whatever is around it: a screen reader, an e2e flow and a
 // finder can each reach it by that word.
+// TuiTextMenu: a text field's selection menu drawn with this file's own
+// rows, for a field's contextMenuBuilder.
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -358,3 +360,148 @@ PopupMenuThemeData tuiPopupMenuTheme(TermulPalette p) => PopupMenuThemeData(
   }),
   shape: RoundedRectangleBorder(side: BorderSide(color: p.border)),
 );
+
+/// One row of a [TuiTextMenu]: a word, an optional mono shortcut hint, and
+/// what it does.
+class TuiTextMenuItem {
+  const TuiTextMenuItem({
+    required this.label,
+    required this.onPressed,
+    this.shortcut,
+    this.logName,
+  });
+
+  final String label;
+  final VoidCallback onPressed;
+  final String? shortcut;
+
+  /// The name a tap is logged under: a fixed word from code.
+  final String? logName;
+}
+
+/// A text field's selection menu in termul's face, for a field's
+/// `contextMenuBuilder`: on a desktop a [showTuiMenu]-like panel at the
+/// pointer, rows with their shortcuts; on touch a row of words above
+/// the selection, as the platform's own toolbar sits, going on to a second
+/// row where the screen is too narrow for one. A null in [items] is a
+/// divider, drawn only in the panel.
+class TuiTextMenu extends StatelessWidget {
+  const TuiTextMenu({
+    super.key,
+    required this.anchors,
+    required this.items,
+    required this.panel,
+  });
+
+  final TextSelectionToolbarAnchors anchors;
+  final List<TuiTextMenuItem?> items;
+
+  /// The desktop panel rather than the touch row.
+  final bool panel;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = TermulThemeData.of(context).palette;
+    final shown = [
+      for (var i = 0; i < items.length; i++)
+        if (items[i] != null ||
+            (panel && i > 0 && i < items.length - 1 && items[i - 1] != null))
+          items[i],
+    ];
+    Widget tap(TuiTextMenuItem item, Widget child) => Semantics(
+      container: true,
+      button: true,
+      label: item.label,
+      child: InkWell(
+        onTap: () {
+          logTap(context, item.logName, 'menu item');
+          item.onPressed();
+        },
+        hoverColor: p.selection,
+        child: ExcludeSemantics(child: child),
+      ),
+    );
+    final decoration = BoxDecoration(
+      color: p.panel,
+      border: Border.all(color: p.border),
+      boxShadow: const [BoxShadow(blurRadius: 8, color: Color(0x33000000))],
+    );
+    final Widget body = panel
+        ? ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 180, maxWidth: 280),
+            child: IntrinsicWidth(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final item in shown)
+                    item == null
+                        ? Container(
+                            height: 1,
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            color: p.border,
+                          )
+                        : tap(
+                            item,
+                            _TuiMenuRow(
+                              label: item.label,
+                              shortcut: item.shortcut,
+                              enabled: true,
+                              destructive: false,
+                            ),
+                          ),
+                ],
+              ),
+            ),
+          )
+        // On a narrow phone, or at a large text size, the words go on to a
+        // second row of the same panel rather than past its edge.
+        : Wrap(
+            children: [
+              for (final item in shown.whereType<TuiTextMenuItem>())
+                tap(
+                  item,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    child: Text(
+                      item.label,
+                      style: TextStyle(
+                        fontFamily: TermulFonts.mono,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: p.text,
+                        height: 1.25,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          );
+    final menu = Material(
+      type: MaterialType.transparency,
+      child: DecoratedBox(decoration: decoration, child: body),
+    );
+    final padding = MediaQuery.paddingOf(context);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(8, padding.top + 8, 8, 8),
+      child: CustomSingleChildLayout(
+        delegate: panel
+            ? DesktopTextSelectionToolbarLayoutDelegate(
+                anchor: anchors.primaryAnchor - Offset(8, padding.top + 8),
+              )
+            : TextSelectionToolbarLayoutDelegate(
+                anchorAbove:
+                    anchors.primaryAnchor - Offset(8, padding.top + 16),
+                anchorBelow:
+                    (anchors.secondaryAnchor ?? anchors.primaryAnchor) -
+                    Offset(8, padding.top - 8),
+              ),
+        child: menu,
+      ),
+    );
+  }
+}

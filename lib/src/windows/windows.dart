@@ -518,6 +518,17 @@ class WindowSet extends ChangeNotifier {
   Future<void> closeWindow(AppWindow window) async {
     if (_closing || !_windows.containsKey(window.id)) return;
     _closing = true;
+    // Held while this decides and changes what is open, and let go as soon as
+    // that is done: what is left to do, the settle, the tabs, the saving and
+    // the runner, can take a while, and a close asked for in the meantime, of
+    // the window the user now sees, is answered and not dropped.
+    var held = true;
+    void release() {
+      if (!held) return;
+      held = false;
+      _closing = false;
+    }
+
     try {
       // The last window closing is the app quitting, which asks nothing.
       if (_windows.length <= 1) {
@@ -527,19 +538,20 @@ class WindowSet extends ChangeNotifier {
       final ask = mayClose;
       if (ask != null && !await ask(window)) return;
       if (window.id == 0) {
-        await _handOver(window);
+        await _handOver(window, release);
         return;
       }
       _windows.remove(window.id);
       if (_focused == window.id) _focused = _windows.keys.first;
       notifyListeners();
+      release();
       await settle();
       await window.sessions.retire();
       await registry.forget(window.key);
       await _save();
       await backend.close(window.id);
     } finally {
-      _closing = false;
+      release();
     }
   }
 
@@ -549,7 +561,7 @@ class WindowSet extends ChangeNotifier {
   /// the first window, and that other window's own view, which can go, goes.
   /// The window the user closed is gone and the other stayed, with the same
   /// tabs where they were.
-  Future<void> _handOver(AppWindow closing) async {
+  Future<void> _handOver(AppWindow closing, void Function() release) async {
     final heir = _windows.values.firstWhere((window) => window.id != 0);
     final heirId = heir.id;
     final place = heir.frame;
@@ -573,6 +585,7 @@ class WindowSet extends ChangeNotifier {
     }
     _focused = 0;
     notifyListeners();
+    release();
     await settle();
     await closing.sessions.retire();
     await registry.forget(closing.key);
