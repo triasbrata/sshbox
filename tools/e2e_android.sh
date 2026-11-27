@@ -2737,6 +2737,14 @@ chat_aggregator() {
   flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Not delivered" -e SHOT=notlost || status=1
   flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Queued: it runs after" -e SHOT=sent || status=1
   agg_check "3: recorded once when the turn ended" "$(agg_records 'aggregator late')" 1
+  # The helper's own word on it: a message that reached the session mid-turn is
+  # an attachment carrying its origin inside, which it must read as delivered.
+  id=$(agg_id 'aggregator late')
+  out=$(mktemp)
+  sudo -u "$SSH_USER" -H timeout 30 python3 "$helper" status "$id" </dev/null >"$out" 2>&1
+  echo "the helper's status for it: $(cat "$out")"
+  agg_check "3: the helper reads it as delivered" "$(grep -c '"state":"delivered"' "$out")" 1
+  rm -f "$out"
   agg_check "3: nothing typed after it either" "$(attach_got text 'aggregator late')" 0
   echo "::endgroup::"
 
