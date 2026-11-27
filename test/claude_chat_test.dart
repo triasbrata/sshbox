@@ -759,6 +759,43 @@ void main() {
     expect(chat.busy, isFalse);
   });
 
+  test('a tool call\'s big strings are held cut, small ones whole', () async {
+    final claude = _FakeClaude();
+    final chat = ClaudeChat(open: _routed(claude));
+    addTearDown(chat.dispose);
+    await chat.start();
+    final big = 'x' * (ClaudeChat.inputStringLimit + 500);
+    claude.event({
+      'type': 'assistant',
+      'message': {
+        'content': [
+          {
+            'type': 'tool_use',
+            'id': 'toolu_big',
+            'name': 'Write',
+            'input': {'file_path': '/srv/a.txt', 'content': big},
+          },
+          {
+            'type': 'tool_use',
+            'id': 'toolu_small',
+            'name': 'Write',
+            'input': {'file_path': '/srv/b.txt', 'content': 'tiny'},
+          },
+        ],
+      },
+    });
+    await _settle();
+    final runs = chat.entries.whereType<ChatToolRun>().toList();
+    final held = runs[0].input['content'] as String;
+    expect(held.length, lessThan(ClaudeChat.inputStringLimit + 100));
+    expect(held, endsWith('… 500 more characters'));
+    expect(runs[0].input['file_path'], '/srv/a.txt');
+    expect(runs[1].input['content'], 'tiny');
+    // Nothing long: the very map, not a copy.
+    final small = {'a': 'b'};
+    expect(identical(ClaudeChat.trimToolInput(small), small), isTrue);
+  });
+
   test('a refused tool shows as one, and the turn still ends', () async {
     final claude = _FakeClaude();
     final chat = ClaudeChat(open: _routed(claude));

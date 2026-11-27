@@ -9051,6 +9051,135 @@ touch '${done.path}'
     },
   );
 
+  // #349: what a chat holds of a tool's input is cut at 32 KB a string. A
+  // stand-in session Writes a file of 60,000 characters and a small one. 2x2:
+  // positive, the big Write's opened row ends in "… N more characters" with N
+  // what was cut, its early lines are there and its late ones are not, and
+  // its Copy code copies the cut text; negative, the small Write is whole,
+  // with its last line, and carries no note, and the note is on exactly one
+  // row. Mutation: trimToolInput's call taken out, which fails the note.
+  _test(
+    'a tool input over 32 KB is cut with a note, a small one is whole',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, and this stand-in is sh'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      String big() => [
+        for (var i = 0; i < 1200; i++) 'line ${'$i'.padLeft(4, '0')}: ${'x' * 38}',
+      ].join('\n');
+      final bigContent = big();
+      const limit = 32 * 1024;
+      final cut = bigContent.length - limit;
+      final note = '… $cut more characters';
+      const smallContent = 'small first\nsmall last';
+      final answer = File('$home/.claude/e2e-answer.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Echo from the stand-in.'},
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_big',
+                  'name': 'Write',
+                  'input': {'file_path': '/tmp/big-file.txt', 'content': bigContent},
+                },
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_small',
+                  'name': 'Write',
+                  'input': {'file_path': '/tmp/small-file.txt', 'content': smallContent},
+                },
+              ],
+            },
+          })}\n'
+          '${jsonEncode({
+            'type': 'user',
+            'message': {
+              'role': 'user',
+              'content': [
+                {'type': 'tool_result', 'tool_use_id': 'toolu_big', 'content': 'written'},
+                {'type': 'tool_result', 'tool_use_id': 'toolu_small', 'content': 'written'},
+              ],
+            },
+          })}',
+        );
+      addTearDown(() {
+        if (answer.existsSync()) answer.deleteSync();
+      });
+
+      await _launch(tester);
+      await _chatAnswered(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      Finder body(String text) =>
+          find.textContaining(text, findRichText: true);
+
+      Future<void> open(String path) async {
+        final row = find.textContaining(path);
+        await tester.pump();
+        await _scrollsStill(tester);
+        await tester.ensureVisible(row.first);
+        await tester.pump();
+        await tester.tap(row.first);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      await open('small-file.txt');
+      expect(body('small last'), findsOneWidget);
+      await open('big-file.txt');
+      expect(body('line 0000:'), findsOneWidget);
+
+      // The cut: early lines in, late ones out, the note where it was cut.
+      expect(body('line 0600:'), findsOneWidget);
+      expect(body('line 0700:'), findsNothing, reason: 'past 32 KB, held');
+      expect(body('line 1199:'), findsNothing, reason: 'the last line, held');
+      expect(
+        body(note),
+        findsOneWidget,
+        reason: 'no "$note" at the end of the big Write\'s content',
+      );
+      // Negative: the note is on that row alone, the small one whole.
+      expect(body('more characters'), findsOneWidget);
+      expect(body('small first\nsmall last'), findsOneWidget);
+
+      // What Copy code takes from each block is what is held.
+      final copies = <String>[];
+      for (final button in find.byTooltip('Copy code').evaluate().toList()) {
+        await tester.ensureVisible(find.byWidget(button.widget));
+        await tester.pump();
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await tester.tap(find.byWidget(button.widget));
+        await _until(
+          tester,
+          () async => (await _clipboard()) != 'untouched',
+          'Copy code to put its block on the clipboard',
+        );
+        copies.add((await _clipboard())!);
+      }
+      expect(
+        copies,
+        contains(smallContent),
+        reason: 'the small Write was not copied whole: $copies',
+      );
+      final held = copies.where((c) => c.endsWith(note)).toList();
+      expect(held, hasLength(1), reason: 'no copy ends in the note');
+      expect(
+        held.single.length,
+        limit + '\n$note'.length,
+        reason: 'the big Write was held at 32 KB and the note',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // Copying code out of a chat reply, with the real pointer and the real
   // keyboard, read back off the system clipboard: a code line wider than the
   // chat wraps rather than scrolling sideways, the Copy icon gives it
