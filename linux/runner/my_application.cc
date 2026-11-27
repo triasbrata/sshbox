@@ -41,9 +41,6 @@ struct _MyApplication {
   gboolean multi;
   // The first window closing for real, rather than being asked of the app.
   gboolean closing;
-  // The first window hidden after it was closed while others stay open, to
-  // be shown again by the next window the app opens.
-  gboolean main_hidden;
   // sshbox/window: the buttons and the tab strip the app draws in place of a
   // title bar ask the window to move, minimize, maximize and close on it,
   // and hear on it when the window is maximized or restored.
@@ -166,8 +163,7 @@ static gchar* geometry_path() {
 static gboolean save_geometry(gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   self->save_source = 0;
-  // A parked first window is a pixel off to the side, not where it was.
-  if (self->main_hidden) return G_SOURCE_REMOVE;
+  
   GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(self->window));
   if (gdk_window == nullptr || self->width <= 0) return G_SOURCE_REMOVE;
   GdkWindowState state = gdk_window_get_state(gdk_window);
@@ -203,7 +199,6 @@ static void schedule_save(MyApplication* self) {
 static gboolean commit_geometry(gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
   self->commit_source = 0;
-  if (self->main_hidden) return G_SOURCE_REMOVE;
   GdkWindow* gdk_window = gtk_widget_get_window(GTK_WIDGET(self->window));
   if (gdk_window == nullptr) return G_SOURCE_REMOVE;
   GdkWindowState state = gdk_window_get_state(gdk_window);
@@ -657,44 +652,23 @@ static ExtraWindow* create_extra(MyApplication* self, FlValue* frame) {
   return extra;
 }
 
-// The first window, when the app closes it while others stay open. Not
-// hidden: its view is the engine's implicit view, and the engine's GL context
-// and frame production hang on its window staying realised and mapped — with
-// it hidden no frame ever reached Dart again, in the windows that were left.
-// So it is parked: one pixel, fully transparent, off to the side, out of the
-// taskbar and the pager, and taking neither clicks nor focus.
-static void park_main(MyApplication* self) {
-  GtkWindow* window = self->window;
-  GtkWidget* widget = GTK_WIDGET(window);
-  gtk_window_set_title(window, "Jeansh (parked)");
-  gtk_window_set_skip_taskbar_hint(window, TRUE);
-  gtk_window_set_skip_pager_hint(window, TRUE);
-  gtk_window_set_accept_focus(window, FALSE);
-  gtk_widget_set_opacity(widget, 0.0);
-  // Clicks go through it.
-  cairo_region_t* none = cairo_region_create();
-  gtk_widget_input_shape_combine_region(widget, none);
-  cairo_region_destroy(none);
+// Moves and sizes a window, as the app asks when the first window takes the
+// place of another that has closed.
+static void place_window(GtkWindow* window, FlValue* frame) {
+  gint x, y, width, height;
+  gboolean maximized;
+  if (window == nullptr ||
+      !frame_of(frame, &x, &y, &width, &height, &maximized)) {
+    return;
+  }
   if (gtk_window_is_maximized(window)) gtk_window_unmaximize(window);
-  gtk_window_resize(window, 1, 1);
+  gtk_window_resize(window, width, height);
 #ifdef GDK_WINDOWING_X11
-  if (GDK_IS_X11_DISPLAY(gtk_widget_get_display(widget))) {
-    gtk_window_move(window, -10000, -10000);
+  if (GDK_IS_X11_DISPLAY(gtk_widget_get_display(GTK_WIDGET(window)))) {
+    gtk_window_move(window, x, y);
   }
 #endif
-}
-
-// And back to a window, at [width] by [height].
-static void unpark_main(MyApplication* self, gint width, gint height) {
-  GtkWindow* window = self->window;
-  GtkWidget* widget = GTK_WIDGET(window);
-  gtk_widget_input_shape_combine_region(widget, nullptr);
-  gtk_widget_set_opacity(widget, 1.0);
-  gtk_window_set_skip_taskbar_hint(window, FALSE);
-  gtk_window_set_skip_pager_hint(window, FALSE);
-  gtk_window_set_accept_focus(window, TRUE);
-  gtk_window_set_title(window, "Jeansh");
-  gtk_window_resize(window, width, height);
+  if (maximized) gtk_window_maximize(window);
 }
 
 static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
@@ -708,39 +682,11 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     g_autoptr(FlValue) yes = fl_value_new_bool(TRUE);
     fl_method_call_respond_success(call, yes, nullptr);
   } else if (strcmp(method, "open") == 0) {
-    gint id;
-    if (self->main_hidden) {
-      // The first window comes back before a new one is made.
-      self->main_hidden = FALSE;
-      id = 0;
-      gint x, y, width, height;
-      gboolean maximized;
-      // The place the first window had before it was parked, or the one the
-      // app sends.
-      unpark_main(self, MAX(self->width, 200), MAX(self->height, 150));
-      if (frame_of(args, &x, &y, &width, &height, &maximized)) {
-        gtk_window_resize(self->window, width, height);
-#ifdef GDK_WINDOWING_X11
-        if (GDK_IS_X11_DISPLAY(
-                gtk_widget_get_display(GTK_WIDGET(self->window)))) {
-          gtk_window_move(self->window, x, y);
-        }
-#endif
-        if (maximized) gtk_window_maximize(self->window);
-      }
-#ifdef GDK_WINDOWING_X11
-      if (!frame_of(args, &x, &y, &width, &height, &maximized) &&
-          GDK_IS_X11_DISPLAY(gtk_widget_get_display(GTK_WIDGET(self->window)))) {
-        gtk_window_move(self->window, self->x, self->y);
-      }
-#endif
-      gtk_window_present(self->window);
-      announce_later(self, 0, self->main_view);
-    } else {
-      ExtraWindow* extra = create_extra(self, args);
-      id = extra->id;
-      announce_later(self, id, extra->view);
-    }
+    // The first window's view is the engine's own and is never closed, so
+    // every window opened here is another.
+    ExtraWindow* extra = create_extra(self, args);
+    gint id = extra->id;
+    announce_later(self, id, extra->view);
     g_autoptr(FlValue) answer = fl_value_new_int(id);
     fl_method_call_respond_success(call, answer, nullptr);
   } else if (strcmp(method, "close") == 0 && args != nullptr &&
@@ -748,25 +694,26 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     gint id = static_cast<gint>(fl_value_get_int(args));
     ExtraWindow* extra = id == 0 ? nullptr : extra_by_id(self, id);
     if (id == 0) {
+      // Only the last window: the app quits, and keeps where it was. With
+      // others open the app moves one of them into the first window and
+      // closes that one instead.
       if (self->extras == nullptr) {
-        // The last window: the app quits, and keeps where it was.
         self->closing = TRUE;
         gtk_window_close(self->window);
-      } else {
-        flush_geometry(self);
-        self->main_hidden = TRUE;
-        park_main(self);
       }
     } else if (extra != nullptr) {
-      // The windows a user can see: the others, and the first unless it is
-      // parked. Counted once, here, and the window going is one of them.
-      guint visible = g_list_length(self->extras) + (self->main_hidden ? 0 : 1);
-      if (visible == 1) {
-        // The last window left is this one: the app quits.
-        g_application_quit(G_APPLICATION(self));
-      } else {
-        gtk_widget_destroy(GTK_WIDGET(extra->window));
-      }
+      gtk_widget_destroy(GTK_WIDGET(extra->window));
+    }
+    fl_method_call_respond_success(call, nullptr, nullptr);
+  } else if (strcmp(method, "place") == 0 && args != nullptr &&
+             fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+    FlValue* idv = fl_value_lookup_string(args, "id");
+    if (idv != nullptr && fl_value_get_type(idv) == FL_VALUE_TYPE_INT) {
+      gint id = static_cast<gint>(fl_value_get_int(idv));
+      ExtraWindow* extra = id == 0 ? nullptr : extra_by_id(self, id);
+      place_window(id == 0 ? self->window
+                           : (extra != nullptr ? extra->window : nullptr),
+                   args);
     }
     fl_method_call_respond_success(call, nullptr, nullptr);
   } else if (strcmp(method, "activate") == 0 && args != nullptr &&
