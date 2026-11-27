@@ -54,7 +54,9 @@ Future<void> _until(
 }
 
 Future<String> _xdo(List<String> args) async {
-  final result = await Process.run('xdotool', args);
+  // A time limit: `windowfocus --sync` waits for ever on a window that holds
+  // the focus already.
+  final result = await Process.run('timeout', ['15', 'xdotool', ...args]);
   expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
   return '${result.stdout}'.trim();
 }
@@ -146,7 +148,8 @@ Future<void> _click(
   final at = box.localToGlobal(box.size.center(Offset.zero));
   binding.shouldPropagateDevicePointerEvents = true;
   try {
-    await _xdo(['windowfocus', '--sync', xid]);
+    await _xdo(['windowfocus', xid]);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     await _xdo([
       'mousemove',
       '--window',
@@ -165,7 +168,8 @@ Future<void> _click(
 }
 
 Future<void> _newWindow(WidgetTester tester, String from, int count) async {
-  await _xdo(['windowfocus', '--sync', from]);
+  await _xdo(['windowfocus', from]);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
   await _xdo(['key', 'ctrl+shift+n']);
   final ids = await _windowsAre(tester, count);
   await _until(tester, () => _views().length == count, 'a view a window');
