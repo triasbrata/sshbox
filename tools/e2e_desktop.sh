@@ -129,8 +129,10 @@ mw_phases() {
         --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/bisect.log" || true
       echo "BISECT RESULT: $(grep -a bisect "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
       if [ -n "$BISECT_LOG" ]; then
-        echo "--- stderr around the close, the last 90 lines:"
-        tail -n 90 "$data/bisect.log"
+        echo "--- the jeansh: lines of the app's stderr, in order:"
+        grep -a "jeansh:" "$data/bisect.log" | tail -n 600
+        echo "--- the last 60 lines of the output:"
+        tail -n 60 "$data/bisect.log"
       fi
       rm -f "$data/jeansh-e2e-mw-trace.txt"
     elif [ "$phase" = churn ]; then
