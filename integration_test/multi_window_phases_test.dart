@@ -448,7 +448,39 @@ Future<void> _last(WidgetTester tester) async {
     Future<bool>.delayed(const Duration(seconds: 8), () => false),
   ]);
   _trace('a frame after the first window closed: $frame');
-  expect(frame, isTrue, reason: 'no frame came after the first window closed');
+  if (!frame) {
+    // No frame: is the window dead to input too, or only the test's frames
+    // gone? A click in its middle (the shell's tab fills it) and a command
+    // typed, answered by a file, with no pump waited for.
+    IntegrationTestWidgetsFlutterBinding.instance
+            .shouldPropagateDevicePointerEvents =
+        true;
+    final size = now.split(' ');
+    final dead = _note('alive-no-frames');
+    if (dead.existsSync()) dead.deleteSync();
+    await _xdo(['windowfocus', xa]);
+    await _xdo([
+      'mousemove',
+      '--window',
+      xa,
+      '${int.parse(size[2]) ~/ 2}',
+      '${int.parse(size[3]) ~/ 2}',
+      'sleep',
+      '0.3',
+      'click',
+      '1',
+    ]);
+    await Future<void>.delayed(const Duration(seconds: 1));
+    await _xdo(['type', '--delay', '30', 'touch ${dead.path}']);
+    await _xdo(['key', 'Return']);
+    var up = false;
+    for (var i = 0; i < 100 && !up; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      up = dead.existsSync();
+    }
+    _trace('with no frames, the first window answered real input: $up');
+    fail('no frame came after the first window closed (input answered: $up)');
+  }
   await _until(tester, () => _in(_tabClose, 0).length == 1, 'B\'s tab in window 0');
   await _until(
     tester,
