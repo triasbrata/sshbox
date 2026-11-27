@@ -100,6 +100,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     first: _makeWindow(SessionManager.defaultSavedKey, null),
     make: _makeWindow,
     restore: _restoreWindow,
+    settle: _viewGone,
   )..mayClose = _mayCloseWindow;
 
   /// The window the user is in: where a link, a share, a notification tap
@@ -131,6 +132,25 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     );
     sessionLog.follow(sessions);
     return AppWindow(id: -1, key: key, sessions: sessions, frame: frame);
+  }
+
+  /// A window taken out of the set leaves the tree in the next frame, and only
+  /// then may the runner take its window down: the engine was seen to take the
+  /// app with it when a view it was still drawing was removed. A frame that
+  /// never comes, as with nothing on screen, is not waited for past a second.
+  Future<void> _viewGone() {
+    final binding = WidgetsBinding.instance;
+    final done = Completer<void>();
+    final limit = Timer(const Duration(seconds: 1), () {
+      if (!done.isCompleted) done.complete();
+    });
+    binding.scheduleFrame();
+    unawaited(
+      binding.endOfFrame.then((_) {
+        if (!done.isCompleted) done.complete();
+      }),
+    );
+    return done.future.whenComplete(limit.cancel);
   }
 
   /// Closing a window that is not the last: asked when a tab of it holds a

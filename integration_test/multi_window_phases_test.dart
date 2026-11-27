@@ -223,6 +223,8 @@ void main() {
           await _restore(tester);
         case 'buttons':
           await _buttons(tester);
+        case 'churn':
+          await _churn(tester);
         case 'last':
           await _last(tester);
         default:
@@ -425,8 +427,8 @@ Future<void> _last(WidgetTester tester) async {
     Future<bool>.delayed(const Duration(seconds: 8), () => false),
   ]);
   _trace('a frame after the first window closed: $frame');
-  if (!frame) {
-    // No frame: so is B dead, or only the test's pump? A click on its card
+  {
+    // With or without frames: is B dead, or only the test's pump? A click on its card
     // and a command typed into the shell it opens, answered by a file.
     IntegrationTestWidgetsFlutterBinding.instance
             .shouldPropagateDevicePointerEvents =
@@ -453,11 +455,20 @@ Future<void> _last(WidgetTester tester) async {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       answered = alive.existsSync();
     }
-    _trace('B opened a shell and ran a command with no frames: $answered');
-    fail(
-      'no frame came after the first window was closed; the second '
-      '${answered ? 'still works, so only frames to the test stopped' : 'is dead too'}',
-    );
+    _trace('B opened a shell and ran a command, no pump waited for: $answered');
+    IntegrationTestWidgetsFlutterBinding.instance
+            .shouldPropagateDevicePointerEvents =
+        false;
+    expect(answered, isTrue, reason: 'B did not answer real input');
+    expect(frame, isTrue, reason: 'no frame came after the first window closed');
+    final parked = await Process.run('xdotool', [
+      'search',
+      '--name',
+      r'^Jeansh \(parked\)$',
+    ]);
+    final parkedCount = '${parked.stdout}'.trim().split('\n').where((x) => x.isNotEmpty).length;
+    _trace('parked windows: $parkedCount');
+    expect(parkedCount, 1, reason: 'the first window is not parked');
   }
   expect(await _windows(), [xb], reason: 'the wrong window is left');
   await _click(tester, xb, b, await _first(tester, _card, b, 'B\'s card'));
@@ -471,6 +482,13 @@ Future<void> _last(WidgetTester tester) async {
   _trace('step 16');
   ids = await _windows();
   final revived = ids.firstWhere((id) => id != xb);
+  final stillParked = await Process.run('xdotool', [
+    'search',
+    '--name',
+    r'^Jeansh \(parked\)$',
+  ]);
+  _trace('parked after the key: ${'${stillParked.stdout}'.trim().isEmpty ? 0 : 1}');
+  expect('${stillParked.stdout}'.trim(), isEmpty, reason: 'still parked');
   _trace('step 17');
   await _until(
     tester,
@@ -515,4 +533,36 @@ Future<void> _last(WidgetTester tester) async {
   _trace('step 24');
   await Future<void>.delayed(const Duration(seconds: 20));
   _trace('step 25');
+}
+
+/// 10 rounds of A, B and C opened and closed, C first: the sequence that
+/// sometimes ended the whole app. The app is still here after each, and the
+/// script counts the rounds from the trace.
+Future<void> _churn(WidgetTester tester) async {
+  const rounds = 10;
+  var ids = await _windowsAre(tester, 1);
+  for (var round = 1; round <= rounds; round++) {
+    await _newWindow(tester, ids[0], 2);
+    ids = await _windows();
+    await _newWindow(tester, ids[1], 3);
+    ids = await _windows();
+    final views = _views();
+    await _click(
+      tester,
+      ids[2],
+      views[2],
+      await _first(tester, _close, views[2], 'C\'s Close'),
+    );
+    await _windowsAre(tester, 2);
+    ids = await _windows();
+    final left = _views();
+    await _click(
+      tester,
+      ids[1],
+      left[1],
+      await _first(tester, _close, left[1], 'B\'s Close'),
+    );
+    ids = await _windowsAre(tester, 1);
+    _trace('churn round $round done');
+  }
 }

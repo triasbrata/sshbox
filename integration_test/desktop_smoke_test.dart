@@ -26,7 +26,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart'
     show DropdownButton, IconButton, Icons, InkWell, TextField, Tooltip;
-import 'package:flutter/rendering.dart' show OffsetLayer, RenderParagraph;
+import 'package:flutter/rendering.dart'
+    show OffsetLayer, RenderParagraph, SemanticsBinding;
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -673,11 +674,16 @@ Future<void> _pickRepo(WidgetTester tester, Directory repo) async {
 /// testWidgets, with a skip that says why in the log: flutter test prints only
 /// a skipped test's name, and a skip is no coverage, so it has to be read as
 /// one.
-void _test(String name, WidgetTesterCallback body, {String? skip}) {
+void _test(
+  String name,
+  WidgetTesterCallback body, {
+  String? skip,
+  bool semantics = true,
+}) {
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(name, body, skip: skip != null, semanticsEnabled: semantics);
 }
 
 const _powershell =
@@ -1965,6 +1971,162 @@ Future<void> _macWidenWindow(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 500));
 }
 
+
+// ---- Packed scrollback (#351): helpers -----------------------------------
+
+/// What line [n] of the packed-scrollback tests' output reads. A colour for
+/// the line, a background behind the wide characters, bold and underline on
+/// the last word, and [pad] after it where a line is to wrap.
+String _packedLine(int n, String pad) =>
+    '\x1b[3${n % 7 + 1}mline $n \x1b[4${n % 5 + 1}m日本語\x1b[49m '
+    '\x1b[1;4mbold\x1b[0m${pad.isEmpty ? '' : ' $pad'}';
+
+/// What [_packedLine] reads once drawn, escapes gone.
+String _packedText(int n, String pad) =>
+    'line $n 日本語 bold${pad.isEmpty ? '' : ' $pad'}';
+
+/// A file holding [count] lines of [_packedLine], for the shell to `cat`.
+File _packedFile(int count, String pad) {
+  final file = File('${_scratch().path}/out.txt');
+  file.writeAsStringSync(
+    '${[for (var n = 0; n < count; n++) _packedLine(n, pad)].join('\n')}\n',
+  );
+  return file;
+}
+
+/// A terminal that packs nothing, given the same output: what a line should
+/// read cell by cell, the packed one's twin. Packing is switched off for as
+/// long as it is written to or resized, which is synchronous, so the app's
+/// own terminals are not caught in it.
+class _Twin {
+  _Twin(int count, String pad, int cols, int rows) {
+    _unpacked(() {
+      terminal = Terminal(maxLines: 10000)..resize(cols, rows);
+      terminal.write(
+        '${[for (var n = 0; n < count; n++) _packedLine(n, pad)].join('\r\n')}'
+        '\r\n',
+      );
+    });
+  }
+
+  late final Terminal terminal;
+
+  void resize(int cols, int rows) =>
+      _unpacked(() => terminal.resize(cols, rows));
+
+  static void _unpacked(void Function() body) {
+    Buffer.compactionEnabled = false;
+    try {
+      body();
+    } finally {
+      Buffer.compactionEnabled = true;
+    }
+  }
+}
+
+/// The row of [terminal]'s main buffer that starts line [n] of the output.
+int _rowOfLine(Terminal terminal, int n) {
+  final lines = terminal.buffer.lines;
+  final start = RegExp('^line $n ');
+  for (var i = 0; i < lines.length; i++) {
+    if (!lines[i].isWrapped && start.hasMatch(lines[i].getText())) return i;
+  }
+  return -1;
+}
+
+/// How many lines of [terminal]'s buffer are held packed, read off without
+/// unpacking any of them.
+int _packedCount(Terminal terminal) {
+  final lines = terminal.buffer.lines;
+  var packed = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].isPacked) packed++;
+  }
+  return packed;
+}
+
+/// Where two lines differ, cell by cell over [cols], or null where they read
+/// the same: the character, its width, both colours and its attributes.
+String? _lineDiff(BufferLine a, BufferLine b, int cols) {
+  if (a.isWrapped != b.isWrapped) {
+    return 'wrapped ${a.isWrapped} v ${b.isWrapped}';
+  }
+  for (var i = 0; i < cols && i < a.length && i < b.length; i++) {
+    if (a.getCodePoint(i) != b.getCodePoint(i) ||
+        a.getWidth(i) != b.getWidth(i) ||
+        a.getForeground(i) != b.getForeground(i) ||
+        a.getBackground(i) != b.getBackground(i) ||
+        a.getAttributes(i) != b.getAttributes(i)) {
+      return 'col $i: '
+          'char ${a.getCodePoint(i)} v ${b.getCodePoint(i)}, '
+          'width ${a.getWidth(i)} v ${b.getWidth(i)}, '
+          'fg ${a.getForeground(i)} v ${b.getForeground(i)}, '
+          'bg ${a.getBackground(i)} v ${b.getBackground(i)}, '
+          'attrs ${a.getAttributes(i)} v ${b.getAttributes(i)}';
+    }
+  }
+  return null;
+}
+
+/// The rows from line 0 to line [last] of [view] against [twin]'s: every cell
+/// alike. Returns what differed first, as a line, or null.
+String? _packedAgainstTwin(Terminal view, Terminal twin, int last, int cols) {
+  final at = _rowOfLine(view, 0);
+  final twinAt = _rowOfLine(twin, 0);
+  final end = _rowOfLine(twin, last);
+  if (at < 0 || twinAt < 0 || end < 0) {
+    return 'no line 0 or line $last found ($at, $twinAt, $end)';
+  }
+  for (var k = 0; k <= end - twinAt; k++) {
+    final diff = _lineDiff(
+      view.buffer.lines[at + k],
+      twin.buffer.lines[twinAt + k],
+      cols,
+    );
+    if (diff != null) return 'row $k from line 0: $diff';
+  }
+  return null;
+}
+
+/// The viewport's rows as one string per row, every cell's character and
+/// look in it, so two takings of it can be compared whole.
+List<String> _viewportLook(Terminal terminal) {
+  final lines = terminal.buffer.lines;
+  final top = lines.length - terminal.viewHeight;
+  return [
+    for (var i = top; i < lines.length; i++)
+      [
+        for (var c = 0; c < terminal.viewWidth && c < lines[i].length; c++)
+          '${lines[i].getCodePoint(c)}/${lines[i].getForeground(c)}/'
+              '${lines[i].getBackground(c)}/${lines[i].getAttributes(c)}',
+      ].join(' '),
+  ];
+}
+
+/// [view]'s shell made to `cat` [file], and waited for until the last of its
+/// [count] lines is drawn.
+Future<void> _catPacked(
+  WidgetTester tester,
+  TerminalView view,
+  File file,
+  int count,
+) async {
+  _run(view, 'cat ${file.path}');
+  final last = RegExp('^line ${count - 1} ');
+  await _until(
+    tester,
+    () {
+      final lines = view.terminal.buffer.lines;
+      for (var i = lines.length - 1; i >= 0 && i > lines.length - 60; i--) {
+        if (last.hasMatch(lines[i].getText())) return true;
+      }
+      return false;
+    },
+    'the last line of the output to be drawn',
+    timeout: const Duration(seconds: 60),
+  );
+  await tester.pump(const Duration(seconds: 1));
+}
 
 // ---- Several windows (#353): helpers --------------------------------------
 
@@ -4306,6 +4468,261 @@ touch '${done.path}'
       await tester.pump(const Duration(seconds: 1));
     },
   );
+  // #351: scrollback held packed. 3200 lines of colour, bold, underline, a
+  // background and wide characters go through a real Local shell's pty; once
+  // they have left the viewport the buffer holds them packed (read off
+  // without unpacking any). A twin terminal that packs nothing is given the
+  // same output and is the truth, cell by cell: character, width, both
+  // colours, attributes. Positive: every old line is the twin's, a mouse
+  // selection across old lines copies their text, and the buffer really did
+  // hold them packed. Negative: the viewport's rows, never packed, look the
+  // same after the view was taken to the top and back, and are not packed.
+  // Mutation: a pack that writes no colour or attributes (line.dart).
+  _test(
+    'scrollback held packed keeps its colours, attributes and wide '
+    'characters, and the bottom rows never change',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      const count = 3200;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      final file = _packedFile(count, '');
+      await _catPacked(tester, view, file, count);
+
+      final terminal = view.terminal;
+      final lines = terminal.buffer.lines;
+      final packed = _packedCount(terminal);
+      debugPrint(
+        'packed scrollback: $packed of ${lines.length} lines packed, '
+        'viewport ${terminal.viewHeight} rows',
+      );
+      expect(
+        packed,
+        greaterThan(lines.length - terminal.viewHeight - 100),
+        reason: 'scrollback was not held packed: $packed of ${lines.length}',
+      );
+      for (var i = lines.length - terminal.viewHeight; i < lines.length; i++) {
+        expect(lines[i].isPacked, isFalse, reason: 'viewport row $i is packed');
+      }
+      final bottom = _viewportLook(terminal);
+
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      final diff = _packedAgainstTwin(
+        terminal,
+        twin.terminal,
+        count - 20,
+        terminal.viewWidth,
+      );
+      expect(
+        diff,
+        isNull,
+        reason: 'a packed line differs from the unpacked twin: $diff',
+      );
+      debugPrint(
+        'packed scrollback: all ${count - 20} old lines equal the twin',
+      );
+
+      // To the top, as a scroll does, and what is drawn there.
+      final scrollable = tester.state<ScrollableState>(
+        find
+            .descendant(
+              of: find.byType(TerminalView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      scrollable.position.jumpTo(scrollable.position.minScrollExtent);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(scrollable.position.pixels, 0, reason: 'not scrolled to the top');
+
+      final first = _rowOfLine(terminal, 0);
+      expect(first, greaterThanOrEqualTo(0));
+      final render = tester
+          .state<TerminalViewState>(find.byType(TerminalView))
+          .renderTerminal;
+      Offset cell(int col, int row) => render.localToGlobal(
+        render.getOffset(CellOffset(col, row)) +
+            Offset(render.cellSize.width / 2, render.lineHeight / 2),
+      );
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      final mouse = await tester.startGesture(
+        cell(0, first),
+        kind: PointerDeviceKind.mouse,
+      );
+      // Down the old lines, then along the last one to the end of its text:
+      // "line 4 日本語 bold" is 18 cells.
+      for (var row = first + 1; row <= first + 4; row++) {
+        await mouse.moveTo(cell(0, row));
+        await tester.pump();
+      }
+      for (var col = 1; col < 18; col++) {
+        await mouse.moveTo(cell(col, first + 4));
+        await tester.pump();
+      }
+      await mouse.up();
+      String? copied;
+      await _until(
+        tester,
+        () async => (copied = await _clipboard()) != 'untouched',
+        'the selection of old lines to be copied',
+      );
+      expect(
+        copied,
+        [for (var n = 0; n < 5; n++) _packedText(n, '')].join('\n'),
+        reason: 'a selection across old lines did not copy their text',
+      );
+
+      // And back down: the bottom rows as they were, never packed.
+      scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        _viewportLook(terminal),
+        bottom,
+        reason: 'the visible bottom rows changed after a trip to the top',
+      );
+      for (var i = lines.length - terminal.viewHeight; i < lines.length; i++) {
+        expect(lines[i].isPacked, isFalse, reason: 'viewport row $i is packed');
+      }
+      await _closeTabs(tester);
+    },
+  );
+
+  // #351, step b: long scrollback re-wrapped by a real window resize. 3200
+  // lines of 120 cells wrap on either width; the window is made narrower, so
+  // the terminal has fewer columns, then wider than it began, and each time
+  // every old line is the twin's, which is resized the same, cell by cell,
+  // with the scrollback packed again after each reflow. Negative: the lines
+  // do not change when nothing resizes (the first check, before it).
+  _test(
+    'long packed scrollback re-wraps as it did when the window is made '
+    'narrower, then wider',
+    skip: Platform.isLinux ? null : 'a window is resized here through xdotool',
+    (tester) async {
+      const count = 3200;
+      final pad = 'x' * 100;
+      await _launch(tester);
+      final view = await _localShell(tester);
+      await _catPacked(tester, view, _packedFile(count, pad), count);
+      final terminal = view.terminal;
+      final cols = terminal.viewWidth;
+      final rows = terminal.viewHeight;
+      final twin = _Twin(count, pad, cols, rows);
+
+      String? same(int width) =>
+          _packedAgainstTwin(terminal, twin.terminal, count - 40, width);
+      expect(same(cols), isNull, reason: 'before any resize, at $cols columns');
+
+      final window = await _window();
+      final rect = await _windowRect();
+      addTearDown(
+        () => _xdo([
+          'windowsize',
+          '--sync',
+          window,
+          '${rect.width.round()}',
+          '${rect.height.round()}',
+        ]),
+      );
+      Future<void> resizeTo(double width) async {
+        await _xdo([
+          'windowsize',
+          '--sync',
+          window,
+          '${width.round()}',
+          '${rect.height.round()}',
+        ]);
+        await _until(
+          tester,
+          () => terminal.viewWidth != cols || width >= rect.width,
+          "the terminal to take the window's new width",
+        );
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      await resizeTo(rect.width * 0.6);
+      final narrow = terminal.viewWidth;
+      expect(narrow, lessThan(cols), reason: 'the window did not narrow');
+      twin.resize(narrow, terminal.viewHeight);
+      debugPrint(
+        'packed scrollback: narrowed $cols -> $narrow columns, '
+        '${_packedCount(terminal)} of ${terminal.buffer.lines.length} packed',
+      );
+      expect(
+        _packedCount(terminal),
+        greaterThan(terminal.buffer.lines.length ~/ 2),
+        reason: 'a reflow left the scrollback unpacked',
+      );
+      expect(same(narrow), isNull, reason: 'narrow, at $narrow columns');
+
+      await resizeTo(rect.width * 1.3);
+      final wide = terminal.viewWidth;
+      expect(wide, greaterThan(cols), reason: 'the window did not widen');
+      twin.resize(wide, terminal.viewHeight);
+      expect(same(wide), isNull, reason: 'wide, at $wide columns');
+      debugPrint(
+        'packed scrollback: re-wrapped at $narrow and $wide columns, '
+        'equal to the twin',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
+  // #351, step c: a tmux tab's attach fill. 300 lines are written in a tmux
+  // pane, the tab is cut and reconnected, and the new terminal is drawn from
+  // tmux's capture: the history is there, with its colours, as the twin
+  // reads it, and the scrollback in it is held packed.
+  _test(
+    'a reattached tmux tab still shows its history, in colour, packed',
+    skip: Platform.isLinux
+        ? null
+        : "tmux on the run's private server is the Linux run's",
+    (tester) async {
+      const count = 300;
+      addTearDown(_killSshboxTmux);
+      await _launch(tester);
+      var view = await _localShell(tester, tmux: true);
+      await _catPacked(tester, view, _packedFile(count, ''), count);
+      view = await _reattach(tester, view);
+      final terminal = view.terminal;
+      // The tail only, so nothing old is read, and so unpacked, before the
+      // packed ones are counted.
+      final lastLine = RegExp('^line ${count - 1} ');
+      await _until(tester, () {
+        final lines = terminal.buffer.lines;
+        for (var i = lines.length - 1; i >= 0 && i > lines.length - 60; i--) {
+          if (lastLine.hasMatch(lines[i].getText())) return true;
+        }
+        return false;
+      }, 'the capture to bring back the last line');
+      await tester.pump(const Duration(seconds: 1));
+      final packed = _packedCount(terminal);
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      debugPrint(
+        'packed scrollback: tmux fill $packed of '
+        '${terminal.buffer.lines.length} lines packed',
+      );
+      expect(
+        packed,
+        greaterThan(100),
+        reason: 'the attach fill was not packed',
+      );
+      // The 18 cells of the shortest line's text: tmux's capture also draws
+      // the blanks after it as spaces, which has nothing to do with packing.
+      final diff = _packedAgainstTwin(
+        terminal,
+        twin.terminal,
+        count - 20,
+        18,
+      );
+      expect(
+        diff,
+        isNull,
+        reason: 'the attach fill differs from the twin: $diff',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #353 / #344, several windows on Linux, real X input. Each is a 2x2 with a
   // mutation branch (e2e/multi-window-mut*).
   const mwSkip = 'real X windows and keys are the Linux run\'s';
@@ -7114,6 +7531,111 @@ touch '${done.path}'
     },
   );
 
+  // #350: the picture cache is capped at 32 MB and 100 images where Flutter's
+  // own is 100 MB and 1000. 150 pictures of 400x400, 640 KB decoded each, are
+  // run through the app's real image cache from files on disk. Positive: the
+  // cache holds pictures, some tens of them (so it is on, which a cap of 0
+  // would break) and no more than 100 images or 32 MB (so it is capped, which
+  // the default breaks, holding all 150, 96 MB). Negative:
+  // one of the first, long since pushed out, still opens in the image tab and
+  // draws, decoded again. A cap of 0 bytes draws the same and so fails the
+  // first, which is the only thing a flicker could be read from here.
+  // Mutation: imageCacheBytes of 0.
+  _test(
+    'the picture cache holds pictures, within 32 MB and 100 images, and one '
+    'pushed out still draws',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      const total = 150;
+      const bytes = 32 * 1024 * 1024;
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawRect(
+        const Rect.fromLTWH(0, 0, 400, 400),
+        Paint()..color = const Color(0xFF3366CC),
+      );
+      final drawn = await recorder.endRecording().toImage(400, 400);
+      final png = (await drawn.toByteData(format: ui.ImageByteFormat.png))!;
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      String name(int i) => 'e2e-pic-${'$i'.padLeft(3, '0')}.png';
+      for (var i = 0; i < total; i++) {
+        File('${dir.path}/${name(i)}').writeAsBytesSync(
+          png.buffer.asUint8List(),
+        );
+      }
+
+      await _launch(tester);
+      final cache = PaintingBinding.instance.imageCache;
+      debugPrint(
+        'image cache limits: ${cache.maximumSize} images, '
+        '${cache.maximumSizeBytes} bytes',
+      );
+      expect(cache.maximumSizeBytes, bytes, reason: 'the cache is not capped');
+      expect(cache.maximumSize, 100, reason: 'the cache is not capped');
+
+      final context = tester.element(find.byType(Navigator).first);
+      cache.clear();
+      for (var i = 0; i < total; i++) {
+        await tester.runAsync(
+          () => precacheImage(FileImage(File('${dir.path}/${name(i)}')), context),
+        );
+      }
+      debugPrint(
+        'image cache after $total pictures: ${cache.currentSize} images, '
+        '${cache.currentSizeBytes} bytes',
+      );
+      expect(
+        cache.currentSize,
+        greaterThanOrEqualTo(20),
+        reason: 'the cache kept almost nothing of $total pictures',
+      );
+      expect(cache.currentSize, lessThanOrEqualTo(100));
+      expect(
+        cache.currentSizeBytes,
+        lessThanOrEqualTo(bytes),
+        reason: 'the cache holds more than its cap of bytes',
+      );
+      expect(
+        cache.containsKey(FileImage(File('${dir.path}/${name(0)}'))),
+        isFalse,
+        reason: 'the first picture is still held after $total others',
+      );
+
+      // The first of them, pushed out long ago, opened as a person opens one.
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name(0)).evaluate().isNotEmpty,
+        'the drawer to show the first picture',
+      );
+      await tester.tap(find.text(name(0)));
+      await _until(
+        tester,
+        () =>
+            find.byType(InteractiveViewer).evaluate().isNotEmpty &&
+            find
+                .descendant(
+                  of: find.byType(InteractiveViewer),
+                  matching: find.byType(RawImage),
+                )
+                .evaluate()
+                .any((e) => (e.widget as RawImage).image != null),
+        'the picture to draw in its tab',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #187: Report a bug, after + in the strip. Its icon alone until a first
   // click slides "Report a bug" out, which folds back by itself after 4 s or
   // on a click elsewhere; a click on it then opens the report. CI's builds
@@ -9416,6 +9938,135 @@ touch '${done.path}'
     },
   );
 
+  // #349: what a chat holds of a tool's input is cut at 32 KB a string. A
+  // stand-in session Writes a file of 60,000 characters and a small one. 2x2:
+  // positive, the big Write's opened row ends in "… N more characters" with N
+  // what was cut, its early lines are there and its late ones are not, and
+  // its Copy code copies the cut text; negative, the small Write is whole,
+  // with its last line, and carries no note, and the note is on exactly one
+  // row. Mutation: trimToolInput's call taken out, which fails the note.
+  _test(
+    'a tool input over 32 KB is cut with a note, a small one is whole',
+    skip: Platform.isWindows
+        ? 'a Windows Local shell is PowerShell, and this stand-in is sh'
+        : _claudeInstalled()
+        ? 'this machine has a Claude Code of its own, which this would run'
+        : null,
+    (tester) async {
+      _standInClaudeFor();
+      final home = Platform.environment['HOME']!;
+      String big() => [
+        for (var i = 0; i < 1200; i++) 'line ${'$i'.padLeft(4, '0')}: ${'x' * 38}',
+      ].join('\n');
+      final bigContent = big();
+      const limit = 32 * 1024;
+      final cut = bigContent.length - limit;
+      final note = '… $cut more characters';
+      const smallContent = 'small first\nsmall last';
+      final answer = File('$home/.claude/e2e-answer.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '${jsonEncode({
+            'type': 'assistant',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Echo from the stand-in.'},
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_big',
+                  'name': 'Write',
+                  'input': {'file_path': '/tmp/big-file.txt', 'content': bigContent},
+                },
+                {
+                  'type': 'tool_use',
+                  'id': 'toolu_small',
+                  'name': 'Write',
+                  'input': {'file_path': '/tmp/small-file.txt', 'content': smallContent},
+                },
+              ],
+            },
+          })}\n'
+          '${jsonEncode({
+            'type': 'user',
+            'message': {
+              'role': 'user',
+              'content': [
+                {'type': 'tool_result', 'tool_use_id': 'toolu_big', 'content': 'written'},
+                {'type': 'tool_result', 'tool_use_id': 'toolu_small', 'content': 'written'},
+              ],
+            },
+          })}',
+        );
+      addTearDown(() {
+        if (answer.existsSync()) answer.deleteSync();
+      });
+
+      await _launch(tester);
+      await _chatAnswered(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+
+      Finder body(String text) =>
+          find.textContaining(text, findRichText: true);
+
+      Future<void> open(String path) async {
+        final row = find.textContaining(path);
+        await tester.pump();
+        await _scrollsStill(tester);
+        await tester.ensureVisible(row.first);
+        await tester.pump();
+        await tester.tap(row.first);
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      await open('small-file.txt');
+      expect(body('small last'), findsOneWidget);
+      await open('big-file.txt');
+      expect(body('line 0000:'), findsOneWidget);
+
+      // The cut: early lines in, late ones out, the note where it was cut.
+      expect(body('line 0600:'), findsOneWidget);
+      expect(body('line 0700:'), findsNothing, reason: 'past 32 KB, held');
+      expect(body('line 1199:'), findsNothing, reason: 'the last line, held');
+      expect(
+        body(note),
+        findsOneWidget,
+        reason: 'no "$note" at the end of the big Write\'s content',
+      );
+      // Negative: the note is on that row alone, the small one whole.
+      expect(body('more characters'), findsOneWidget);
+      expect(body('small first\nsmall last'), findsOneWidget);
+
+      // What Copy code takes from each block is what is held.
+      final copies = <String>[];
+      for (final button in find.byTooltip('Copy code').evaluate().toList()) {
+        await tester.ensureVisible(find.byWidget(button.widget));
+        await tester.pump();
+        await Clipboard.setData(const ClipboardData(text: 'untouched'));
+        await tester.tap(find.byWidget(button.widget));
+        await _until(
+          tester,
+          () async => (await _clipboard()) != 'untouched',
+          'Copy code to put its block on the clipboard',
+        );
+        copies.add((await _clipboard())!);
+      }
+      expect(
+        copies,
+        contains(smallContent),
+        reason: 'the small Write was not copied whole: $copies',
+      );
+      final held = copies.where((c) => c.endsWith(note)).toList();
+      expect(held, hasLength(1), reason: 'no copy ends in the note');
+      expect(
+        held.single.length,
+        limit + '\n$note'.length,
+        reason: 'the big Write was held at 32 KB and the note',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // Copying code out of a chat reply, with the real pointer and the real
   // keyboard, read back off the system clipboard: a code line wider than the
   // chat wraps rather than scrolling sideways, the Copy icon gives it
@@ -10218,6 +10869,165 @@ touch '${done.path}'
     },
   );
 
+  // A README-like file of about [kb] KB for Rich text, ending in a section of
+  // words found nowhere else.
+  String readme(int kb) {
+    final parts = ['# Jeansh e2e speed\n\nA README-like file for Rich text.\n'];
+    var size = parts.first.length;
+    for (var i = 0; size < kb * 1024; i++) {
+      final s = StringBuffer(
+        '## Section $i\n\nSome **bold** text, _italic_, `code` and a '
+        '[link](https://example.com/$i) in a paragraph long enough to wrap '
+        'onto a second line, word${i}x.\n\n- one $i\n- [ ] task $i\n',
+      );
+      if (i % 5 == 0) s.write('\n```sh\necho $i\n```\n');
+      if (i % 7 == 0) s.write('\n| a | b |\n|---|---|\n| $i | x |\n');
+      parts.add('$s');
+      size += s.length + 1;
+    }
+    parts.add('## Far section\n\n$_far\n');
+    return parts.join('\n');
+  }
+
+  // The Rich text limit, 240 KB: a 200 KB file opens in Rich text, where it
+  // used to say it was too large and show Source; a 250 KB file still says
+  // so. A mutation with the limit back at 160 KB opens 200 KB in Source.
+  _test(
+    'rich text: a 200 KB file opens in Rich text, and a 250 KB one in Source '
+    'with the toast',
+    skip: editorSkip,
+    (tester) async {
+      final rich = find.byType(MarkdownRichEditor);
+      final tooLarge = find.textContaining('Too large for Rich text');
+      var k = await _EditorSave.start(tester, 'big200.md', text: readme(200));
+      debugPrint('rich text limit: 200 KB file is ${k.initial.length} chars');
+      await _grab(tester, 'desktop-md-rich-speed-200kb');
+      expect(rich, findsOneWidget, reason: '200 KB not opened in Rich text');
+      expect(tooLarge, findsNothing, reason: '200 KB said too large');
+      await _closeTabs(tester);
+
+      k = await _EditorSave.start(tester, 'big250.md', text: readme(250));
+      debugPrint('rich text limit: 250 KB file is ${k.initial.length} chars');
+      expect(rich, findsNothing, reason: '250 KB opened in Rich text');
+      // The toast is up for a second from the open; asked again, it says so
+      // again and Source stays.
+      await tester.tap(_label('rich text'));
+      await _until(
+        tester,
+        () => find
+            .textContaining('Too large for Rich text (over 240 KB)')
+            .evaluate()
+            .isNotEmpty,
+        'the 250 KB file to say it is too large for Rich text',
+      );
+      await _grab(tester, 'desktop-md-rich-speed-250kb');
+      expect(rich, findsNothing, reason: '250 KB went to Rich text');
+      await _closeTabs(tester);
+    },
+  );
+
+  // A copy across sections shaped as blanks, with real keys: select all and
+  // copy in an 83 KB file, the far section drawn as spaces in the field
+  // while no screen reader is on, and the clipboard holds the file's own
+  // text, its words. Then a screen reader on (semantics): the field's text
+  // holds the far section's words, not spaces; off again, the blanks.
+  _test(
+    'rich text: a copy across a far section shaped as blanks copies its '
+    'words, and a screen reader reads them',
+    skip: editorSkip,
+    // No screen reader of the test's own: testWidgets turns semantics on
+    // unless told not to, and with it on nothing is blanked.
+    semantics: false,
+    (tester) async {
+      final original = readme(83);
+      final k = await _EditorSave.start(tester, 'speed.md', text: original);
+      final field = find.descendant(
+        of: find.byType(MarkdownRichEditor),
+        matching: find.byType(EditableText),
+      );
+      String drawn() => tester
+          .widget<EditableText>(field)
+          .controller
+          .buildTextSpan(context: tester.element(field), withComposing: false)
+          .toPlainText(includeSemanticsLabels: false);
+      int longestBlank(String s) =>
+          RegExp(r' +')
+              .allMatches(s)
+              .fold(0, (m, r) => r[0]!.length > m ? r[0]!.length : m);
+
+      await tester.showKeyboard(field);
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      final reader = SemanticsBinding.instance.semanticsEnabled;
+      var shown = drawn();
+      debugPrint(
+        'rich text blanks: screen reader $reader, the field draws the far '
+        'words: ${shown.contains(_far)}, longest blank ${longestBlank(shown)}',
+      );
+      // The platform's own accessibility on, as on CI's Mac: the field is
+      // drawn for a screen reader from the start, and nothing is blanked.
+      if (reader) {
+        expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      } else {
+        expect(shown.contains(_far), isFalse, reason: 'far not blanked');
+        expect(longestBlank(shown), greaterThan(40), reason: 'no blanks');
+      }
+
+      await Clipboard.setData(const ClipboardData(text: 'untouched'));
+      await k.press('ctrl+a', 'keystroke "a" using command down');
+      await k.press('ctrl+c', 'keystroke "c" using command down');
+      String? copied;
+      await _until(tester, () {
+        _clipboard().then((t) => copied = t);
+        return copied != null && copied != 'untouched';
+      }, 'the copy to reach the clipboard');
+      debugPrint(
+        'rich text copy: ${copied!.length} chars of ${original.length}, '
+        'far words ${copied!.contains(_far)}, longest blank '
+        '${longestBlank(copied!)}',
+      );
+      expect(copied, original, reason: 'the copy is not the file');
+
+      // The selection back to a caret at the top, as before the copy, so
+      // what follows is the reader's doing alone.
+      tester.widget<EditableText>(field).controller.selection =
+          const TextSelection.collapsed(offset: 0);
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, caret back at the top: far words drawn '
+        '${drawn().contains(_far)}',
+      );
+
+      // A screen reader on: the far section's own words in the field's text.
+      final semantics = tester.ensureSemantics();
+      await tester.pump(const Duration(milliseconds: 300));
+      shown = drawn();
+      debugPrint(
+        'rich text, screen reader on: far words ${shown.contains(_far)}, '
+        'longest blank ${longestBlank(shown)}',
+      );
+      expect(shown.contains(_far), isTrue, reason: 'reader on: far blanked');
+      expect(longestBlank(shown), lessThan(4), reason: 'reader on: blanks');
+      semantics.dispose();
+      // The reader let go: blanks again, as at the start. The binding may
+      // drop semantics a frame or two later.
+      await tester.pump(const Duration(milliseconds: 300));
+      debugPrint(
+        'rich text, reader let go: semantics '
+        '${SemanticsBinding.instance.semanticsEnabled}, far words drawn '
+        '${drawn().contains(_far)}',
+      );
+      await _until(
+        tester,
+        () => drawn().contains(_far) == reader,
+        'the reader let go: the far section drawn as at the start',
+        timeout: const Duration(seconds: 5),
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #333: a Markdown file's flowchart and sequence diagram, the first and
   // the last of docs/notification-architecture.md, are drawn natively in
   // Rich text on every desktop, web view or none, never as their source;
@@ -10658,6 +11468,8 @@ class _EditorSave {
     expect(this.text(), text, reason: '$when: the text changed');
   }
 }
+
+const _far = 'quokkafar marmalade zephyr lantern.';
 
 /// A host held in memory: `/home/me/dev` holding [files], name to bytes. For
 /// names this machine's own disk could not hold side by side.

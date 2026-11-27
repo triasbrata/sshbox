@@ -404,6 +404,37 @@ void main() {
     );
 
     test(
+      'a window is taken down natively only once its view has left',
+      () async {
+        final runner = _Runner();
+        final order = <String>[];
+        final gate = Completer<void>();
+        final set = WindowSet(
+          backend: runner,
+          first: _make(SessionManager.defaultSavedKey, null),
+          make: _make,
+          restore: (_) async {},
+          settle: () async {
+            order.add('settle');
+            await gate.future;
+          },
+        );
+        await set.start();
+        final second = (await set.openNew())!;
+        final closing = set.closeWindow(second);
+        await pumpEventQueue();
+        // Out of the set at once, so the tree drops its view; the runner is not
+        // asked until that has been seen.
+        expect(set.windows, hasLength(1));
+        expect(runner.closed, isEmpty);
+        gate.complete();
+        await closing;
+        expect(order, ['settle']);
+        expect(runner.closed, [second.id]);
+      },
+    );
+
+    test(
       'the last window closes with no question, and keeps its tabs',
       () async {
         final runner = _Runner();

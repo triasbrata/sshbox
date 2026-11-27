@@ -25,3 +25,15 @@ keys and the mouse are encoded.
 **Remove this override when we move to xterm2 >= 5.3.0:** delete
 third_party/xterm2 and its dependency_overrides entry in pubspec.yaml
 together.
+
+## Packed scrollback
+
+`BufferLine.pack()` holds a line that has left the viewport as bytes (printable
+ASCII one byte a cell, trailing blanks dropped, colours and attributes as
+runs) instead of 16 bytes a cell across the line's whole capacity. Every
+method of the line unpacks it again first, so nothing is lost; the 256 most
+recently unpacked lines are packed again as newer ones are read.
+`Buffer.compactScrollback` packs the lines that left the viewport after each
+`Terminal.write` and after a reflow. Measured at 10000 lines of typical output:
+80 columns 19.5 MB to 0.55 MB, 120 columns 19.5 to 0.62, 250 columns 39.1 to 0.92.
+Tests: test/xterm_line_pack_test.dart. Not in upstream xterm2.

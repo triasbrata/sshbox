@@ -107,7 +107,7 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in save restore buttons last; do
+  for phase in save restore buttons churn last; do
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
@@ -118,6 +118,20 @@ mw_phases() {
       else
         echo "❌ multi-window: the last window: $(cat "$note" 2>/dev/null | tr '\n' ' ')"
         echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+        rc=1
+      fi
+    elif [ "$phase" = churn ]; then
+      # The app's stderr is in flutter test's output, kept to be read for a
+      # crash line.
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 400 flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/churn.log" || true
+      rounds=$(grep -c 'churn round' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)
+      crashes=$(grep -ciE 'segmentation|signal 11|core dumped|CRITICAL|Lost connection' "$data/churn.log")
+      if [ "$rounds" = 10 ] && [ "$crashes" = 0 ]; then
+        echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit, no crash line in stderr"
+      else
+        echo "❌ multi-window: $rounds of 10 A+B+C rounds, $crashes crash lines"
         rc=1
       fi
     else
