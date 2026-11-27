@@ -97,6 +97,48 @@ window_phases() {
   return $rc
 }
 
+# integration_test/multi_window_phases_test.dart, several windows (#344): a
+# phase a fresh start of the app on a data folder of its own, under a window
+# manager. The last phase ends with the app quitting, since its last window
+# closes, so flutter test is expected to fail there: what it must have seen
+# is written to a file by the test and by a watcher that outlives it, and
+# read here.
+mw_phases() {
+  local rc=0 data note
+  data=$(mktemp -d)
+  note="$data/jeansh-e2e-mw-last.txt"
+  for phase in save restore buttons last; do
+    if [ "$phase" = last ]; then
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase || true
+      if grep -q ready "$note" 2>/dev/null && grep -q ended "$note" &&
+        ! grep -q asked "$note"; then
+        echo "✅ multi-window: the last window closed with no question and the process ended"
+      else
+        echo "❌ multi-window: the last window: $(cat "$note" 2>/dev/null | tr '\n' ' ')"
+        rc=1
+      fi
+    else
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase || rc=1
+    fi
+  done
+  rm -rf "$data"
+  return $rc
+}
+
+if [ "$target" = mw-phases ]; then
+  openbox >/dev/null 2>&1 &
+  wm=$!
+  sleep 1
+  rc=0
+  mw_phases || rc=1
+  kill $wm
+  exit $rc
+fi
+
 # The Linux run's second half, inside its Xvfb (below), with a window
 # manager to maximize under, there from the start as on a desktop.
 if [ "$target" = window-phases ]; then
@@ -172,10 +214,13 @@ case "$target" in
         printf e2e | gnome-keyring-daemon --unlock --components=secrets >/dev/null
         dunst >/dev/null 2>&1 & notifier=$!
         tests=$1 && shift
+        # E2E_MW_ONLY=1: the several-windows phases alone, no smoke run.
+        [ -z "$E2E_MW_ONLY" ] || exec "$0" mw-phases
         rc=0
         flutter test "$tests" -d linux "$@" || rc=1
         # Only after a whole run, as above.
         [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || rc=1
+        [ -z "$JEANSH_E2E_PHASES" ] || "$0" mw-phases || rc=1
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
