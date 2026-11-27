@@ -6743,6 +6743,111 @@ touch '${done.path}'
     },
   );
 
+  // #350: the picture cache is capped at 32 MB and 100 images where Flutter's
+  // own is 100 MB and 1000. 150 pictures of 400x400, 640 KB decoded each, are
+  // run through the app's real image cache from files on disk. Positive: the
+  // cache holds pictures, some tens of them (so it is on, which a cap of 0
+  // would break) and no more than 100 images or 32 MB (so it is capped, which
+  // the default breaks, holding all 150, 96 MB). Negative:
+  // one of the first, long since pushed out, still opens in the image tab and
+  // draws, decoded again. A cap of 0 bytes draws the same and so fails the
+  // first, which is the only thing a flicker could be read from here.
+  // Mutation: imageCacheBytes of 0.
+  _test(
+    'the picture cache holds pictures, within 32 MB and 100 images, and one '
+    'pushed out still draws',
+    skip: Platform.isWindows ? _powershell : null,
+    (tester) async {
+      const total = 150;
+      const bytes = 32 * 1024 * 1024;
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawRect(
+        const Rect.fromLTWH(0, 0, 400, 400),
+        Paint()..color = const Color(0xFF3366CC),
+      );
+      final drawn = await recorder.endRecording().toImage(400, 400);
+      final png = (await drawn.toByteData(format: ui.ImageByteFormat.png))!;
+      final dir = Directory(
+        Platform.environment['HOME']!,
+      ).createTempSync('0-jeansh-e2e-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      String name(int i) => 'e2e-pic-${'$i'.padLeft(3, '0')}.png';
+      for (var i = 0; i < total; i++) {
+        File('${dir.path}/${name(i)}').writeAsBytesSync(
+          png.buffer.asUint8List(),
+        );
+      }
+
+      await _launch(tester);
+      final cache = PaintingBinding.instance.imageCache;
+      debugPrint(
+        'image cache limits: ${cache.maximumSize} images, '
+        '${cache.maximumSizeBytes} bytes',
+      );
+      expect(cache.maximumSizeBytes, bytes, reason: 'the cache is not capped');
+      expect(cache.maximumSize, 100, reason: 'the cache is not capped');
+
+      final context = tester.element(find.byType(Navigator).first);
+      cache.clear();
+      for (var i = 0; i < total; i++) {
+        await tester.runAsync(
+          () => precacheImage(FileImage(File('${dir.path}/${name(i)}')), context),
+        );
+      }
+      debugPrint(
+        'image cache after $total pictures: ${cache.currentSize} images, '
+        '${cache.currentSizeBytes} bytes',
+      );
+      expect(
+        cache.currentSize,
+        greaterThanOrEqualTo(20),
+        reason: 'the cache kept almost nothing of $total pictures',
+      );
+      expect(cache.currentSize, lessThanOrEqualTo(100));
+      expect(
+        cache.currentSizeBytes,
+        lessThanOrEqualTo(bytes),
+        reason: 'the cache holds more than its cap of bytes',
+      );
+      expect(
+        cache.containsKey(FileImage(File('${dir.path}/${name(0)}'))),
+        isFalse,
+        reason: 'the first picture is still held after $total others',
+      );
+
+      // The first of them, pushed out long ago, opened as a person opens one.
+      await _localShell(tester);
+      await tester.tap(find.byTooltip('Browse files'));
+      final folder = find.text(dir.path.split('/').last);
+      await _until(
+        tester,
+        () => folder.evaluate().isNotEmpty,
+        "the drawer to list the test's folder",
+      );
+      await tester.tap(folder);
+      await _until(
+        tester,
+        () => find.text(name(0)).evaluate().isNotEmpty,
+        'the drawer to show the first picture',
+      );
+      await tester.tap(find.text(name(0)));
+      await _until(
+        tester,
+        () =>
+            find.byType(InteractiveViewer).evaluate().isNotEmpty &&
+            find
+                .descendant(
+                  of: find.byType(InteractiveViewer),
+                  matching: find.byType(RawImage),
+                )
+                .evaluate()
+                .any((e) => (e.widget as RawImage).image != null),
+        'the picture to draw in its tab',
+      );
+      await _closeTabs(tester);
+    },
+  );
+
   // #187: Report a bug, after + in the strip. Its icon alone until a first
   // click slides "Report a bug" out, which folds back by itself after 4 s or
   // on a click elsewhere; a click on it then opens the report. CI's builds
