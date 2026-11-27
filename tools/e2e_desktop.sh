@@ -208,7 +208,7 @@ mw_phases_windows() {
   for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore last}; do
     echo "experiment: windows phase: $phase"
     case "$phase" in
-      t[1-4]) home=$(mktemp -d) ;;
+      t[1-4] | last) home=$(mktemp -d) ;;
       *) home=$data ;;
     esac
     JEANSH_E2E_MW_DIR=$(cygpath -m "$data") APPDATA=$(cygpath -w "$home") \
