@@ -68,8 +68,8 @@ class SshboxApp extends StatefulWidget {
     this.multiWindow = false,
   });
 
-  /// What opens the app's windows. Null, and a desktop build uses its
-  /// runner's, anything else one window.
+  /// What opens the app's windows: main gives a desktop its runner's.
+  /// Null, and the app has the one window.
   final WindowBackend? windows;
 
   /// Whether the app is the root of several views, one a window, as
@@ -93,9 +93,9 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
   /// Every window of the app. Whatever is not one window's, the hosts, keys,
   /// settings, chat, the notifications and the update check, is here once.
   late final WindowSet _windowSet = WindowSet(
-    backend:
-        widget.windows ??
-        (isDesktop ? ChannelWindowBackend() : const SingleWindow()),
+    // main hands over the runner's backend on a desktop; nothing else asks
+    // a platform channel that a widget test never answers.
+    backend: widget.windows ?? const SingleWindow(),
     multi: widget.multiWindow,
     first: _makeWindow(SessionManager.defaultSavedKey, null),
     make: _makeWindow,
