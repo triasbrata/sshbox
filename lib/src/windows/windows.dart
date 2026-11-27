@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart' show GlobalKey, NavigatorState;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../session/session_manager.dart';
+import '../telemetry/app_log.dart';
 
 /// Where a window is: its top left, its size, and whether it is maximized.
 /// What the runner reports as a window moves, and what is saved to open the
@@ -392,7 +393,6 @@ class WindowSet extends ChangeNotifier {
   final Map<int, AppWindow> _windows = {};
   StreamSubscription<WindowEvent>? _events;
   int _focused = 0;
-  bool _closing = false;
 
   /// The window's tabs, asked before it closes: a yes closes it, a no keeps
   /// it. Left unset, a window closes with no question.
@@ -451,11 +451,13 @@ class WindowSet extends ChangeNotifier {
     final key = WindowRegistry.newKey([
       for (final window in _windows.values) window.key,
     ]);
+    _log('openNew asked, the set is $_state');
     final window = make(key, null);
     final id = await backend.open();
     if (id == null) return null;
     // The first window, hidden after it was closed, is opened again before
     // a new one is made, and answers with its own id.
+    _log('openNew: runner gave id=$id');
     _register(window, id);
     _focused = id;
     await _save();
@@ -484,6 +486,9 @@ class WindowSet extends ChangeNotifier {
         unawaited(_save());
       case WindowCloseRequested(:final id):
         final window = _windows[id];
+        _log(
+          'closeRequested by the runner id=$id known=${window != null} $_state',
+        );
         if (window != null) unawaited(closeWindow(window));
       case WindowClosed(:final id):
         _gone(id);
@@ -493,44 +498,64 @@ class WindowSet extends ChangeNotifier {
   /// Closes [window] if the user lets it, asking first when it holds tabs.
   /// The last window closing is the app quitting: its tabs stay saved, and
   /// come back at the next start.
-  Future<void> closeWindow(AppWindow window) async {
-    if (_closing || !_windows.containsKey(window.id)) return;
-    _closing = true;
-    // Held while this decides and changes what is open, and let go as soon as
-    // that is done: what is left to do, the settle, the tabs, the saving and
-    // the runner, can take a while, and a close asked for in the meantime, of
-    // the window the user now sees, is answered and not dropped.
-    var held = true;
-    void release() {
-      if (!held) return;
-      held = false;
-      _closing = false;
-    }
+  ///
+  /// Closes are decided one at a time, in the order asked: a close asked for
+  /// while another is being decided waits its turn rather than being dropped
+  /// or running over it. Only the deciding is in turn; what is left to do
+  /// afterwards, the settle, the tabs, the saving and the runner, is not, so
+  /// one that is slow holds up no other.
+  Future<void> closeWindow(AppWindow window) {
+    _log('closeWindow asked id=${window.id} view=${window.viewId}');
+    final decided = _turn.then((_) => _decide(window));
+    // A failure to decide must not stop the closes behind it.
+    _turn = decided.then((_) {}, onError: (_) {});
+    return decided.then((finish) => finish?.call());
+  }
 
-    try {
-      // The last window closing is the app quitting, which asks nothing.
-      if (_windows.length <= 1) {
+  Future<void> _turn = Future.value();
+
+  /// What closing [window] changes in the set, and what is left to do after
+  /// it, or null when it is not closing.
+  Future<Future<void> Function()?> _decide(AppWindow window) async {
+    if (!_windows.containsKey(window.id) ||
+        !identical(_windows[window.id], window)) {
+      _log('close ignored: id=${window.id} is no window of the set $_state');
+      return null;
+    }
+    // The last window closing is the app quitting, which asks nothing.
+    if (_windows.length <= 1) {
+      _log('close of the last window id=${window.id}: the app quits');
+      return () async {
         await backend.close(window.id);
-        return;
-      }
-      final ask = mayClose;
-      if (ask != null && !await ask(window)) return;
-      if (window.id == 0) {
-        await _handOver(window, release);
-        return;
-      }
-      _windows.remove(window.id);
-      if (_focused == window.id) _focused = _windows.keys.first;
-      notifyListeners();
-      release();
+        _log('runner close ${window.id} answered');
+      };
+    }
+    final ask = mayClose;
+    if (ask != null && !await ask(window)) {
+      _log('close of id=${window.id} refused by the user');
+      return null;
+    }
+    // Asked, the set may have changed under the dialog.
+    if (!identical(_windows[window.id], window)) {
+      _log('close ignored after asking: id=${window.id} went meanwhile');
+      return null;
+    }
+    if (window.id == 0) {
+      return _handOver(window);
+    }
+    _windows.remove(window.id);
+    if (_focused == window.id) _focused = _windows.keys.first;
+    notifyListeners();
+    _log('closed id=${window.id}, the set is $_state');
+    return () async {
       await settle();
+      _log('settled for id=${window.id}');
       await window.sessions.retire();
       await registry.forget(window.key);
       await _save();
       await backend.close(window.id);
-    } finally {
-      release();
-    }
+      _log('runner close ${window.id} answered');
+    };
   }
 
   /// The first window closed while others are open. Its view is the engine's
@@ -539,7 +564,7 @@ class WindowSet extends ChangeNotifier {
   /// the first window, and that other window's own view, which can go, goes.
   /// The window the user closed is gone and the other stayed, with the same
   /// tabs where they were.
-  Future<void> _handOver(AppWindow closing, void Function() release) async {
+  Future<Future<void> Function()> _handOver(AppWindow closing) async {
     final heir = _windows.values.firstWhere((window) => window.id != 0);
     final heirId = heir.id;
     final place = heir.frame;
@@ -563,13 +588,23 @@ class WindowSet extends ChangeNotifier {
     }
     _focused = 0;
     notifyListeners();
-    release();
-    await settle();
-    await closing.sessions.retire();
-    await registry.forget(closing.key);
-    await _save();
-    await backend.close(heirId);
+    _log('handed over: heir was id=$heirId, the set is $_state');
+    return () async {
+      await settle();
+      _log('settled for the handover');
+      await closing.sessions.retire();
+      await registry.forget(closing.key);
+      await _save();
+      await backend.close(heirId);
+      _log('runner close $heirId answered');
+    };
   }
+
+  /// The set as the app log shows it: each window's id and view.
+  String get _state =>
+      '[${_windows.values.map((w) => '${w.id}@${w.viewId}').join(' ')}]';
+
+  void _log(String message) => appLog.add('win: $message');
 
   /// A window that went without being asked: nothing is kept of it.
   void _gone(int id) {
