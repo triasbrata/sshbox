@@ -3893,7 +3893,7 @@ class ClaudeChat extends ChangeNotifier {
   /// Whether a message to a watched session goes through the host helper
   /// (see [Aggregator]) rather than being typed into it. Tests that fake a
   /// host switch it on for themselves.
-  static bool useAggregatorByDefault = true;
+  static bool useAggregatorByDefault = false;
   bool useAggregator = useAggregatorByDefault;
 
   /// How often a message handed to the helper is looked at, and how long a
