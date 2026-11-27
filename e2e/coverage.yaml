@@ -610,3 +610,400 @@ chat-mode-shows-a-session-as-pinned-when:
   guard: unit
   by: test/chat_page_test.dart, test/claude_chat_test.dart
   why: "a session pinned in claude agents is pinned in the sidebar, read from jobs/pins.json beside the listing"
+
+# --- passed on the user's word of 2026-11-27, covered by tests ---
+
+chat-picks-the-agent-s-effort-beside-the:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_effort.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_effort.yaml (--effort high reaches stand-in --bg, chip) chat_effort.yaml (apply_flag_settings, chip follows) chat_effort.yaml line ~109 notice 'also keeps this as the default'; stand-in pane records /effort max chat_effort.yaml (new chat on Defau; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-message-to-a-watched-claude-bg-session:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_attach_deliver.yaml, test/claude_chat_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_attach_deliver.yaml section 1 (stand-in claude, checks typed line) chat_attach_deliver section 3; test/claude_chat_test.dart 'not sent yet' chat_attach_deliver section 2 (busy and working); per docs/uat-sweep-2026-11-27.md"
+
+a-new-chat-s-background-session-is-watched:
+  guard: unit
+  by: test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: desktop_smoke_test ~8300 'a new chat's background session, listed first with no pid'; test/chat_page_test.dart (stand-in host); per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+ctrl-s-saves-in-the-file-editor-from:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/editor_save.yaml
+  why: "covered on the user's word of 2026-11-27: tools/e2e_android.sh editor_save + .maestro/editor_save.yaml ('save holds the edit', 'typed no s') editor_save 'Ctrl+S unedited wrote nothing' editor_save 'terminal Ctrl+S reaches the app, not taken (editor closed)'; per docs/uat-sweep-2026-11-27.md"
+
+a-selected-tab-s-stays-on-a-narrow:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/tab_close_narrow.yaml, .maestro/tab_close_narrow_close.yaml, test/tab_strip_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/tab_close_narrow.yaml (report-only; button bounds read from view tree); test/tab_strip_test.dart tab_close_narrow_close.yaml / e2e_android 'a tap on the ✕ did not close the tab'; per docs/uat-sweep-2026-11-27.md"
+
+working-no-longer-ticks-for-ever-when-the:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_working_backstop.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_working_backstop.yaml (hang case; Wi-Fi toggle itself not driven); per docs/uat-sweep-2026-11-27.md"
+
+chat-s-usage-popup-stays-on-a-phone:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_usage.yaml, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/chat_page_test.dart ~823 (320x568 widget test, popup inside screen); Android chat_usage flow chat_page_test semantics-tree walk (as Android bridge does); real TalkBack unproven; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-picture-sent-to-a-watched-pane-or:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_images.yaml, test/outbox_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_images.yaml (stand-in sees png not _png); test/outbox_test.dart ~146 numbered copy; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+compact-shows-as-a-marker-not-as-the:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_compact.yaml, test/claude_chat_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_compact.yaml (stand-in transcript); test/claude_chat_test.dart; desktop untested chat_compact.yaml Show summary -> Hide summary chat_compact.yaml lines ~107-108; per docs/uat-sweep-2026-11-27.md"
+
+chat-answers-a-question-a-watched-session-asks:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_ask_watched.yaml, test/chat_ask_test.dart, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_ask_watched.yaml (stand-in claude, typed keys); test/chat_ask_test.dart chat_ask_watched.yaml chat_ask_watched.yaml (multi, Other, refusal kinds); test/chat_page_test.dart; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-fails-out-loud-rather-than-silently-a:
+  guard: unit
+  by: test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/chat_page_test.dart + desktop_smoke drop test reads clock-prefixed name; Android untested for drop test/chat_page_test.dart ~7595 'a file shared into a read-only session is refused before it ...'; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+keys-typed-before-a-tab-s-shell-is:
+  guard: unit
+  by: test/early_input_test.dart
+  why: "covered on the user's word of 2026-11-27: test/early_input_test.dart; desktop_smoke early-input tests (Linux/macOS); Android hw keyboard unproven test/early_input_test.dart; desktop early-input tests; per docs/uat-sweep-2026-11-27.md"
+
+a-tmux-tab-pastes-a-picture-rightly-after:
+  guard: unit
+  by: test/tmux_live_test.dart
+  why: "covered on the user's word of 2026-11-27: desktop_smoke Linux 'tmux picture paste after a reattach', multi-line share; test/tmux_live_test.dart; real Claude Code not used; per docs/uat-sweep-2026-11-27.md"
+
+jeansh-open-keeps-its-secret-in-a-private:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/jeansh_open.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/jeansh_open.yaml, jeansh_open2.yaml (Android); open_tmux_live_test.dart, open_install_ssh_live_test.dart jeansh_open2.yaml (per-host secret re-written each connect); test/open_*_live_test.dart jeansh_open2.yaml (cap, rc file); CLAUDE row says 13 check; per docs/uat-sweep-2026-11-27.md"
+
+html-file-in-a-browser-tab-part-2:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/html_tab.yaml, .maestro/html_site.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/html_tab.yaml, html_site.yaml (Android); desktop_smoke_test ~3883 (Linux/macOS); per docs/uat-sweep-2026-11-27.md"
+
+download-a-folder-as-a-zip-made-on:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/folder_zip.yaml, test/folder_download_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/folder_zip.yaml (Android); desktop_smoke zip/plain (Linux); test/folder_download_test.dart; macOS/Windows save dialogs untested; per docs/uat-sweep-2026-11-27.md"
+
+a-tmux-tab-keeps-a-program-s-mouse:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/tmux_mouse_before.yaml, test/tmux_live_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/tmux_mouse_before/after.yaml (Android); desktop_smoke 'keeps' mouse modes (Linux); stand-in program, not real Claude tmux_mouse_reattach (Android flows before/after relaunch), desktop reattach test test/tmux_live_test.dart paste-buffer -p tests; deskt; per docs/uat-sweep-2026-11-27.md"
+
+chat-follows-to-the-end-after-the-user:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_images.yaml, .maestro/chat_follow_jump.yaml, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/chat_page_test.dart 'tall first send follows'; .maestro/chat_images.yaml chat_page_test; .maestro/chat_follow_jump.yaml; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+the-linux-window-comes-back-at-its-place:
+  guard: e2e-desktop
+  by: integration_test/window_place_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: integration_test/window_place_test.dart (Linux X11) window_place_test.dart window_place_test.dart 6-round loops (mutation red at 0,0); Wayland unproven; per docs/uat-sweep-2026-11-27.md"
+
+writing-to-a-session-picked-in-chat-s:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_continue_cwd.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_continue_cwd.yaml (stand-in logs run dir; no --fork-session); chat_page_test :: 'a finished session continued here takes what is typed' chat_continue_cwd.yaml (one 'Bash was refused' notice for two requests); per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-s-input-reuses-the-pane-s-own:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_code_copy.yaml, .maestro/chat_images.yaml
+  why: "covered on the user's word of 2026-11-27: chat_page_test :: 'one box holds the field and every control' chat_page_test :: 'a long press on the empty box opens the selection menu with Paste'; .maestro/chat_code_copy.yaml / chat_images.yaml use Paste on Android; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+an-html-file-on-the-host-opens-rendered:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/html_tab.yaml, .maestro/html_site.yaml, test/html_tab_shell_test.dart, test/web_page_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/html_tab.yaml (heading visible, Reload present, editor chrome gone); html_site.yaml; test/html_tab_shell_test.dart. Android only, as the step test/web_page_test.dart :: 'its own pages and anchors stay, links leave through openUrl'; chat_page_test open; per docs/uat-sweep-2026-11-27.md"
+
+a-share-into-jeansh-while-a-chat-tab:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/share_chat_open.yaml, .maestro/share_chat_shell_finish.yaml, .maestro/share_chat_text_finish.yaml, .maestro/share_chat_pic_finish.yaml, .maestro/share_text_start.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/share_chat_open.yaml + share_chat_text_finish.yaml (runner checks nothing reached the shell); chat_page_test :: 'a text lands at the caret, trimmed, and is not sent' share_chat_pic_finish.yaml; chat_page_test :: 'a picture becomes a card and an [Image; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-new-chat-chooses-the-folder-it-starts:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_cwd.yaml
+  why: "covered on the user's word of 2026-11-27: chat_page_test :: 'a new chat shows the host root as its folder', 'the home folder is warned about beforehand'; .maestro/chat_cwd.yaml chat_cwd.yaml (--bg runs in chosen folder, host config unchanged); chat_page_test :: 'a typed path is where the chat starts' ; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+in-an-empty-chat-box-edits-the-previous:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_edit_previous.yaml, .maestro/chat_attach_deliver.yaml, .maestro/chat_outbox.yaml, test/chat_page_test.dart, test/claude_chat_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_edit_previous.yaml (step 3, Android); test/chat_page_test.dart :: 'in an empty box it puts the last message there, as a fork' chat_edit_previous.yaml (runner checks one --resume-session-at/--fork-session start); chat_page_test :: 'the Edit button; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+the-app-log-records-every-event-without-becoming:
+  guard: unit
+  by: test/action_log_test.dart
+  why: "covered on the user's word of 2026-11-27: test/action_log_test.dart (tap/switch/menu, git stage, tab group, 'none of the names a host, a file or a commit carry reach the log'); desktop_smoke :: 'a tap on a control is logged by its fixed name', 'the app log holds named keys and pastes' (Linux); per docs/uat-sweep-2026-11-27.md"
+
+jeansh-file-opens-a-file-in-jeansh-s:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/jeansh_open.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/jeansh_open.yaml (runner checks mode/marker; starts and ends off); desktop_smoke :: 'Settings adds the jeansh command to ~/.local/bin only when on' jeansh_open.yaml (Android); desktop_smoke :: 'jeansh <file> opens a file tab, and refusals open none' (; per docs/uat-sweep-2026-11-27.md"
+
+more-ways-to-change-the-ui-text-size:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/text_size_home.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/text_size_home.yaml; text_size_test :: 'Home's Text size control, for touch, steps the same setting'; 'the UI size grows the chrome and leaves a terminal alone' text_size_test :: 'the zoom chord steps the one setting'; desktop_smoke :: 'Ctrl with = − ; per docs/uat-sweep-2026-11-27.md"
+
+the-chat-composer-is-one-box-a-context:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_usage.yaml, .maestro/chat_model.yaml
+  why: "covered on the user's word of 2026-11-27: chat_page_test :: 'one box holds the field and every control', 'everything fits on one row at a phone's width', 'the gauge is a symbol' chat_page_test :: 'shows how much of the window the session uses', 'hovering opens the popup', 'past 80% the chip is in the ; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-lets-the-user-go-into-a-session:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_subagents.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_subagents.yaml; chat_page_test :: 'an Agent row offers the way into its sub-agent, with what it...' chat_subagents.yaml; chat_page_test :: 'opening it shows its work as chat draws one, read-only', 'the sub-agent view is part of the chat tab: the ; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-shows-the-questions-claude-asks-and-answers:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_ask.yaml, .maestro/chat_ask_watched.yaml, .maestro/chat_status_waiting.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_ask.yaml; chat_page_test :: 'a question Claude asks is answered from its card'; chat_ask_test :: 'shows each question under its chip...' chat_ask.yaml (You chose Blue); chat_ask_test :: 'Send waits for every question to have an answer', 'once ans; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-shows-how-much-context-a-session-uses:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_usage.yaml
+  why: "covered on the user's word of 2026-11-27: chat_page_test :: 'past 80% the chip is in the warning colour'; chat_usage.yaml chat_page_test :: 'hovering opens the popup...', 'a tap opens it on touch', 'a plan reading that is old says how old'; chat_usage.yaml; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-bug-button-after-in-the-tab-strip:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/bug_button.yaml
+  why: "covered on the user's word of 2026-11-27: bug_button_test :: 'it folds back by itself, and sits after +'; .maestro/bug_button.yaml; desktop_smoke :: 'Report a bug folds out on a click...' bug_button_test :: 'the first tap only expands, the second opens the report', 'a tap elsewhere folds it back' bug_; per docs/uat-sweep-2026-11-27.md"
+
+chat-s-task-checklist-shows-every-task-not:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_tasks.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_tasks.yaml ('10 tasks (5 done, 5 open)' with early tasks); chat_page_test :: 'lists the session's whole store under a header counting it'. Equality with Claude Code's real view unproven; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-s-code-can-be-copied-and-does:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_code_copy.yaml
+  why: "covered on the user's word of 2026-11-27: chat_page_test :: 'a block with a line wider than the chat wraps' .maestro/chat_code_copy.yaml; desktop_smoke :: 'code in a chat reply copies with the mouse and the keyboard'; chat_page_test 'every code box has a Copy code button holding exactly its text'; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-follows-new-output-only-at-the-end:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_follow_jump.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_follow_jump.yaml; chat_page_test :: 'at the end, a reply taller than a screen is followed to its end' chat_follow_jump.yaml; chat_page_test :: 'a pixel up is enough to stop following', 'the jump button shows only away from the end, counts what...; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-takes-a-picture-pasted-dropped-or-picked:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_images.yaml, .maestro/chat_images_pick.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_images.yaml + chat_images_pick.yaml (Android paste/+); chat_page_test :: 'a picture pasted becomes a card and an [Image #N]'; desktop_smoke :: 'a picture dropped on a chat becomes a card'. Real keyboard Ctrl+V on tablet unproven (known) chat_page; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-s-task-checklist-under-the-working-line:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_tasks.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_tasks.yaml; chat_page_test :: 'lists what is open, bold in progress with ■ and pending...', 'past a few lines it counts the rest' chat_tasks.yaml (early tasks from store); chat_page_test :: 'lists the session's whole store under a header counting; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-right-click-on-a-session-in-chat:
+  guard: unit
+  by: test/chat_tab_group_test.dart
+  why: "covered on the user's word of 2026-11-27: chat_page_test :: 'a right-click on a session in the sidebar is not the tab's'; desktop_smoke :: 'a real right-click on a chat session is not the tab's' (Linux, macOS; Windows unproven) desktop_smoke :: 'a chat tab groups with its shell from a right-click'; te; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-pinned-session-shows-live-in-chat-s:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_status_waiting.yaml, .maestro/chat_status_working.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_status_working, _waiting, _done.yaml; chat_page_test :: 'each state has its own icon: working spins, waiting asks...' chat_status_waiting.yaml (list re-asked every 5 s after stand-in listing changes); chat_page_test status tests chat_status_worki; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-shows-that-claude-is-working-as-the:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_progress.yaml
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_progress.yaml; chat_page_test :: 'ticks its seconds here, counts tokens, names the tool'; desktop_smoke :: 'a watched turn shows its progress' desktop_smoke :: 'a watched turn shows its progress, and a hidden chat still follows it'; chat_progress; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+typing-in-chat-lists-claude-code-s-commands:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_slash.yaml, test/slash_commands_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_slash.yaml; chat_page_test :: 'a / lists the host's commands, and one that opens a dialog...'; test/slash_commands_test.dart chat_slash.yaml; slash_commands_test; chat_page_test chat_page_test :: 'not while the list of commands is open: Enter pic; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+every-code-box-in-a-chat-session-has:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_code_copy.yaml, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: desktop_smoke_test :: 'code in a chat reply copies with the mouse and the keyboard' (not Windows); .maestro/chat_code_copy.yaml (Android); test/chat_page_test.dart; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+chat-s-input-box-styles-markdown-as-it:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_markdown.yaml, test/markdown_input_test.dart, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/markdown_input_test.dart; .maestro/chat_markdown.yaml; desktop_smoke_test :: 'the chat box takes typing, draws Markdown, and sends on Ctrl+Enter' (Linux) .maestro/chat_markdown.yaml (bubble mutation); desktop chat box test desktop chat box test (Linux xdo; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+text-size-settings-for-the-ui-and-for:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/text_size.yaml, .maestro/text_size_home.yaml, test/text_size_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/text_size.yaml, text_size_home.yaml; desktop_smoke_test :: 'the UI text size at its largest leaves Home, Settings and a terminal usable, the terminal at its own size'; test/text_size_test.dart test/text_size_test.dart; desktop_smoke_test :: 'chat draw; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+the-git-panel-switches-branch-and-worktree-not:
+  guard: unit
+  by: test/git_repo_test.dart, test/git_page_test.dart
+  why: "covered on the user's word of 2026-11-27: desktop_smoke_test :: 'the Git panel switches branch from its header, and the header follows'; test/git_repo_test.dart test/git_repo_test.dart / git_page_test.dart test/git_repo_test.dart (real git) test/git_page_test.dart / git_drawer_test.dart widget tests f; per docs/uat-sweep-2026-11-27.md"
+
+right-click-on-a-desktop-reaches-the-menus:
+  guard: unit
+  by: test/right_click_test.dart, test/hosts_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/right_click_test.dart; test/hosts_page_test.dart; per docs/uat-sweep-2026-11-27.md"
+
+the-soft-keyboard-going-away-uncovers-rows-rather:
+  guard: unit
+  by: test/keyboard_resize_test.dart
+  why: "covered on the user's word of 2026-11-27: test/keyboard_resize_test.dart (42 px band regression, single resize); real Gboard smoothness not measurable; per docs/uat-sweep-2026-11-27.md"
+
+right-click-inside-a-tab-opens-that-tab:
+  guard: unit
+  by: test/tab_menu_in_content_test.dart
+  why: "covered on the user's word of 2026-11-27: test/tab_menu_in_content_test.dart; desktop_smoke_test 'a right-click on a Local shell tab duplicates it' (Linux; Win/mac unrun) desktop_smoke_test right-click-over-program test test/tab_menu_in_content_test.dart test/tab_menu_in_content_test.dart (group case); per docs/uat-sweep-2026-11-27.md"
+
+what-sentry-caught-in-v1-0-79-is:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/port_forward_no_host.yaml, test/port_forwarding_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/port_forwarding_page_test.dart and the port_forward_no_host Maestro flow; per docs/uat-sweep-2026-11-27.md"
+
+the-desktop-s-local-shell-uses-tmux-by:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: integration_test/desktop_smoke_test.dart 'a Local shell runs in tmux where the machine has it'; per docs/uat-sweep-2026-11-27.md"
+
+copy-and-paste-on-a-desktop-keep-their:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: integration_test/desktop_smoke_test.dart 'a mouse selection copies what the line reads, a drawn gap as a space'; per docs/uat-sweep-2026-11-27.md"
+
+on-a-desktop-the-terminal-can-use-any:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart, test/system_fonts_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: test/system_fonts_test.dart and the installed-fonts desktop e2e in integration_test/desktop_smoke_test.dart; per docs/uat-sweep-2026-11-27.md"
+
+on-a-desktop-a-right-click-opens-whatever:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: integration_test/desktop_smoke_test.dart 'a right-click in a terminal opens its menu, even over a program that …' and 'a real right-click on a tab opens its menu'; per docs/uat-sweep-2026-11-27.md"
+
+selecting-text-in-a-desktop-terminal-copies-it:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: integration_test/desktop_smoke_test.dart 'a mouse selection copies what the line reads, a drawn gap as a space'; per docs/uat-sweep-2026-11-27.md"
+
+duplicate-session-on-a-desktop-local-shell-or:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: integration_test/desktop_smoke_test.dart 'a right-click on a Local shell tab duplicates it'; per docs/uat-sweep-2026-11-27.md"
+
+the-files-drawer-remembers-whether-it-shows-dotfiles:
+  guard: unit
+  by: test/file_browser_page_test.dart
+  why: "covered on the user's word of 2026-11-27: the dotfiles Maestro flow and test/file_browser_page_test.dart; per docs/uat-sweep-2026-11-27.md"
+
+chat-mode-s-tool-rows-show-a-tool:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_tool_rows.yaml
+  why: "covered on the user's word of 2026-11-27: the chat_tool_rows Maestro flow; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+a-tap-on-a-host-card-reconnects-the:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/card_tap_reconnect.yaml, test/relaunch_tap_test.dart
+  why: "covered on the user's word of 2026-11-27: the card_tap_reconnect Maestro flow and test/relaunch_tap_test.dart; per docs/uat-sweep-2026-11-27.md"
+
+telemetry-that-counts-who-runs-the-app-catches:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/bug_button.yaml, test/onboarding_test.dart, test/telemetry_test.dart
+  why: "covered on the user's word of 2026-11-27: test/onboarding_test.dart :: 'the first run's word about telemetry waits until the slides are done' (notice 'Jeansh reports crashes' appears); test/telemetry_test.dart :: 'the first-run notice is claimed exactly once'. The Settings button on the toast is not c; per docs/uat-sweep-2026-11-27.md"
+
+a-diff-opens-in-a-file-tab-rather:
+  guard: unit
+  by: test/git_diff_tab_test.dart, test/git_diff_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/git_diff_tab_test.dart :: 'a change tapped in the panel opens its diff in a tab...' (title 'main.dart · diff', no 'Save to host'), 'a commit tapped in History opens its diff too'; test/git_diff_page_test.dart (+/- rows); Linux e2e in desktop_smoke_test.da; per docs/uat-sweep-2026-11-27.md"
+
+an-auto-updater-for-the-desktop-builds-the:
+  guard: unit
+  by: test/updater_test.dart, test/update_menu_test.dart, test/update_background_test.dart
+  why: "covered on the user's word of 2026-11-27: test/updater_test.dart :: 'a build with no update host says so in Settings' (no host case) and offered/download/SHA-256 tests; test/update_menu_test.dart, test/update_background_test.dart; desktop_smoke_test.dart (Linux only, up to the swap). Windows/macOS e2e; per docs/uat-sweep-2026-11-27.md"
+
+mongodb-s-query-split-the-way-mongo-compass:
+  guard: unit
+  by: test/db_mongo_query_test.dart, test/db_session_live_test.dart
+  why: "covered on the user's word of 2026-11-27: test/db_mongo_query_test.dart :: 'a collection tapped fills Find, and Run sends it', 'a pipeline is built stage by stage and run', 'an aggregate's rows cannot be edited, and the grid says so' (read-only tooltip; lock icon itself via the tooltip); live Mongo in; per docs/uat-sweep-2026-11-27.md"
+
+chat-reaches-a-whole-transcript-and-says-an:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_two_way.yaml, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/chat_page_test.dart ~L2787 asserts the box disabled and 'Read-only: 'dev-e0' cannot be typed into from here' for a session not in a tmux pane; the step's exact text 'Read-only: type into ... at its terminal' is superseded (chat now types into a tmux pane;; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+the-chat-comes-back-where-it-was-left:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_scroll.yaml, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_scroll.yaml (Android e2e, topmost answer before/after); test/chat_page_test.dart twoSessions scroll-restore tests (~L2979-3130); per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+the-database-browser-s-filter-is-its-own:
+  guard: unit
+  by: test/db_object_list_test.dart, test/db_session_live_test.dart
+  why: "covered on the user's word of 2026-11-27: test/db_object_list_test.dart :: 'SQL view: a chip for each kind...', 'NoSQL view: database.collection narrows...', 'KV view: a glob pattern matches keys as SCAN MATCH does', 'KV view: each key shows its type, and a type chip narrows'; test/db_session_live_tes; per docs/uat-sweep-2026-11-27.md"
+
+the-chat-button-checks-the-host-s-claude:
+  guard: e2e-android
+  by: tools/e2e_android.sh, .maestro/chat_version.yaml, test/chat_page_test.dart
+  why: "covered on the user's word of 2026-11-27: .maestro/chat_version.yaml (stand-in claude answering 2.1.100, no-version and none, toast asserted; Android e2e, run in tools/e2e_android.sh, gating flow) plus widget tests in test/chat_page_test.dart; per docs/uat-sweep-2026-11-27.md (stand-in claude, not the real CLI)"
+
+the-terminal-s-upload-button-takes-several-files:
+  guard: unit
+  by: test/terminal_page_test.dart
+  why: "covered on the user's word of 2026-11-27: test/terminal_page_test.dart :: 'the upload button takes several files, and types every path in the order they were picked' (Android variant, fake picker); real Android file picker not exercised; per docs/uat-sweep-2026-11-27.md"
+
+the-file-editor-saves-with-s-on-a:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: 'editor save' tests with real keys: ⌘S/Ctrl+S in the text, the find bar and a toolbar button (Linux and macOS); per docs/uat-sweep-2026-11-27.md"
+
+cmd-on-a-mac-and-ctrl-on-linux:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: Ctrl+, opens Settings and a second press returns, real keys on Linux; the macOS Swift menu path is unproven; per docs/uat-sweep-2026-11-27.md"
+
+a-tap-on-a-tmux-pane-checks-its:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart, .maestro/tmux_mouse_before.yaml, .maestro/tmux_mouse_after.yaml
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: the six tmux resync tests on Linux with real X input; Android tmux_mouse flows; per docs/uat-sweep-2026-11-27.md"
+
+chat-s-sessions-sidebar-collapses-to-an-icon:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart, test/chat_page_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: chat's sidebar collapses to a rail of icons, in order, and back (Linux); chat_page_test rail and state-icon tests; per docs/uat-sweep-2026-11-27.md"
+
+a-file-dropped-into-a-chat-goes-in:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart, test/chat_page_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: a file dropped on a Local shell chat goes in as its path; on an SSH host it is uploaded and a folder refused (Linux real X drag); chat_page_test drop tests; per docs/uat-sweep-2026-11-27.md"
+
+chat-s-tool-rows-read-as-words-and:
+  guard: e2e-desktop
+  by: integration_test/desktop_smoke_test.dart, test/chat_page_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: tool rows have readable titles and open as a tree; chat_page_test title, tree-node and show-more tests; per docs/uat-sweep-2026-11-27.md"
+
+typing-or-pasting-anywhere-in-a-chat-tab:
+  guard: e2e-desktop
+  by: test/chat_page_test.dart, integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: chat_page_test letter, paste and picture-paste with the box unfocused; the desktop chat-box typing test; per docs/uat-sweep-2026-11-27.md"
+
+chat-in-a-desktop-local-shell-no-longer:
+  guard: e2e-desktop
+  by: test/claude_chat_test.dart, integration_test/desktop_smoke_test.dart
+  platforms: linux
+  why: "covered on the user's word of 2026-11-27: 'a chat closed mid-call opens nothing more' on a fake transport; the desktop Local-shell chat test; per docs/uat-sweep-2026-11-27.md"
