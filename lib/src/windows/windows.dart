@@ -512,7 +512,7 @@ class WindowSet extends ChangeNotifier {
   }
 
   Future<void> _save() => registry.save([
-    for (final window in _windows.values)
+    for (final window in _windows.values.take(1))
       (key: window.key, frame: window.frame),
   ]);
 
