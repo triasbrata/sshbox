@@ -1302,6 +1302,26 @@ class Buffer {
     return _marginLeft == 0 && _marginRight == viewWidth - 1;
   }
 
+  /// Whether scrollback is packed at all. Off only so a test can hold a
+  /// terminal that is not to compare another against.
+  static bool compactionEnabled = true;
+
+  /// Packs the lines that have left the viewport, newest first, stopping at
+  /// the first one already packed (or, with [all], going through every one),
+  /// so a long scrollback takes a twentieth of the memory it would. See
+  /// [BufferLine.pack].
+  void compactScrollback({bool all = false}) {
+    if (isAltBuffer || !compactionEnabled) return;
+    for (var i = lines.length - viewHeight - 1; i >= 0; i--) {
+      final line = lines[i];
+      if (line.isPacked) {
+        if (all) continue;
+        break;
+      }
+      line.pack();
+    }
+  }
+
   /// Remove all lines above the top of the viewport.
   void clearScrollback() {
     if (height <= viewHeight) {
@@ -1595,6 +1615,8 @@ class Buffer {
         lines.forEach((item) => item.resize(newWidth));
         _cursorX = _cursorX.clamp(0, newWidth - 1);
       }
+      // A reflow makes every line new.
+      compactScrollback(all: true);
     }
 
     _cursorX = _cursorX.clamp(0, newWidth - 1);
