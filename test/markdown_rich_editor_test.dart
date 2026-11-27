@@ -736,6 +736,43 @@ void main() {
     semanticsEnabled: false,
   );
 
+  // The caret's line is held from the row the caret is on; where the caret
+  // is past the last character that row has no place, and the start of its
+  // line stands in; where that has none either, the line's block does and,
+  // with nothing placeable, nothing is held and nothing throws.
+  for (final tail in ['', '\n']) {
+    testWidgets('a caret moved to the end of a text ending '
+        '${tail.isEmpty ? 'in a word' : 'in a line break'} holds what it can '
+        'and leaves the page where it is', (tester) async {
+      final text =
+          '${[for (var k = 0; k < 40; k++) 'Paragraph $k.'].join('\n\n')}'
+          '$tail';
+      await _pump(tester, text, size: const Size(320, 180));
+      final controller = _controller(tester);
+      final scroll = tester
+          .state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byType(EditableText),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          )
+          .position;
+      controller.selection = const TextSelection.collapsed(offset: 0);
+      await tester.pumpAndSettle();
+      final top = scroll.pixels;
+      controller.selection = TextSelection.collapsed(offset: text.length);
+      await tester.pumpAndSettle();
+      expect(controller.selection.baseOffset, text.length);
+      expect(tester.takeException(), isNull);
+      // The caret is brought into view by the field itself, at the end;
+      // the hold has nothing to measure and moves it no further.
+      expect(scroll.pixels, greaterThanOrEqualTo(top));
+      expect(scroll.pixels, lessThanOrEqualTo(scroll.maxScrollExtent));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  }
+
   testWidgets('on a phone, a tap on a paragraph drawn apart below a fence '
       'shown as source, the page swiped, stays under the finger', (
     tester,
