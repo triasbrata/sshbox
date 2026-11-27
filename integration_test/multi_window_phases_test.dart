@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
 import 'package:xterm2/xterm.dart' show TerminalKey, TerminalView;
 import 'package:sshbox/src/ui/termul/tui_button.dart' show TuiButton;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
@@ -462,6 +463,20 @@ Future<void> _last(WidgetTester tester) async {
     Future<bool>.delayed(const Duration(seconds: 8), () => false),
   ]);
   _trace('a frame after the first window closed: $frame');
+  _trace(
+    'framesEnabled ${WidgetsBinding.instance.framesEnabled}, lifecycle '
+    '${WidgetsBinding.instance.lifecycleState}',
+  );
+  for (final line in appLog.current
+      .split('\n')
+      .where((l) => l.contains('lifecycle'))
+      .toList()
+      .reversed
+      .take(8)
+      .toList()
+      .reversed) {
+    _trace('app log: $line');
+  }
   if (!frame) {
     // No frame: is the window dead to input too, or only the test's frames
     // gone? A click in its middle (the shell's tab fills it) and a command
