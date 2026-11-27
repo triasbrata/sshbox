@@ -4794,10 +4794,11 @@ touch '${done.path}'
       final views = _mwViews();
       final a = views[0];
       final b = views[1];
-      double home(int view) =>
-          (_mwIn(find.text('Home'), view).first.renderObject! as RenderBox)
-              .size
-              .height;
+      // What 100 px of text comes to in that window: its text scaler, which
+      // is what the UI text size sets, read where the tab strip's text is.
+      double home(int view) => MediaQuery.textScalerOf(
+        _mwIn(find.text('Home'), view).first,
+      ).scale(100);
       await _until(
         tester,
         () => _mwIn(find.text('Home'), a).isNotEmpty &&
@@ -4807,7 +4808,7 @@ touch '${done.path}'
       final a0 = home(a);
       final b0 = home(b);
       final tabsB = _mwTexts(b);
-      debugPrint('multi-window: Home is $a0 and $b0 tall, B reads $tabsB');
+      debugPrint('multi-window: 100 px of text is $a0 in A and $b0 in B, B reads $tabsB');
 
       await _xdo(['windowfocus', '--sync', ids[0]]);
       await _xdo(['key', 'ctrl+equal']);
