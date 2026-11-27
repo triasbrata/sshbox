@@ -1092,7 +1092,6 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
       if (!mounted || precise > _text.text.length) return;
       final sel = _text.selection;
       // The field did not take the tap: a button in a block did.
-      if (sel == atDown) return;
       if (sel.isValid && sel.isCollapsed && sel.baseOffset != precise) {
         _text.selection = TextSelection.collapsed(offset: precise);
       }
