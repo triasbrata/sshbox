@@ -674,13 +674,9 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     // field's scroll.
     double? place(RenderEditable e, int k) {
       if (k >= _text.text.length) return null;
-      final boxes = e.getBoxesForSelection(
-        TextSelection(baseOffset: k, extentOffset: k + 1),
-      );
-      // A hidden character is drawn a hundredth of a pixel high.
-      if (boxes.isNotEmpty && boxes.first.toRect().height > 2) {
-        return e.localToGlobal(Offset(0, boxes.first.top)).dy;
-      }
+      // A section drawn apart first: the field's own box for a character
+      // under it is the whole line the section stands in when the text
+      // after it is blank, a tall box that is not where the text is drawn.
       for (final views in [..._sections.values, ..._sectionsNext.values]) {
         for (final v in views) {
           final start = v.handle.start;
@@ -695,6 +691,13 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           return para.localToGlobal(Offset(0, drawn.first.top)).dy -
               _scroll.offset;
         }
+      }
+      final boxes = e.getBoxesForSelection(
+        TextSelection(baseOffset: k, extentOffset: k + 1),
+      );
+      // A hidden character is drawn a hundredth of a pixel high.
+      if (boxes.isNotEmpty && boxes.first.toRect().height > 2) {
+        return e.localToGlobal(Offset(0, boxes.first.top)).dy;
       }
       return null;
     }
