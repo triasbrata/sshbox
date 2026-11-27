@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../telemetry/app_log.dart';
 import 'right_click.dart';
 import 'text_size.dart';
 import 'tui.dart';
@@ -108,11 +109,16 @@ Future<void> watchTitleBar() async {
 Object? windowArguments(Object? arguments, int viewId) =>
     viewId == 0 ? arguments : {'view': viewId, 'arguments': arguments};
 
-void _ask(String method, [Object? arguments, int viewId = 0]) => unawaited(
-  _window
-      .invokeMethod<void>(method, windowArguments(arguments, viewId))
-      .catchError((_) {}),
-);
+void _ask(String method, [Object? arguments, int viewId = 0]) {
+  // What a window's own buttons ask, in the app log, for a button that seems
+  // to do nothing.
+  if (method == 'close') appLog.add('win: close button of view $viewId');
+  unawaited(
+    _window
+        .invokeMethod<void>(method, windowArguments(arguments, viewId))
+        .catchError((_) {}),
+  );
+}
 
 /// The last press that moved the window, for telling a double-click.
 ({Duration at, Offset where})? _lastPress;
