@@ -53,6 +53,11 @@ final _keybdEvent = _user32
       Void Function(Uint8, Uint8, Uint32, UintPtr),
       void Function(int, int, int, int)
     >('keybd_event');
+final _getCursorPos = _user32
+    .lookupFunction<
+      Int32 Function(Pointer<Int32>),
+      int Function(Pointer<Int32>)
+    >('GetCursorPos');
 final _getForegroundWindow = _user32
     .lookupFunction<IntPtr Function(), int Function()>('GetForegroundWindow');
 final _mapVirtualKey = _user32
@@ -169,5 +174,16 @@ void winKey(String chord) {
   }
   for (final code in codes.reversed) {
     _keybdEvent(code, _mapVirtualKey(code, 0), 2, 0);
+  }
+}
+
+/// Where the pointer is, in screen pixels.
+String winCursor() {
+  final p = calloc<Int32>(2);
+  try {
+    _getCursorPos(p);
+    return '${p[0]},${p[1]}';
+  } finally {
+    calloc.free(p);
   }
 }

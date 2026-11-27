@@ -19,6 +19,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show PlatformDispatcher;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -207,6 +208,15 @@ Future<void> _click(
   final box = target.renderObject! as RenderBox;
   final at = box.localToGlobal(box.size.center(Offset.zero));
   binding.shouldPropagateDevicePointerEvents = true;
+  final seen = <String>[];
+  void heard(PointerEvent e) {
+    if (e is PointerDownEvent || e is PointerUpEvent) {
+      seen.add('${e.runtimeType} view ${e.viewId} at ${e.position}');
+    }
+  }
+  if (Platform.isWindows) {
+    GestureBinding.instance.pointerRouter.addGlobalRoute(heard);
+  }
   try {
     await _xdo(['windowfocus', xid]);
     await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -222,8 +232,18 @@ Future<void> _click(
       '$button',
     ]);
     await tester.pump(const Duration(milliseconds: 400));
+    if (Platform.isWindows) {
+      _trace(
+        'click: aimed at ${at.dx.round()},${at.dy.round()} in view $viewId of '
+        'window $xid (${winRect(xid)}, ratio $ratio), the pointer is at '
+        '${winCursor()}; the app saw $seen',
+      );
+    }
   } finally {
     binding.shouldPropagateDevicePointerEvents = false;
+    if (Platform.isWindows) {
+      GestureBinding.instance.pointerRouter.removeGlobalRoute(heard);
+    }
   }
 }
 
@@ -1267,6 +1287,15 @@ Future<void> _drop(WidgetTester tester) async {
     '$strayed',
   );
 
+  // A real pointer crossing from one window to another can trip a debug
+  // assertion of the framework's mouse tracker (added and removed events out
+  // of turn between views). Said, not hidden, and the drops judged on their
+  // own.
+  final raised = tester.takeException();
+  if (raised != null) {
+    _trace('drop: the framework raised during the drags: '
+        '${'$raised'.split('\n').first}');
+  }
   expect(alone, isTrue, reason: 'a drop on the first window alone failed');
   expect(first, isTrue, reason: 'a drop on the first window, a second open, failed');
   expect(second, isTrue, reason: 'a drop on the second window did not reach its shell');
