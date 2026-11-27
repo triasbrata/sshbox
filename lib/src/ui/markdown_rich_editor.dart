@@ -585,8 +585,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     _was = _text.value;
     final tapped = _tapped;
     if (tapped != null &&
-        was.text == _text.text &&
-        _text.selection != _selectionAtDown) {
+        was.text == _text.text) {
       _tapped = null;
       final sel = _text.selection;
       if (sel.isValid && sel.isCollapsed && sel.baseOffset != tapped) {
@@ -599,8 +598,7 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     // A caret moved, not a range dragged out: a drag's selection changes the
     // page as it grows, and the finger holding it is the reader's own.
     if (was.text == _text.text &&
-        was.selection != _text.selection &&
-        _text.selection.isCollapsed) {
+        was.selection != _text.selection) {
       _holdLine(_text.selection);
     }
     final text = _text.text;
