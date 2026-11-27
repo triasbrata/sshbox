@@ -165,7 +165,10 @@ const _settleStep = Duration(milliseconds: 100);
 /// A generous settle: this is a real app doing real work at launch — reading
 /// preferences off disk, asking the keychain, starting notifications — not a
 /// widget tree pumped in memory.
-Future<void> _launch(WidgetTester tester) async {
+Future<void> _launch(WidgetTester tester) =>
+    _timed('launch', () => _launchTimed(tester));
+
+Future<void> _launchTimed(WidgetTester tester) async {
   await app.main();
   // A fresh install opens on the redesign's first-run slides, which animate,
   // so nothing settles until they are skipped; main has none and opens on
@@ -186,6 +189,13 @@ Future<void> _launch(WidgetTester tester) async {
 /// terminal never settles — its cursor blinks — so pumpAndSettle cannot wait
 /// on one.
 Future<void> _until(
+  WidgetTester tester,
+  FutureOr<bool> Function() done,
+  String what, {
+  Duration timeout = const Duration(seconds: 20),
+}) => _timed('until', () => _untilTimed(tester, done, what, timeout: timeout));
+
+Future<void> _untilTimed(
   WidgetTester tester,
   FutureOr<bool> Function() done,
   String what, {
@@ -676,7 +686,33 @@ void _test(String name, WidgetTesterCallback body, {String? skip}) {
   if (skip != null) {
     debugPrint('Skipped on ${Platform.operatingSystem}: $name: $skip');
   }
-  testWidgets(name, body, skip: skip != null);
+  testWidgets(name, (tester) async {
+    _spent.clear();
+    final watch = Stopwatch()..start();
+    try {
+      await body(tester);
+    } finally {
+      debugPrint(
+        'time: ${(watch.elapsedMilliseconds / 1000).toStringAsFixed(1)}s '
+        '${_spent.entries.map((e) => '${e.key} ${(e.value / 1000).toStringAsFixed(1)}s').join(', ')}'
+        ' | $name',
+      );
+    }
+  }, skip: skip != null);
+}
+
+/// Where a test's time went, by step, printed after it as `time:`: a Linux
+/// run of the whole file had passed its 32 minutes, and the log said only
+/// when each test ended.
+final _spent = <String, int>{};
+
+Future<T> _timed<T>(String step, Future<T> Function() body) async {
+  final watch = Stopwatch()..start();
+  try {
+    return await body();
+  } finally {
+    _spent[step] = (_spent[step] ?? 0) + watch.elapsedMilliseconds;
+  }
 }
 
 const _powershell =
@@ -4846,7 +4882,7 @@ touch '${done.path}'
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       expect(find.byTooltip('Expand the sessions'), findsNothing);
       expect(_collapse, findsNothing);
       // No sessions button in the composer: the ⋮ menu's item opens the
@@ -4858,7 +4894,7 @@ touch '${done.path}'
       await tester.tap(find.byTooltip('Chat settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Sessions on this host').last);
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       expect(list, findsOneWidget);
       // A drawer has no «, folding being a wide window's.
       expect(_collapse, findsNothing);
@@ -4866,7 +4902,7 @@ touch '${done.path}'
       await tester.pumpAndSettle();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
-      await tester.pumpAndSettle(const Duration(seconds: 2));
+      await tester.pumpAndSettle(_settleStep);
       await _closeTabs(tester);
     },
   );
