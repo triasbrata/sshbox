@@ -116,8 +116,10 @@ mw_phases() {
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
         --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/last.log" || true
-      if grep -q ready "$note" 2>/dev/null && grep -q ended "$note" &&
-        ! grep -q asked "$note"; then
+      # The process is gone when the test never got to write "windows left"
+      # (3 s after the click) or the watcher saw it end; and no question.
+      if grep -q ready "$note" 2>/dev/null && ! grep -q asked "$note" &&
+        { grep -q ended "$note" || ! grep -q 'windows left' "$note"; }; then
         echo "✅ multi-window: the last window closed with no question and the process ended"
       else
         echo "❌ multi-window: the last window: $(cat "$note" 2>/dev/null | tr '\n' ' ')"

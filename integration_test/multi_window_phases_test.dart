@@ -941,6 +941,9 @@ Future<void> _t2(WidgetTester tester) async {
   // Negative: B's tabs and rows are the same ones.
   expect(texts(b), tabsB, reason: 'B\'s tabs or rows changed');
   await uiTextSize.choose(1);
+  await tester.pump(const Duration(seconds: 1));
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await tester.pump(const Duration(milliseconds: 500));
   await _closeSecond(tester);
 }
 
@@ -953,21 +956,22 @@ Future<void> _t3(WidgetTester tester) async {
   final a = views[0];
   final b = views[1];
   await _first(tester, _card, b, 'B\'s card');
-  expect(_in(find.text('Local shell'), a), hasLength(1));
-  expect(_in(find.text('Local shell'), b), hasLength(1));
+  expect(_in(_tabClose, a), isEmpty);
+  expect(_in(_tabClose, b), isEmpty);
   await _click(tester, ids[0], a, await _first(tester, _card, a, 'A\'s card'));
   await _until(
     tester,
-    () => _in(find.text('Local shell'), a).length >= 2,
-    'a Local shell tab beside the card in A',
+    () => _in(_tabClose, a).length == 1,
+    'a Local shell tab in A',
     timeout: const Duration(seconds: 30),
   );
   await tester.pump(const Duration(seconds: 2));
-  final inA = _in(find.text('Local shell'), a).length;
-  final inB = _in(find.text('Local shell'), b).length;
-  _trace('t3: "Local shell" is drawn $inA times in A and $inB in B');
+  _trace(
+    't3: A has ${_in(_tabClose, a).length} tab, B has '
+    '${_in(_tabClose, b).length}, B\'s Home lists the host '
+    '${_in(_card, b).length} time',
+  );
   // Negative: B shows no tab of it, and its Home still lists the host.
-  expect(inB, 1, reason: 'B shows A\'s tab');
   expect(_in(_card, b), hasLength(1));
   expect(_in(_tabClose, b), isEmpty, reason: 'B has a tab');
   // Back to nothing: A's tab closed, then the second window.
