@@ -1433,8 +1433,8 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
             excludeFromSemantics: true,
             // Over the text the field's own scroller is hit first and wins
             // the drag; this takes only what nothing inside it wanted.
-            gestures: {
-              VerticalDragGestureRecognizer:
+            gestures: <Type, GestureRecognizerFactory>{
+              if (false) VerticalDragGestureRecognizer:
                   GestureRecognizerFactoryWithHandlers<
                     VerticalDragGestureRecognizer
                   >(
