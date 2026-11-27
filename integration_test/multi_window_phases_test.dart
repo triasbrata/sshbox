@@ -265,6 +265,8 @@ Future<void> _runPhase(WidgetTester tester) async {
       await _bisect(tester);
     case 'churn':
       await _churn(tester);
+    case 'drop':
+      await _drop(tester);
     case 'last':
       await _last(tester);
     default:
@@ -1040,4 +1042,104 @@ Future<void> _t4(WidgetTester tester) async {
   await _windowsAre(tester, 1);
   expect(_in(find.text('Home'), a), isNotEmpty, reason: 'A is gone too');
   _trace('t4: Close window closed B alone');
+}
+
+/// A GTK window offering a file for a drag, as a file manager does, below the
+/// two windows (which sit in the display's top 500 rows).
+const _dragSource = r'''
+import sys
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gdk, Gio, Gtk
+
+uris = [Gio.File.new_for_path(p).get_uri() for p in sys.argv[1:]]
+window = Gtk.Window(title='e2e drag source')
+window.set_default_size(200, 100)
+window.move(0, 760)
+button = Gtk.Button(label='drag')
+button.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [], Gdk.DragAction.COPY)
+button.drag_source_add_uri_targets()
+button.connect('drag-data-get', lambda w, c, data, i, t: data.set_uris(uris))
+window.add(button)
+window.connect('destroy', Gtk.main_quit)
+window.show_all()
+Gtk.main()
+''';
+
+String _shellText(TerminalView view) {
+  final lines = view.terminal.buffer.lines;
+  return [for (var i = 0; i < lines.length; i++) lines[i].getText()].join('\n');
+}
+
+/// A file dropped on the second window lands in that window's tab, the shell
+/// there being handed its path, and the first window's tab gets nothing.
+Future<void> _drop(WidgetTester tester) async {
+  var ids = await _windowsAre(tester, 1);
+  final a0 = _views().single;
+  await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'A\'s card'));
+  await _until(tester, () => _in(_tabClose, a0).length == 1, 'A\'s shell tab');
+  await _newWindow(tester, ids[0], 2);
+  ids = await _windows();
+  final views = _views();
+  final a = views[0];
+  final b = views[1];
+  await _click(tester, ids[1], b, await _first(tester, _card, b, 'B\'s card'));
+  await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
+  TerminalView shellIn(int view) =>
+      _in(find.byType(TerminalView), view).first.widget as TerminalView;
+  await _until(
+    tester,
+    () =>
+        _in(find.byType(TerminalView), a).isNotEmpty &&
+        _in(find.byType(TerminalView), b).isNotEmpty &&
+        _drew(shellIn(a)) &&
+        _drew(shellIn(b)),
+    'both shells to draw their prompts',
+  );
+  final dir = Directory.systemTemp.createTempSync('jeansh-e2e-drop-');
+  final file = File('${dir.path}/dropped-on-the-second.txt')
+    ..writeAsStringSync('x');
+  final source = File('${dir.path}/drag_source.py')
+    ..writeAsStringSync(_dragSource);
+  final process = await Process.start('python3', [source.path, file.path]);
+  try {
+    await _xdo(['search', '--sync', '--onlyvisible', '--name', r'^e2e drag source$']);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    final r = (await _rect(ids[1])).split(' ').map(int.parse).toList();
+    final cx = r[0] + r[2] ~/ 2;
+    final cy = r[1] + r[3] ~/ 2;
+    await _xdo(['mousemove', '100', '810']);
+    await _xdo(['mousedown', '1']);
+    for (final (x, y) in [
+      (110, 805),
+      (130, 790),
+      (300, 650),
+      (cx - 200, cy + 150),
+      (cx - 5, cy - 5),
+      (cx, cy),
+      (cx + 5, cy + 5),
+    ]) {
+      await _xdo(['mousemove', '$x', '$y']);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await tester.pump();
+    }
+    await _xdo(['mouseup', '1']);
+    await tester.pump(const Duration(milliseconds: 500));
+  } finally {
+    process.kill();
+  }
+  final name = 'dropped-on-the-second.txt';
+  await _until(
+    tester,
+    () => _shellText(shellIn(b)).contains(name),
+    'the second window\'s shell to be handed the dropped path',
+  );
+  await tester.pump(const Duration(seconds: 1));
+  _trace('drop: the second window\'s shell got the path');
+  expect(
+    _shellText(shellIn(a)).contains(name),
+    isFalse,
+    reason: 'the first window\'s shell was handed a file dropped on the second',
+  );
+  _trace('drop: the first window\'s shell got nothing');
 }

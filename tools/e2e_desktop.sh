@@ -110,7 +110,7 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn last}; do
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 drop save restore buttons churn last}; do
     echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
@@ -159,7 +159,7 @@ mw_phases() {
       # The first four checks are independent: a data folder each, so one
       # that fails leaves no window behind for the next.
       case "$phase" in
-        t[1-4]) home=$(mktemp -d) ;;
+        t[1-4] | drop) home=$(mktemp -d) ;;
         *) home=$data ;;
       esac
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
