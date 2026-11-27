@@ -4573,13 +4573,19 @@ touch '${done.path}'
       await _catPacked(tester, view, _packedFile(count, ''), count);
       view = await _reattach(tester, view);
       final terminal = view.terminal;
-      await _until(
-        tester,
-        () => _rowOfLine(terminal, count - 1) >= 0,
-        'the capture to bring back the last line',
-      );
-      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
+      // The tail only, so nothing old is read, and so unpacked, before the
+      // packed ones are counted.
+      final lastLine = RegExp('^line ${count - 1} ');
+      await _until(tester, () {
+        final lines = terminal.buffer.lines;
+        for (var i = lines.length - 1; i >= 0 && i > lines.length - 60; i--) {
+          if (lastLine.hasMatch(lines[i].getText())) return true;
+        }
+        return false;
+      }, 'the capture to bring back the last line');
+      await tester.pump(const Duration(seconds: 1));
       final packed = _packedCount(terminal);
+      final twin = _Twin(count, '', terminal.viewWidth, terminal.viewHeight);
       debugPrint(
         'packed scrollback: tmux fill $packed of '
         '${terminal.buffer.lines.length} lines packed',
