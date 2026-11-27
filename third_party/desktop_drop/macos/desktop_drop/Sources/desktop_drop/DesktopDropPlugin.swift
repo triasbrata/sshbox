@@ -93,10 +93,10 @@ public class DesktopDropPlugin: NSObject, FlutterPlugin {
 
 class DropTarget: NSView {
   private let channel: FlutterMethodChannel
-  private let viewId: Int
+  private let viewId: Int64
   private let itemsLock = NSLock()
 
-  init(frame frameRect: NSRect, channel: FlutterMethodChannel, viewId: Int) {
+  init(frame frameRect: NSRect, channel: FlutterMethodChannel, viewId: Int64) {
     self.channel = channel
     self.viewId = viewId
     super.init(frame: frameRect)

@@ -205,7 +205,7 @@ final class TitleBar {
       Self.first = self
       channel.setMethodCallHandler { call, result in Self.route(call, result) }
     }
-    Self.all[controller.viewIdentifier] = self
+    Self.all[Int(controller.viewIdentifier)] = self
 
     // Full screen hides the buttons with the title bar and gives their room
     // back: once it is there, and before it leaves, so on neither way does a
@@ -493,7 +493,9 @@ final class Windows {
   func didClose(_ id: Int) {
     guard let entry = entries.removeValue(forKey: id) else { return }
     allowed.remove(id)
-    if let view = entry.controller?.viewIdentifier { TitleBar.forget(viewIdentifier: view) }
+    if let view = entry.controller?.viewIdentifier {
+      TitleBar.forget(viewIdentifier: Int(view))
+    }
     entry.window.delegate = nil
     // Its view goes with it, and the engine stays for the others.
     entry.window.contentViewController = nil
