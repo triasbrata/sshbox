@@ -410,6 +410,13 @@ Future<void> _last(WidgetTester tester) async {
   _trace('step 12');
   await _windowsAre(tester, 1);
   _trace('step 13');
+  // Frames still come with the first window hidden? A pump waits for one.
+  WidgetsBinding.instance.scheduleFrame();
+  final frame = await Future.any([
+    WidgetsBinding.instance.endOfFrame.then((_) => true),
+    Future<bool>.delayed(const Duration(seconds: 8), () => false),
+  ]);
+  _trace('a frame after the first window closed: $frame');
   expect(await _windows(), [xb], reason: 'the wrong window is left');
   await _click(tester, xb, b, await _first(tester, _card, b, 'B\'s card'));
   _trace('step 14');
