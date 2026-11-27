@@ -472,11 +472,7 @@ Future<void> _last(WidgetTester tester) async {
   if (strict) expect(named, hasLength(1), reason: 'a window is left over: $named');
 
   // Frames come, and B's tab is in window 0, the same shell.
-  WidgetsBinding.instance.scheduleFrame();
-  final frame = await Future.any([
-    WidgetsBinding.instance.endOfFrame.then((_) => true),
-    Future<bool>.delayed(const Duration(seconds: 8), () => false),
-  ]);
+  final frame = await _pumps(tester);
   _trace('a frame after the first window closed: $frame');
   _trace(
     'views: ${[
@@ -533,6 +529,7 @@ Future<void> _last(WidgetTester tester) async {
     final shot1 = await _grabWindow(now, 'paint1');
     await _xdo(['type', '--delay', '30', 'echo JEANSH_PAINT_CHECK']);
     await _xdo(['key', 'Return']);
+    await _pumps(tester);
     await Future<void>.delayed(const Duration(seconds: 2));
     final shot2 = await _grabWindow(now, 'paint2');
     _trace(
@@ -738,17 +735,23 @@ Future<void> _bisect(WidgetTester tester) async {
   }
   // Counted with no pump, which may not come back.
   var windows = 99;
-  for (var i = 0; i < 200 && windows != 1; i++) {
+  var pumped = true;
+  for (var i = 0; i < 100 && windows != 1; i++) {
+    pumped = await _pumps(tester) && pumped;
     await Future<void>.delayed(const Duration(milliseconds: 100));
     windows = (await _windows()).length;
   }
-  WidgetsBinding.instance.scheduleFrame();
-  final frame = await Future.any([
-    WidgetsBinding.instance.endOfFrame.then((_) => true),
-    Future<bool>.delayed(const Duration(seconds: 8), () => false),
-  ]);
+  _trace('the pump came back throughout the close: $pumped');
+  final frame = await _pumps(tester);
   _trace(
     'bisect target=$target live=${live ? 1 : 0} how=$how windows=$windows '
     'frame=$frame',
   );
 }
+
+/// Whether the test's own pump comes back: the binding draws only when it
+/// is pumped, so this, and not a frame waited for, says whether frames work.
+Future<bool> _pumps(WidgetTester tester) => Future.any([
+  tester.pump(const Duration(milliseconds: 50)).then((_) => true),
+  Future<bool>.delayed(const Duration(seconds: 10), () => false),
+]);
