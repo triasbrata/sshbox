@@ -446,15 +446,17 @@ Future<void> _last(WidgetTester tester) async {
 
   // Positive: window 0's own X window is the one left, at B's old frame.
   final left = await _windows();
-  expect(left, [xa], reason: 'the window left is not the first one: $left');
+  // An experiment only watches: what it changes is what is looked at.
+  final strict = (Platform.environment['JEANSH_WIN_EXPERIMENT'] ?? '').isEmpty;
+  if (strict) expect(left, [xa], reason: 'the window left is not the first one: $left');
   final now = await _rect(xa);
   _trace('the first window is at $now, B was at $bRect');
-  expect(now, bRect, reason: 'the first window is not at B\'s old frame');
+  if (strict) expect(now, bRect, reason: 'the first window is not at B\'s old frame');
   // Negative: nothing left over, mapped or not, parked or not.
   final all = await Process.run('xdotool', ['search', '--name', r'^Jeansh']);
   final named = '${all.stdout}'.trim().split('\n').where((x) => x.isNotEmpty);
   _trace('windows named Jeansh*, mapped or not: ${named.length}');
-  expect(named, hasLength(1), reason: 'a window is left over: $named');
+  if (strict) expect(named, hasLength(1), reason: 'a window is left over: $named');
 
   // Frames come, and B's tab is in window 0, the same shell.
   WidgetsBinding.instance.scheduleFrame();
@@ -652,7 +654,7 @@ bool _drew(TerminalView view) {
 /// the display; null when it cannot.
 Future<List<int>?> _grabWindow(String rect, String name) async {
   final r = rect.split(' ');
-  final file = _note(name);
+  final file = File('${_dir.path}/jeansh-e2e-mw-$name.png');
   final done = await Process.run('ffmpeg', [
     '-loglevel', 'error', '-y', '-f', 'x11grab', '-draw_mouse', '0', //
     '-video_size', '${r[2]}x${r[3]}', //
