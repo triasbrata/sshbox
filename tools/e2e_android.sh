@@ -859,7 +859,10 @@ PY
   # stays on show: one pushed off the top is scrolled back by the field's
   # own caret, which held the line with no _holdLine at all when the tap
   # was near the top (run 41759255035).
-  local y1=$((h * 47 / 100)) y2=$((h * 40 / 100))
+  # 46%, not 47: the row at 47% is cut by the field's bottom edge (the page
+  # ends about 311 px down on the 640 px emulator), and the field scrolls a
+  # row that is cut into view by itself, 9 px, which is not the line jumping.
+  local y1=$((h * 46 / 100)) y2=$((h * 40 / 100))
   local lo=$((h * 28 / 100)) hi=$((h * 55 / 100))
   check 'the swipes scrolled the page' \
     [ "$(python3 tools/e2e_band_shift.py "$EVIDENCE/md-rich-caret-fence-tapped.raw" \
