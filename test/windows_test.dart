@@ -98,6 +98,32 @@ void main() {
       expect(WindowFrame.fromJson(frame.toJson()), frame);
     });
 
+    test('is equal to a frame of the same numbers, and to no other', () {
+      const frame = WindowFrame(x: 1, y: 2, width: 300, height: 400);
+      expect(frame, const WindowFrame(x: 1, y: 2, width: 300, height: 400));
+      expect(
+        frame.hashCode,
+        const WindowFrame(x: 1, y: 2, width: 300, height: 400).hashCode,
+      );
+      expect(
+        frame,
+        isNot(const WindowFrame(x: 9, y: 2, width: 300, height: 400)),
+      );
+      expect(
+        frame,
+        isNot(
+          const WindowFrame(
+            x: 1,
+            y: 2,
+            width: 300,
+            height: 400,
+            maximized: true,
+          ),
+        ),
+      );
+      expect(frame, isNot('not a frame'));
+    });
+
     test('is nothing for what is not a frame', () {
       expect(WindowFrame.fromJson(null), isNull);
       expect(WindowFrame.fromJson('x'), isNull);
