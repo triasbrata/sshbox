@@ -52,6 +52,9 @@ class _Runner implements WindowBackend {
 
   @override
   Future<void> activate(int id) async {}
+
+  @override
+  Future<void> place(int id, WindowFrame frame) async {}
 }
 
 /// A host that is up the moment it is asked for, or, with [signIn], held at a
@@ -229,7 +232,7 @@ void main() {
       await _settle(tester);
       await tester.tap(find.bySemanticsLabel('Close window'));
       await _settle(tester);
-      expect(runner.closed, [0]);
+      expect(runner.closed, [1]);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.linux),
   );
@@ -248,7 +251,7 @@ void main() {
     runner.say.add(const WindowCloseRequested(0));
     await _settle(tester);
     expect(find.text('Close this window?'), findsNothing);
-    expect(runner.closed, [0]);
+    expect(runner.closed, [1]);
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   testWidgets(
