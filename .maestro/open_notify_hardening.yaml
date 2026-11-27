@@ -1,0 +1,105 @@
+# jeansh notify and jeansh open on a host (tools/e2e_android.sh
+# open_notify_hardening), with the host's "Add the jeansh command to this
+# host" switch on. Terminal text is drawn, not in the accessibility tree, so
+# what each command printed and exited with is left in files in the login
+# home for the runner to read; the flow asserts what is on screen.
+#
+#   connect  connect, so the install runs, and stay on the terminal
+#   notify   jeansh notify down the connection: a stand-in curl ahead on PATH
+#            records whether the secret is among its arguments; then with a
+#            secret that is not base64url, which is not sent that way
+#   nonce    a jeansh open sequence written to a file, then shown with cat: it
+#            opens a file tab in this tab, and none in a second tab on the
+#            same host
+appId: cloud.brata.terminal
+env:
+  HOST_LABEL: "WSL via"
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 15000
+- tapOn: '(?s).*${HOST_LABEL}.*\n.*'
+- tapOn:
+    text: "Trust"
+    optional: true
+- extendedWaitUntil:
+    visible: "Upload a file to /tmp"
+    timeout: 30000
+- tapOn:
+    point: 50%, 40%
+- inputText: "export PATH=$HOME/jn-bin:$HOME/.local/bin:$PATH; cd ~/jeansh-e2e-open"
+- pressKey: Enter
+
+- runFlow:
+    when:
+      true: ${STEP == 'notify'}
+    commands:
+      - inputText: "env | grep -c -e ^LC_SSHBOX_NOTIFY_SECRET= -e ^LC_SSHBOX_NOTIFY_URL= >~/jn.has"
+      - pressKey: Enter
+      # Positive: down the connection, the secret not among curl's arguments.
+      - inputText: "jeansh notify E2E-direct from-the-e2e 2>~/jn1.err; echo $? >~/jn1.rc"
+      - pressKey: Enter
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      # Negative: a secret that is not base64url is not sent down it.
+      - inputText: "LC_SSHBOX_NOTIFY_SECRET=not.base64url jeansh notify E2E-bad x 2>~/jn2.err; echo $? >~/jn2.rc"
+      - pressKey: Enter
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - takeScreenshot: open-notify-notify
+
+- runFlow:
+    when:
+      true: ${STEP == 'nonce'}
+    commands:
+      # The sequence goes to a file instead of the terminal: nothing opens.
+      - inputText: "JEANSH_TTY=$HOME/jn.osc jeansh a.md 2>~/jn3.err; echo $? >~/jn3.rc"
+      - pressKey: Enter
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - assertNotVisible: "Save to host"
+      # Positive: shown in this tab, it opens the file once.
+      - inputText: "cat ~/jn.osc"
+      - pressKey: Enter
+      - extendedWaitUntil:
+          visible: "Save to host"
+          timeout: 20000
+      - takeScreenshot: open-notify-nonce-opened
+      - tapOn: "(?s)Close .*a\\.md.*"
+      - extendedWaitUntil:
+          notVisible: "Save to host"
+          timeout: 10000
+      # A second tab on the same host.
+      - longPressOn: "(?s)${HOST_LABEL}.*"
+      - tapOn: "Duplicate session"
+      - tapOn:
+          text: "Trust"
+          optional: true
+      - extendedWaitUntil:
+          visible: "Upload a file to /tmp"
+          timeout: 30000
+      - assertVisible:
+          text: "(?s)Close .*"
+          index: 1
+      # Negative: the same sequence shown there opens nothing.
+      - tapOn:
+          point: 50%, 40%
+      - inputText: "cat ~/jn.osc; echo ran >~/jn4.done"
+      - pressKey: Enter
+      - tapOn:
+          text: "never-shown-pause"
+          optional: true
+      - assertNotVisible: "Save to host"
+      - takeScreenshot: open-notify-nonce-second-tab
+      - tapOn: "(?s)Close .*"
+
+- tapOn: "(?s)Close .*"
+- extendedWaitUntil:
+    visible: '(?s).*${HOST_LABEL}.*\n.*'
+    timeout: 10000

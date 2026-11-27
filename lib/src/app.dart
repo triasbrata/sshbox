@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'session/open_command.dart' show writeOpenSecret;
+
+import 'session/open_command.dart' show localHome, writeOpenSecret;
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
@@ -47,7 +48,7 @@ void Function(String)? localOpenSecretWriter({
   bool? desktop,
   bool? windows,
 }) {
-  home ??= Platform.environment['HOME'];
+  home ??= localHome();
   if (!(desktop ?? isDesktop) ||
       (windows ?? Platform.isWindows) ||
       home == null ||

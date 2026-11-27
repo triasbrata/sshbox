@@ -266,6 +266,28 @@ bool dialogShows(List<String> lines, AskQuestion question) {
   return screen.contains('Entertoselect') && screen.contains(head);
 }
 
+/// Whether a session's screen, as [lines], still shows [ask]'s dialog while
+/// an answer is typed into it: one of its questions with the dialog's
+/// footer, as [dialogShows] reads them, or the review that comes last, which
+/// has no footer but lists the questions above its `Submit answers`.
+bool dialogStillShows(List<String> lines, ChatAsk ask) {
+  String bare(String text) => text.replaceAll(RegExp(r'\s+'), '');
+  final screen = bare(lines.join());
+  if (!screen.contains('Entertoselect') && !screen.contains('Submitanswers')) {
+    return false;
+  }
+  for (final question in ask.questions) {
+    final wanted = bare(question.question);
+    if (wanted.isEmpty) continue;
+    if (screen.contains(
+      wanted.length > 120 ? wanted.substring(0, 120) : wanted,
+    )) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// The keys that answer [ask] with [picks] in Claude Code's question dialog,
 /// as measured on 2.1.287 in a terminal (`tools/probe_ask_dialog.sh`); or
 /// null where they are not known, so nothing is typed.

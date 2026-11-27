@@ -890,8 +890,20 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   Timer? _press;
   Offset? _down;
 
+  /// A finger's drag over the page's margins, which scrolls it as a drag
+  /// over the text does: the gutters and the space above and below the text
+  /// lie outside the field's own scroller, so nothing else would take it.
+  Drag? _marginDrag;
+
+  void _marginDragStart(DragStartDetails details) {
+    if (!_scroll.hasClients) return;
+    _marginDrag = _scroll.position.drag(details, () => _marginDrag = null);
+  }
+
   void _onPointerDown(PointerDownEvent event) {
     _pointerDown = true;
+    _blockPress = false;
+    _selectionAtDown = _text.selection;
     _bar.value = null;
     final keys = HardwareKeyboard.instance;
     if (keys.isControlPressed || keys.isMetaPressed) {
@@ -928,9 +940,12 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
     // The press landed on a section drawn apart, which the field only knows
     // as one character: once the tap has put the caret there, it goes where
     // the press really was.
+    final atDown = _selectionAtDown;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       if (!mounted || precise > _text.text.length) return;
       final sel = _text.selection;
+      // The field did not take the tap: a button in a block did.
+      if (sel == atDown) return;
       if (sel.isValid && sel.isCollapsed && sel.baseOffset != precise) {
         _text.selection = TextSelection.collapsed(offset: precise);
       }
@@ -1050,9 +1065,23 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
   void _sectionDown(_SectionView view, int offset) {
     final start = view.handle.start;
     _precise = start + offset;
+    // A block that takes the pointer for itself, a diagram scrolled
+    // sideways or its button, is left where it is: drawn again as part of
+    // the field, it would be built anew under the finger, and the drag or
+    // the tap it had begun would be lost.
+    if (_blockPress) return;
     _text.pinned = {start};
     _text.restyle();
   }
+
+  /// A press that went down inside a code block or a table, which take the
+  /// pointer for themselves; set before [_sectionDown] hears of it, the
+  /// block being deeper, and cleared by [_onPointerDown], which hears last.
+  bool _blockPress = false;
+
+  /// The selection as a press went down, to tell after it whether the
+  /// field took the tap or something in a block did.
+  TextSelection? _selectionAtDown;
 
   /// [swap] drawn; [at] says where its source starts now, for a section
   /// drawn apart while the text before it changes.
@@ -1111,19 +1140,20 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
         height: line,
         child: Center(child: Container(height: 1, color: p.border)),
       ),
-      // A table scrolls sideways in the package's own scroller, and a code
-      // block keeps its copy button: neither takes a plain tap, which goes
+      // A table and a diagram scroll sideways in their own scrollers, and a
+      // code block keeps its copy button: none takes a plain tap, which goes
       // through to the text, puts the caret in the block and shows its
-      // source. A diagram is a web view, which would take every touch.
+      // source.
       MdSwapKind.table || MdSwapKind.fence || MdSwapKind.image => block(
         IgnorePointer(
-          ignoring:
-              swap.kind == MdSwapKind.image ||
-              RegExp(r'^ {0,3}(`{3,}|~{3,})\s*mermaid').hasMatch(source),
-          child: _Rendered(
-            key: ValueKey(source),
-            builder: widget.blockBuilder,
-            markdown: htmlImage(source) ?? source,
+          ignoring: swap.kind == MdSwapKind.image,
+          child: Listener(
+            onPointerDown: (_) => _blockPress = true,
+            child: _Rendered(
+              key: ValueKey(source),
+              builder: widget.blockBuilder,
+              markdown: htmlImage(source) ?? source,
+            ),
           ),
         ),
       ),
@@ -1245,64 +1275,90 @@ class _MarkdownRichEditorState extends State<MarkdownRichEditor> {
           },
           onPointerUp: (event) => _onPointerUp(event.position),
           onPointerCancel: (_) => _onPointerUp(Offset.infinite),
-          child: Stack(
-            key: _stackKey,
-            children: [
-              Positioned.fill(
-                child: Focus(
-                  canRequestFocus: false,
-                  skipTraversal: true,
-                  onKeyEvent: _onKey,
-                  child: Theme(
-                    data: theme.copyWith(
-                      textSelectionTheme: TextSelectionThemeData(
-                        selectionColor: p.selection,
-                        cursorColor: p.accent,
-                        selectionHandleColor: p.accent,
-                      ),
+          child: RawGestureDetector(
+            // A screen reader scrolls the field itself.
+            excludeFromSemantics: true,
+            // Over the text the field's own scroller is hit first and wins
+            // the drag; this takes only what nothing inside it wanted.
+            gestures: {
+              VerticalDragGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<
+                    VerticalDragGestureRecognizer
+                  >(
+                    () => VerticalDragGestureRecognizer(
+                      supportedDevices: const {
+                        PointerDeviceKind.touch,
+                        PointerDeviceKind.stylus,
+                        PointerDeviceKind.invertedStylus,
+                        PointerDeviceKind.unknown,
+                      },
                     ),
-                    child: field,
+                    (r) => r
+                      ..onStart = _marginDragStart
+                      ..onUpdate = ((d) => _marginDrag?.update(d))
+                      ..onEnd = ((d) => _marginDrag?.end(d))
+                      ..onCancel = (() => _marginDrag?.cancel()),
                   ),
-                ),
-              ),
-              // A checkbox node over each task box, for a screen reader. They
-              // take no pointer: a touch goes on to the box below.
-              Positioned.fill(
-                child: ValueListenableBuilder<List<_TaskNode>>(
-                  valueListenable: _taskNodes,
-                  builder: (context, nodes, _) => Stack(
-                    children: [
-                      for (final n in nodes)
-                        Positioned.fromRect(
-                          rect: n.rect,
-                          child: Semantics(
-                            container: true,
-                            checked: n.checked,
-                            label: n.label.isEmpty ? 'Task' : n.label,
-                            onTap: () => _toggleTask(n.start),
-                            child: const SizedBox.expand(),
-                          ),
+            },
+            child: Stack(
+              key: _stackKey,
+              children: [
+                Positioned.fill(
+                  child: Focus(
+                    canRequestFocus: false,
+                    skipTraversal: true,
+                    onKeyEvent: _onKey,
+                    child: Theme(
+                      data: theme.copyWith(
+                        textSelectionTheme: TextSelectionThemeData(
+                          selectionColor: p.selection,
+                          cursorColor: p.accent,
+                          selectionHandleColor: p.accent,
                         ),
-                    ],
+                      ),
+                      child: field,
+                    ),
                   ),
                 ),
-              ),
-              if (MarkdownRichEditor.floatingBar && widget.controller != null)
-                ValueListenableBuilder<Offset?>(
-                  valueListenable: _bar,
-                  // Positioned even while hidden: a Stack child that is not
-                  // takes a part in sizing the Stack, the field with it.
-                  builder: (context, at, _) => Positioned(
-                    left: at?.dx ?? 0,
-                    top: at == null
-                        ? 0
-                        : (at.dy - 44).clamp(0, double.infinity),
-                    child: at == null
-                        ? const SizedBox.shrink()
-                        : MarkdownFloatingBar(controller: widget.controller!),
+                // A checkbox node over each task box, for a screen reader. They
+                // take no pointer: a touch goes on to the box below.
+                Positioned.fill(
+                  child: ValueListenableBuilder<List<_TaskNode>>(
+                    valueListenable: _taskNodes,
+                    builder: (context, nodes, _) => Stack(
+                      children: [
+                        for (final n in nodes)
+                          Positioned.fromRect(
+                            rect: n.rect,
+                            child: Semantics(
+                              container: true,
+                              checked: n.checked,
+                              label: n.label.isEmpty ? 'Task' : n.label,
+                              onTap: () => _toggleTask(n.start),
+                              child: const SizedBox.expand(),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
-            ],
+                if (MarkdownRichEditor.floatingBar && widget.controller != null)
+                  ValueListenableBuilder<Offset?>(
+                    valueListenable: _bar,
+                    // Positioned even while hidden: a Stack child that is not
+                    // takes a part in sizing the Stack, the field with it.
+                    builder: (context, at, _) => Positioned(
+                      left: at?.dx ?? 0,
+                      top: at == null
+                          ? 0
+                          : (at.dy - 44).clamp(0, double.infinity),
+                      child: at == null
+                          ? const SizedBox.shrink()
+                          : MarkdownFloatingBar(controller: widget.controller!),
+                    ),
+                  ),
+              ],
+            ),
           ),
         );
       },

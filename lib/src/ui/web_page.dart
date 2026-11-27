@@ -163,13 +163,23 @@ class _WebPageState extends State<WebPage> {
   HtmlSite? _site;
   bool _closed = false;
 
+  /// The site on its way, while it starts; a Reload then waits for it rather
+  /// than starting a second one.
+  Future<HtmlSite>? _starting;
+
   /// Starts the site on the first call, forgets what it served on the next
   /// ones, and loads the page from it.
   Future<void> _loadSite() async {
     try {
       var site = _site;
       if (site == null) {
-        site = await widget.site!();
+        if (_starting != null) return;
+        final starting = _starting = widget.site!();
+        try {
+          site = await starting;
+        } finally {
+          _starting = null;
+        }
         if (_closed) {
           unawaited(site.close());
           return;
@@ -184,7 +194,7 @@ class _WebPageState extends State<WebPage> {
         // Not noted in [_asked]: WKWebView, unlike Android's view, asks the
         // delegate about this very request, and holding it back there leaves
         // the page loading for ever.
-        _loadError = null;
+        setState(() => _loadError = null);
         unawaited(_view.loadRequest(site.url));
         _armStall();
       }

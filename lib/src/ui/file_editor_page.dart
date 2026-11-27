@@ -2235,9 +2235,8 @@ class _MarkdownBlock extends StatelessWidget {
 /// [MermaidBuilder] draws it, any other block gets a button that copies it,
 /// and inline code is left to the package.
 ///
-/// A mermaid fence deliberately gets no button. What it shows is a picture
-/// rather than the text, and the button would have to sit over a web view's
-/// own surface to be near it; Source has the whole file, that block included.
+/// A mermaid fence gets no button in a file: Source has the whole file, that
+/// block included; chat's, with no Source, gets one through [copyable].
 class CodeBlockBuilder extends MermaidBuilder {
   /// [copyable] as [MermaidBuilder]'s: chat's, which has no Source view.
   /// [wrap] folds a long line onto the next row, as chat does, rather than
