@@ -1,6 +1,6 @@
 # A long Markdown file in Rich text, where sections away from the caret are
 # shaped as blanks while no screen reader is on: tools/e2e_android.sh's
-# md_rich_speed puts an 83 KB README-like jeansh-e2e-speed.md and a small
+# md_rich_speed puts a 200 KB README-like jeansh-e2e-speed.md and a small
 # jeansh-e2e-paste.txt in the login home, types and reads the files on the
 # host between this flow's steps.
 #

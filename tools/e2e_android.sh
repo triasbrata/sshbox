@@ -781,11 +781,13 @@ md_rich_text() {
 
 
 # Rich text on a long file, sections away from the caret shaped as blanks
-# while no screen reader is on (.maestro/md_rich_speed.yaml): an 83 KB
+# while no screen reader is on (.maestro/md_rich_speed.yaml): a 200 KB
 # README-like file, read off the host. Maestro reads the app through
 # Android's accessibility, which turns Flutter's semantics on, so here the
 # field is drawn for a screen reader. Asserted:
-#   - opened in Rich text, not refused to Source, and nothing written;
+#   - opened in Rich text, not refused to Source (200 KB is past the 160 KB
+#     limit before the blanks, under the 240 KB after them: a limit put back
+#     to 160 KB refuses it), and nothing written;
 #   - the far section's own words are in the accessibility text, not spaces
 #     (Maestro turns semantics on, so a check of the tree: it holds even with
 #     blanking forced on, run 41615231879; the desktop tests guard the blanks);
@@ -813,7 +815,7 @@ md_rich_speed() {
 import sys
 parts = ['# Jeansh e2e speed\n\nA README-like file for Rich text.\n']
 i = 0
-while sum(map(len, parts)) < 83 * 1024:
+while sum(map(len, parts)) < 200 * 1024:
     s = (f'## Section {i}\n\nSome **bold** text, _italic_, `code` and a '
          f'[link](https://example.com/{i}) in a paragraph long enough to wrap '
          f'onto a second line, word{i}x.\n\n- one {i}\n- [ ] task {i}\n')
