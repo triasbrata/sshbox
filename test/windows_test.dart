@@ -53,6 +53,12 @@ class _Runner implements WindowBackend {
 
   @override
   Future<void> activate(int id) async => activated.add(id);
+
+  final placed = <(int, WindowFrame)>[];
+
+  @override
+  Future<void> place(int id, WindowFrame frame) async =>
+      placed.add((id, frame));
 }
 
 /// What a window of the app is made of in a test: a tab manager at [key].
@@ -96,6 +102,32 @@ void main() {
         maximized: true,
       );
       expect(WindowFrame.fromJson(frame.toJson()), frame);
+    });
+
+    test('is equal to a frame of the same numbers, and to no other', () {
+      const frame = WindowFrame(x: 1, y: 2, width: 300, height: 400);
+      expect(frame, const WindowFrame(x: 1, y: 2, width: 300, height: 400));
+      expect(
+        frame.hashCode,
+        const WindowFrame(x: 1, y: 2, width: 300, height: 400).hashCode,
+      );
+      expect(
+        frame,
+        isNot(const WindowFrame(x: 9, y: 2, width: 300, height: 400)),
+      );
+      expect(
+        frame,
+        isNot(
+          const WindowFrame(
+            x: 1,
+            y: 2,
+            width: 300,
+            height: 400,
+            maximized: true,
+          ),
+        ),
+      );
+      expect(frame, isNot('not a frame'));
     });
 
     test('is nothing for what is not a frame', () {
@@ -378,6 +410,37 @@ void main() {
     );
 
     test(
+      'a window is taken down natively only once its view has left',
+      () async {
+        final runner = _Runner();
+        final order = <String>[];
+        final gate = Completer<void>();
+        final set = WindowSet(
+          backend: runner,
+          first: _make(SessionManager.defaultSavedKey, null),
+          make: _make,
+          restore: (_) async {},
+          settle: () async {
+            order.add('settle');
+            await gate.future;
+          },
+        );
+        await set.start();
+        final second = (await set.openNew())!;
+        final closing = set.closeWindow(second);
+        await pumpEventQueue();
+        // Out of the set at once, so the tree drops its view; the runner is not
+        // asked until that has been seen.
+        expect(set.windows, hasLength(1));
+        expect(runner.closed, isEmpty);
+        gate.complete();
+        await closing;
+        expect(order, ['settle']);
+        expect(runner.closed, [second.id]);
+      },
+    );
+
+    test(
       'the last window closes with no question, and keeps its tabs',
       () async {
         final runner = _Runner();
@@ -395,19 +458,91 @@ void main() {
       },
     );
 
-    test(
-      'the first window closed while another is open leaves the other',
-      () async {
-        final runner = _Runner();
-        final set = _set(runner);
-        await set.start();
-        final second = (await set.openNew())!;
-        await set.closeWindow(set.windows.first);
-        expect(set.windows.single, same(second));
-        expect(set.focused, same(second));
-        expect(runner.closed, [0]);
-      },
-    );
+    test('the first window closed while others are open hands its place to '
+        'another, whose own view is the one that goes', () async {
+      SharedPreferences.setMockInitialValues({
+        'sshbox.tabs.v1': jsonEncode(_tabs('plain')),
+      });
+      final runner = _Runner();
+      final set = _set(runner);
+      await set.start();
+      final first = set.windows.single;
+      // A runner whose first window draws in a view other than 0.
+      first.viewId = 7;
+      final second = (await set.openNew())!;
+      final third = (await set.openNew())!;
+      await second.sessions.restoreTabs(hosts: [_other], databases: []);
+      second.sessions.open(_other);
+      await pumpEventQueue();
+      const place = WindowFrame(x: 40, y: 50, width: 700, height: 500);
+      runner.say.add(WindowMoved(second.id, place));
+      await pumpEventQueue();
+      final secondId = second.id;
+
+      await set.closeWindow(first);
+      await pumpEventQueue();
+
+      // The window that stayed is the first one now, in the view and at the
+      // place the runner's first window has, with the tabs it had.
+      expect(set.windows, [second, third]);
+      expect(second.id, 0);
+      expect(second.viewId, 7);
+      expect([for (final s in second.sessions.sessions) s.host.id], ['other']);
+      expect(runner.placed, [(0, place)]);
+      // The view that was its own is what goes, and the first window's
+      // never does.
+      expect(runner.closed, [secondId]);
+      expect(set.focused, same(second));
+      // What the user closed is gone, tabs and all, and what is saved
+      // starts with the window the first one now is.
+      expect(first.sessions.sessions, isEmpty);
+      expect(await _pref('sshbox.tabs.v1'), isNull);
+      final saved = jsonDecode((await _pref(WindowRegistry.prefsKey))!);
+      expect(
+        [for (final w in saved['windows']) w['key']],
+        [second.key, third.key],
+      );
+    });
+
+    test('a close asked for while another is finishing is answered', () async {
+      final runner = _Runner();
+      final gate = Completer<void>();
+      final set = WindowSet(
+        backend: runner,
+        first: _make(SessionManager.defaultSavedKey, null),
+        make: _make,
+        restore: (_) async {},
+        settle: () => gate.future,
+      );
+      await set.start();
+      final first = set.windows.single;
+      final second = (await set.openNew())!;
+      final third = (await set.openNew())!;
+      final closingFirst = set.closeWindow(first);
+      await pumpEventQueue();
+      // The second window is the first now, on screen where the user clicks
+      // its close while the first one's closing is still being finished.
+      expect(set.windows.first, same(second));
+      final closingSecond = set.closeWindow(second);
+      await pumpEventQueue();
+      expect(set.windows, [third]);
+      gate.complete();
+      await closingFirst;
+      await closingSecond;
+      expect(set.windows.single.id, 0);
+    });
+
+    test('a window that never moved leaves the first where it was', () async {
+      final runner = _Runner();
+      final set = _set(runner);
+      await set.start();
+      final first = set.windows.single;
+      final second = (await set.openNew())!;
+      await set.closeWindow(first);
+      expect(set.windows.single, same(second));
+      expect(second.id, 0);
+      expect(runner.placed, isEmpty);
+    });
 
     test('a close request from the runner closes that window', () async {
       final runner = _Runner();
@@ -504,6 +639,25 @@ void main() {
       expect(calls[2].arguments, 3);
     });
 
+    test(
+      'places a window, and leaves it where it is when the runner cannot',
+      () async {
+        final backend = ChannelWindowBackend(channel);
+        const place = WindowFrame(x: 1, y: 2, width: 300, height: 400);
+        await backend.place(0, place);
+        expect(calls.single.method, 'place');
+        expect(calls.single.arguments, {'id': 0, ...place.toJson()});
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              throw PlatformException(code: 'no');
+            });
+        await backend.place(0, place);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+        await backend.place(0, place);
+      },
+    );
+
     test('is single where the runner has no half of it', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
@@ -564,6 +718,7 @@ void main() {
       expect(await single.open(), isNull);
       await single.close(0);
       await single.activate(0);
+      await single.place(0, const WindowFrame(x: 0, y: 0, width: 1, height: 1));
       expect(await single.events.isEmpty, isTrue);
     });
   });

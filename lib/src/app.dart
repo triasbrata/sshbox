@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show FlutterView;
 
 import 'session/open_command.dart' show localHome, writeOpenSecret;
 
@@ -66,7 +67,12 @@ class SshboxApp extends StatefulWidget {
     @visibleForTesting this.transport,
     this.windows,
     this.multiWindow = false,
+    @visibleForTesting this.viewOf,
   });
+
+  /// The Flutter view with an id, where a test has views the platform does
+  /// not. Null, and the platform's own.
+  final FlutterView? Function(int id)? viewOf;
 
   /// What opens the app's windows: main gives a desktop its runner's.
   /// Null, and the app has the one window.
@@ -100,6 +106,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     first: _makeWindow(SessionManager.defaultSavedKey, null),
     make: _makeWindow,
     restore: _restoreWindow,
+    settle: _viewGone,
   )..mayClose = _mayCloseWindow;
 
   /// The window the user is in: where a link, a share, a notification tap
@@ -131,6 +138,25 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     );
     sessionLog.follow(sessions);
     return AppWindow(id: -1, key: key, sessions: sessions, frame: frame);
+  }
+
+  /// A window taken out of the set leaves the tree in the next frame, and only
+  /// then may the runner take its window down: the engine was seen to take the
+  /// app with it when a view it was still drawing was removed. A frame that
+  /// never comes, as with nothing on screen, is not waited for past a second.
+  Future<void> _viewGone() {
+    final binding = WidgetsBinding.instance;
+    final done = Completer<void>();
+    final limit = Timer(const Duration(seconds: 1), () {
+      if (!done.isCompleted) done.complete();
+    });
+    binding.scheduleFrame();
+    unawaited(
+      binding.endOfFrame.then((_) {
+        if (!done.isCompleted) done.complete();
+      }),
+    );
+    return done.future.whenComplete(limit.cancel);
   }
 
   /// Closing a window that is not the last: asked when a tab of it holds a
@@ -351,6 +377,19 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
       unawaited(_windowSet.openNew());
     }
     return KeyEventResult.handled;
+  }
+
+  /// The app's lifecycle, as the runner's windows drive it, in the app log:
+  /// with several windows it is what says whether frames are drawn at all, and
+  /// a state left hidden by a window closing would stop them in every window.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_windowSet.multi) return;
+    appLog.add(
+      'lifecycle ${state.name}, frames '
+      '${WidgetsBinding.instance.framesEnabled ? 'on' : 'off'}, '
+      '${_windowSet.windows.length} windows',
+    );
   }
 
   /// A window's view has come up, or gone: the views to draw are read again.
@@ -822,15 +861,22 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
         // the process holds once. A window whose view the engine has not
         // announced yet waits for it.
         final dispatcher = WidgetsBinding.instance.platformDispatcher;
+        FlutterView? viewOf(int id) =>
+            (widget.viewOf ?? (id) => dispatcher.view(id: id))(id);
         return ViewCollection(
           views: [
             for (final window in windows)
-              if (window.viewId != null &&
-                  dispatcher.view(id: window.viewId!) != null)
+              if (window.viewId != null && viewOf(window.viewId!) != null)
+                // No key of its own: a View is keyed by its FlutterView, which
+                // Flutter relies on, so a window moved into another view, as
+                // the first window's is when another closes, is a new window
+                // in that view and not a View given another view to draw in.
                 View(
-                  key: ObjectKey(window),
-                  view: dispatcher.view(id: window.viewId!)!,
-                  child: _windowApp(window),
+                  view: viewOf(window.viewId!)!,
+                  child: KeyedSubtree(
+                    key: ObjectKey(window),
+                    child: _windowApp(window),
+                  ),
                 ),
           ],
         );

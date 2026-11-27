@@ -520,12 +520,22 @@ jobs:
   # the whole of it, and this workflow is the release gate: a new job would gate
   # releases the moment it landed. It reports until it has been green a while,
   # as every new check here does, and joins the gate only by choice.
+  #
+  # Two shards at once, each a runner of its own and each half of the tests
+  # (JEANSH_E2E_SHARD, integration_test/desktop_smoke_test.dart): the whole
+  # file took 31 min 50 s of its 32 minute step in one run (run
+  # 45952998535, 93 tests), so each shard is about a quarter of an hour. The
+  # profile measure, the keychain and the no-portal download run in shard 0.
   desktop:
     if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'linux-desktop' }}
     # The release's Linux build runs on 22.04 (release.yml), so this does too.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -597,6 +607,7 @@ jobs:
         timeout-minutes: 32
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
+          JEANSH_E2E_SHARD: ${{ matrix.shard }}/2
         run: |
           feed=http://127.0.0.1:47719
           tools/e2e_desktop.sh linux \
@@ -608,8 +619,8 @@ jobs:
       # person to read, never a gate. flutter test runs debug alone, so this
       # goes through flutter drive; it prints `perf:` lines.
       - name: Rich text frame times, in profile
+        if: ${{ always() && matrix.shard == 0 }}
         timeout-minutes: 15
-        if: always()
         continue-on-error: true
         run: |
           xvfb-run -a --server-args="-screen 0 1280x900x24" \
@@ -621,15 +632,15 @@ jobs:
       # Secret Service again; the macOS job runs the same test where it is
       # kept and a reconnect asks nothing.
       - name: Keychain reads
+        if: ${{ always() && matrix.shard == 0 }}
         timeout-minutes: 8
-        if: always()
         run: E2E_TESTS=integration_test/keychain_test.dart tools/e2e_desktop.sh linux
 
       # #136: Download once more on a session bus with no XDG portal at all,
       # as on a desktop that runs none, where file_picker could not save.
       - name: Download with no XDG portal
+        if: ${{ always() && matrix.shard == 0 }}
         timeout-minutes: 5
-        if: always()
         run: |
           JEANSH_E2E_NO_PORTAL=1 tools/e2e_desktop.sh linux \
             --plain-name 'Download saves through the save dialog'
@@ -638,7 +649,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: desktop-shots
+          name: desktop-shots-${{ matrix.shard }}
           path: ${{ runner.temp }}/shots
           if-no-files-found: ignore
           retention-days: 7

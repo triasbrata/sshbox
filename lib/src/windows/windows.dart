@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart' show GlobalKey, NavigatorState;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../session/session_manager.dart';
+import '../telemetry/app_log.dart';
 
 /// Where a window is: its top left, its size, and whether it is maximized.
 /// What the runner reports as a window moves, and what is saved to open the
@@ -132,6 +133,10 @@ abstract interface class WindowBackend {
   Future<void> close(int id);
 
   Future<void> activate(int id);
+
+  /// Moves and sizes window [id] to [frame]. A runner that cannot leaves the
+  /// window where it is.
+  Future<void> place(int id, WindowFrame frame);
 }
 
 /// No second window: mobile, a runner without the native half, and tests.
@@ -152,6 +157,9 @@ class SingleWindow implements WindowBackend {
 
   @override
   Future<void> activate(int id) async {}
+
+  @override
+  Future<void> place(int id, WindowFrame frame) async {}
 }
 
 /// The runner's half, over the `sshbox/windows` channel.
@@ -203,6 +211,17 @@ class ChannelWindowBackend implements WindowBackend {
 
   @override
   Future<void> activate(int id) => _channel.invokeMethod<void>('activate', id);
+
+  @override
+  Future<void> place(int id, WindowFrame frame) async {
+    try {
+      await _channel.invokeMethod<void>('place', {'id': id, ...frame.toJson()});
+    } on MissingPluginException {
+      // A runner without it leaves the window where it is.
+    } on PlatformException {
+      // The same.
+    }
+  }
 
   Future<Object?> _heard(MethodCall call) async {
     final arguments = call.arguments;
@@ -338,6 +357,7 @@ class WindowSet extends ChangeNotifier {
     required this.restore,
     bool multi = false,
     this.registry = const WindowRegistry(),
+    this.settle = _noSettle,
   }) : // A named parameter cannot be private, and the field is.
        // ignore: prefer_initializing_formals
        _multi = multi {
@@ -357,6 +377,14 @@ class WindowSet extends ChangeNotifier {
 
   final WindowRegistry registry;
 
+  /// Completes once a window removed from [windows] has left the tree, so its
+  /// view is gone from the engine's side before the runner takes the native
+  /// window down: a view still being drawn when it is removed was seen to
+  /// take the whole app with it, now and then.
+  final Future<void> Function() settle;
+
+  static Future<void> _noSettle() async {}
+
   /// Whether the runner can open more than one window, as the app was told
   /// when it began, and as [start] asks again.
   bool get multi => _multi;
@@ -365,7 +393,6 @@ class WindowSet extends ChangeNotifier {
   final Map<int, AppWindow> _windows = {};
   StreamSubscription<WindowEvent>? _events;
   int _focused = 0;
-  bool _closing = false;
 
   /// The window's tabs, asked before it closes: a yes closes it, a no keeps
   /// it. Left unset, a window closes with no question.
@@ -424,11 +451,13 @@ class WindowSet extends ChangeNotifier {
     final key = WindowRegistry.newKey([
       for (final window in _windows.values) window.key,
     ]);
+    _log('openNew asked, the set is $_state');
     final window = make(key, null);
     final id = await backend.open();
     if (id == null) return null;
     // The first window, hidden after it was closed, is opened again before
     // a new one is made, and answers with its own id.
+    _log('openNew: runner gave id=$id');
     _register(window, id);
     _focused = id;
     await _save();
@@ -457,6 +486,9 @@ class WindowSet extends ChangeNotifier {
         unawaited(_save());
       case WindowCloseRequested(:final id):
         final window = _windows[id];
+        _log(
+          'closeRequested by the runner id=$id known=${window != null} $_state',
+        );
         if (window != null) unawaited(closeWindow(window));
       case WindowClosed(:final id):
         _gone(id);
@@ -466,28 +498,113 @@ class WindowSet extends ChangeNotifier {
   /// Closes [window] if the user lets it, asking first when it holds tabs.
   /// The last window closing is the app quitting: its tabs stay saved, and
   /// come back at the next start.
-  Future<void> closeWindow(AppWindow window) async {
-    if (_closing || !_windows.containsKey(window.id)) return;
-    _closing = true;
-    try {
-      // The last window closing is the app quitting, which asks nothing.
-      if (_windows.length <= 1) {
+  ///
+  /// Closes are decided one at a time, in the order asked: a close asked for
+  /// while another is being decided waits its turn rather than being dropped
+  /// or running over it. Only the deciding is in turn; what is left to do
+  /// afterwards, the settle, the tabs, the saving and the runner, is not, so
+  /// one that is slow holds up no other.
+  Future<void> closeWindow(AppWindow window) {
+    _log('closeWindow asked id=${window.id} view=${window.viewId}');
+    final decided = _turn.then((_) => _decide(window));
+    // A failure to decide must not stop the closes behind it.
+    _turn = decided.then((_) {}, onError: (_) {});
+    return decided.then((finish) => finish?.call());
+  }
+
+  Future<void> _turn = Future.value();
+
+  /// What closing [window] changes in the set, and what is left to do after
+  /// it, or null when it is not closing.
+  Future<Future<void> Function()?> _decide(AppWindow window) async {
+    if (!_windows.containsKey(window.id) ||
+        !identical(_windows[window.id], window)) {
+      _log('close ignored: id=${window.id} is no window of the set $_state');
+      return null;
+    }
+    // The last window closing is the app quitting, which asks nothing.
+    if (_windows.length <= 1) {
+      _log('close of the last window id=${window.id}: the app quits');
+      return () async {
         await backend.close(window.id);
-        return;
-      }
-      final ask = mayClose;
-      if (ask != null && !await ask(window)) return;
-      _windows.remove(window.id);
-      if (_focused == window.id) _focused = _windows.keys.first;
-      notifyListeners();
+        _log('runner close ${window.id} answered');
+      };
+    }
+    final ask = mayClose;
+    if (ask != null && !await ask(window)) {
+      _log('close of id=${window.id} refused by the user');
+      return null;
+    }
+    // Asked, the set may have changed under the dialog.
+    if (!identical(_windows[window.id], window)) {
+      _log('close ignored after asking: id=${window.id} went meanwhile');
+      return null;
+    }
+    if (window.id == 0) {
+      return _handOver(window);
+    }
+    _windows.remove(window.id);
+    if (_focused == window.id) _focused = _windows.keys.first;
+    notifyListeners();
+    _log('closed id=${window.id}, the set is $_state');
+    return () async {
+      await settle();
+      _log('settled for id=${window.id}');
       await window.sessions.retire();
       await registry.forget(window.key);
       await _save();
       await backend.close(window.id);
-    } finally {
-      _closing = false;
-    }
+      _log('runner close ${window.id} answered');
+    };
   }
+
+  /// The first window closed while others are open. Its view is the engine's
+  /// first, which cannot go while the app runs, so what the user sees go is
+  /// done the other way round: another window's tabs, and its place, move into
+  /// the first window, and that other window's own view, which can go, goes.
+  /// The window the user closed is gone and the other stayed, with the same
+  /// tabs where they were.
+  Future<Future<void> Function()> _handOver(AppWindow closing) async {
+    final heir = _windows.values.firstWhere((window) => window.id != 0);
+    final heirId = heir.id;
+    final place = heir.frame;
+    // The first window takes the heir's place and size, before its view shows
+    // the heir's tabs.
+    if (place != null) await backend.place(0, place);
+    final rest = [
+      for (final window in _windows.values)
+        if (window.id != 0 && window.id != heirId) window,
+    ];
+    _windows.clear();
+    // In the first window's view, whichever it is: 0 where the runner has an
+    // implicit view, and a Mac's first window has another.
+    heir
+      ..id = 0
+      ..viewId = closing.viewId;
+    // First, so the first window saved is the first window the runner has.
+    _windows[0] = heir;
+    for (final window in rest) {
+      _windows[window.id] = window;
+    }
+    _focused = 0;
+    notifyListeners();
+    _log('handed over: heir was id=$heirId, the set is $_state');
+    return () async {
+      await settle();
+      _log('settled for the handover');
+      await closing.sessions.retire();
+      await registry.forget(closing.key);
+      await _save();
+      await backend.close(heirId);
+      _log('runner close $heirId answered');
+    };
+  }
+
+  /// The set as the app log shows it: each window's id and view.
+  String get _state =>
+      '[${_windows.values.map((w) => '${w.id}@${w.viewId}').join(' ')}]';
+
+  void _log(String message) => appLog.add('win: $message');
 
   /// A window that went without being asked: nothing is kept of it.
   void _gone(int id) {

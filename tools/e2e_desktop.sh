@@ -40,6 +40,9 @@ tests=${E2E_TESTS:-integration_test/desktop_smoke_test.dart}
 phases=1
 [ -n "${JEANSH_E2E_NO_PORTAL:-}" ] && phases=
 [ -n "${E2E_TESTS:-}" ] && phases=
+# One share of the tests (JEANSH_E2E_SHARD=i/n): the window phases follow
+# share 0 alone, so a split run still has them once.
+case "${JEANSH_E2E_SHARD:-0/1}" in 0/*) ;; *) phases= ;; esac
 for arg in "$@"; do
   case "$arg" in --plain-name* | --name* | -n) phases= ;; esac
 done
@@ -107,22 +110,64 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in save restore buttons last; do
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn last}; do
+    echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
-        --dart-define=JEANSH_E2E_MWINDOW=$phase || true
-      if grep -q ready "$note" 2>/dev/null && grep -q ended "$note" &&
-        ! grep -q asked "$note"; then
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/last.log" || true
+      # The process is gone when the test never got to write "windows left"
+      # (3 s after the click) or the watcher saw it end; and no question.
+      if grep -q ready "$note" 2>/dev/null && ! grep -q asked "$note" &&
+        { grep -q ended "$note" || ! grep -q 'windows left' "$note"; }; then
         echo "✅ multi-window: the last window closed with no question and the process ended"
       else
         echo "❌ multi-window: the last window: $(cat "$note" 2>/dev/null | tr '\n' ' ')"
+        echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+        echo "--- the last phase's output, its tail:"
+        tail -n 80 "$data/last.log"
+        rc=1
+      fi
+    elif [ "$phase" = bisect ]; then
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/bisect.log" || true
+      echo "BISECT RESULT: $(grep -a bisect "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+      if [ -n "$BISECT_LOG" ]; then
+        echo "--- the jeansh: lines of the app's stderr, in order:"
+        grep -a "jeansh:" "$data/bisect.log" | tail -n 600
+        echo "--- the last 60 lines of the output:"
+        tail -n 60 "$data/bisect.log"
+      fi
+      rm -f "$data/jeansh-e2e-mw-trace.txt"
+    elif [ "$phase" = churn ]; then
+      # The app's stderr is in flutter test's output, kept to be read for a
+      # crash line.
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 400 flutter test \
+        integration_test/multi_window_phases_test.dart -d linux \
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/churn.log" || true
+      rounds=$(grep -c 'churn round' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)
+      crashes=$(grep -ciE 'segmentation|signal 11|core dumped|CRITICAL|Lost connection' "$data/churn.log")
+      if [ "$rounds" = 10 ] && [ "$crashes" = 0 ]; then
+        echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit, no crash line in stderr"
+      else
+        echo "❌ multi-window: $rounds of 10 A+B+C rounds, $crashes crash lines"
+        echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ' | tail -c 6000)"
         rc=1
       fi
     else
-      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data flutter test \
+      # The first four checks are independent: a data folder each, so one
+      # that fails leaves no window behind for the next.
+      case "$phase" in
+        t[1-4]) home=$(mktemp -d) ;;
+        *) home=$data ;;
+      esac
+      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
-        --dart-define=JEANSH_E2E_MWINDOW=$phase || rc=1
+        --dart-define=JEANSH_E2E_MWINDOW=$phase || {
+          rc=1
+          echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+        }
     fi
   done
   rm -rf "$data"
