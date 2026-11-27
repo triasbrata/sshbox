@@ -32,7 +32,7 @@ UNITS=(smoke connect_and_keybar
   chat_version chat_code_copy chat_scroll chat_tool_rows chat_mermaid chat_two_way
   html_tab html_site tab_close_narrow chat_session_status chat_progress
   chat_working_backstop
-  chat_images chat_attach_deliver chat_subagents chat_usage chat_compact chat_model
+  chat_images chat_attach_deliver chat_aggregator chat_subagents chat_usage chat_compact chat_model
   chat_effort chat_cwd
   folder_zip chat_outbox chat_outbox_reconnect chat_fixes
   chat_edit_previous chat_ask_watched chat_slash chat_ask chat_follow_jump
@@ -2548,6 +2548,227 @@ chat_attach_deliver() {
   return "$status"
 }
 
+# #345 B and C (.maestro/chat_aggregator.yaml): a message to a watched session
+# goes through the host helper, which the app installs, to the session's
+# messaging socket, and what it delivered reads back as the user's bubble.
+# The host's session is tools/e2e_agg_session.py, which speaks the real socket
+# protocol and is found by the real helper through sessions/<pid>.json; its
+# status and whether it records are set in ~/.e2e-agg/control.json. What the
+# socket was given is ~/.e2e-agg/received.log; what the session recorded is its
+# transcript; what was typed into it instead is the stand-in attach's
+# ~/.e2e-pics.log. The listing is chat_images' host with one row more.
+AGG_SID=e2e00aa1-0000-4000-8000-0000000000a1
+
+agg_control() { # status record
+  sudo -u "$SSH_USER" -H python3 - "$AGG_SID" "$1" "$2" <<'PY'
+import json, os, sys
+sid, status, record = sys.argv[1], sys.argv[2], sys.argv[3] == 'true'
+home = os.environ['HOME']
+json.dump({'status': status, 'record': record},
+          open(os.path.join(home, '.e2e-agg', 'control.json'), 'w'))
+path = os.path.join(home, '.e2e-agents.json')
+rows = json.load(open(path))
+for row in rows:
+    if row.get('sessionId') == sid:
+        row['status'] = status
+json.dump(rows, open(path, 'w'))
+PY
+}
+
+agg_host() {
+  local home=/home/$SSH_USER as=(sudo -u "$SSH_USER" -H) pid
+  pics_host || return 1
+  "${as[@]}" mkdir -p "$home/.e2e-agg"
+  sudo install -o "$SSH_USER" -m 644 tools/e2e_agg_session.py "$home/.e2e-agg/"
+  "${as[@]}" rm -f "$home/.e2e-agg/received.log" "$home/.e2e-agg/control.json"
+  "${as[@]}" sh -c "cd && (setsid python3 .e2e-agg/e2e_agg_session.py $AGG_SID \
+    </dev/null >.e2e-agg/daemon.log 2>&1 &)"
+  sleep 2
+  pid=$("${as[@]}" python3 - "$AGG_SID" <<'PY'
+import glob, json, os, sys
+for path in glob.glob(os.path.join(os.environ['HOME'], '.claude', 'sessions', '*.json')):
+    d = json.load(open(path))
+    if d.get('sessionId') == sys.argv[1]:
+        print(d['pid'])
+PY
+)
+  [ -n "$pid" ] || { echo "::error::the stand-in session did not start"; sudo cat "$home/.e2e-agg/daemon.log"; return 1; }
+  agg_pid=$pid
+  "${as[@]}" python3 - "$home" "$pid" "$AGG_SID" <<'PY'
+import json, os, sys
+home, pid, sid = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+path = os.path.join(home, '.e2e-agents.json')
+rows = [r for r in json.load(open(path)) if r.get('sessionId') != sid]
+rows.append({'id': 'e2e00aa1', 'sessionId': sid, 'pid': pid, 'name': 'E2E aggregator live',
+             'cwd': home, 'kind': 'background', 'state': 'done', 'status': 'idle',
+             'startedAt': 1790000000300})
+json.dump(rows, open(path, 'w'))
+PY
+  agg_control idle true
+  sudo -u "$SSH_USER" -H touch "$home/.e2e-pics.log"
+  echo "the aggregator session: pid $pid"
+}
+
+# How many records the session's transcript holds for TEXT that came from the
+# helper (an `origin` naming jeansh-<id>), in either shape.
+agg_records() { # text
+  sudo python3 - "/home/$SSH_USER/.claude/projects/e2e-agg/$AGG_SID.jsonl" "$1" <<'PY'
+import json, sys
+n = 0
+for line in open(sys.argv[1]):
+    e = json.loads(line) if line.strip() else {}
+    a = e.get('attachment') or {}
+    o = e.get('origin') or a.get('origin') or {}
+    if not str(o.get('from', '')).startswith('jeansh-'):
+        continue
+    text = a.get('prompt') or json.dumps((e.get('message') or {}).get('content', ''))
+    if sys.argv[2] in text:
+        n += 1
+print(n)
+PY
+}
+
+# The helper's id of the record for TEXT, which is the outbox's id.
+agg_id() { # text
+  sudo python3 - "/home/$SSH_USER/.claude/projects/e2e-agg/$AGG_SID.jsonl" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    e = json.loads(line) if line.strip() else {}
+    a = e.get('attachment') or {}
+    o = e.get('origin') or a.get('origin') or {}
+    text = a.get('prompt') or json.dumps((e.get('message') or {}).get('content', ''))
+    if str(o.get('from', '')).startswith('jeansh-') and sys.argv[2] in text:
+        print(o['from'][7:])
+        break
+PY
+}
+
+# How many times the socket was given TEXT.
+agg_received() { # text
+  sudo python3 - "/home/$SSH_USER/.e2e-agg/received.log" "$1" <<'PY'
+import json, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    lines = []
+print(sum(1 for l in lines if l.strip() and json.loads(l).get('ev') == 'received'
+          and json.loads(l).get('text') == sys.argv[2]))
+PY
+}
+
+# How many nodes of the screen say exactly TEXT: the user's bubble, drawn once.
+agg_ui() { # text
+  adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1
+  adb shell cat /sdcard/e2e-ui.xml 2>/dev/null |
+    grep -oE "(text|content-desc)=\"$1\"" | wc -l | tr -d ' '
+}
+
+chat_aggregator() {
+  app_fresh
+  local status=0 pics=/home/$SSH_USER/.e2e-pics.log s=(-e "SESSION=E2E aggregator live")
+  local helper=/home/$SSH_USER/.local/share/jeansh/jeansh-agg.py id out b64
+  agg_check() { # what got want
+    if [ "$2" = "$3" ]; then echo "✅ $1"; else echo "::error::❌ $1: $2, not $3"; status=1; fi
+  }
+  agg_host || return 1
+  sudo rm -f "/home/$SSH_USER/.claude/settings.json"
+  flow chat_aggregator -e STEP=open "${s[@]}" || status=1
+
+  echo "::group::chat_aggregator 1: delivered once, nothing typed"
+  sudo truncate -s 0 "$pics"
+  agg_control idle true
+  flow chat_aggregator -e STEP=send "${s[@]}" -e "MSG=aggregator one" \
+    -e "SEE=(?i)Echo: aggregator one" -e SHOT=once || status=1
+  agg_check "1: the session recorded it once" "$(agg_records 'aggregator one')" 1
+  agg_check "1: the socket was given it once" "$(agg_received 'aggregator one')" 1
+  id=$(agg_id 'aggregator one')
+  case "$id" in ?????????*) echo "✅ 1: it carries the outbox's id ($id)" ;;
+    *) echo "::error::❌ 1: no helper id on the record ($id)"; status=1 ;; esac
+  agg_check "1: one bubble on screen" "$(agg_ui 'aggregator one')" 1
+  agg_check "1: no attach opened" "$(attach_got tui '')" 0
+  agg_check "1: nothing typed" "$(attach_got text 'aggregator one')" 0
+  agg_check "1: no Enter" "$(attach_got enter 'aggregator one')" 0
+  echo "::endgroup::"
+
+  echo "::group::chat_aggregator 2: not duplicated: the same id again"
+  # What a retry after a kill makes: the helper handed the same outbox id and
+  # text. Its journal knows it: no second write, so no second record.
+  b64=$(printf %s 'aggregator one' | base64 | tr -d '\n')
+  out=$(mktemp)
+  sudo -u "$SSH_USER" -H timeout 30 python3 "$helper" deliver "$id" "$AGG_SID" \
+    --text-b64 "$b64" </dev/null >"$out" 2>&1
+  echo "the helper said: $(cat "$out")"
+  sleep 3
+  agg_check "2: said it is a duplicate" "$(grep -c '"duplicate":true' "$out")" 1
+  agg_check "2: still one record" "$(agg_records 'aggregator one')" 1
+  agg_check "2: the socket was still given it once" "$(agg_received 'aggregator one')" 1
+  rm -f "$out"
+  echo "::endgroup::"
+
+  echo "::group::chat_aggregator 3: delivered late, the session busy"
+  agg_control busy true
+  sleep 2
+  flow chat_aggregator -e STEP=send "${s[@]}" -e "MSG=aggregator late" \
+    -e "SEE=Queued: it runs after" -e SHOT=queued || status=1
+  agg_check "3: not recorded while busy" "$(agg_records 'aggregator late')" 0
+  agg_check "3: nothing typed meanwhile" "$(attach_got text 'aggregator late')" 0
+  agg_control idle true
+  flow chat_aggregator -e STEP=see "${s[@]}" -e "SEE=(?i)Echo: aggregator late" \
+    -e SHOT=late || status=1
+  flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Not delivered" -e SHOT=notlost || status=1
+  flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Queued: it runs after" -e SHOT=sent || status=1
+  agg_check "3: recorded once when the turn ended" "$(agg_records 'aggregator late')" 1
+  agg_check "3: nothing typed after it either" "$(attach_got text 'aggregator late')" 0
+  echo "::endgroup::"
+
+  echo "::group::chat_aggregator 4: held: accepted and never recorded"
+  agg_control idle false
+  flow chat_aggregator -e STEP=send "${s[@]}" -e "MSG=aggregator held" \
+    -e "SEE=Not taken" -e SHOT=held || status=1
+  agg_check "4: the socket was given it once" "$(agg_received 'aggregator held')" 1
+  agg_check "4: not recorded" "$(agg_records 'aggregator held')" 0
+  agg_check "4: nothing typed until Retry" "$(attach_got text 'aggregator held')" 0
+  agg_control idle true
+  echo "::endgroup::"
+
+  echo "::group::chat_aggregator 5: reopened, drawn once and unwrapped"
+  flow chat_aggregator -e STEP=open "${s[@]}" || status=1
+  flow chat_aggregator -e STEP=see "${s[@]}" -e "SEE=(?i)Echo: aggregator one" -e SHOT=reopen || status=1
+  agg_check "5: the first message, once" "$(agg_ui 'aggregator one')" 1
+  flow chat_aggregator -e STEP=gone "${s[@]}" -e "GONE=Another Claude session sent" \
+    -e SHOT=unwrapped || status=1
+  echo "::endgroup::"
+
+  echo "::group::chat_aggregator 6: the session holds messages: the older way"
+  sudo truncate -s 0 "$pics"
+  printf '{"crossSessionInbound":"hold"}\n' |
+    sudo -u "$SSH_USER" -H tee "/home/$SSH_USER/.claude/settings.json" >/dev/null
+  flow chat_aggregator -e STEP=open "${s[@]}" || status=1
+  flow chat_aggregator -e STEP=send "${s[@]}" -e "MSG=aggregator typed" \
+    -e "SEE=Messages go in the older way" -e SHOT=older || status=1
+  sleep 4
+  agg_check "6: the socket was never given it" "$(agg_received 'aggregator typed')" 0
+  agg_check "6: typed into the session instead" "$(attach_got enter 'aggregator typed')" 1
+  sudo rm -f "/home/$SSH_USER/.claude/settings.json"
+  echo "::endgroup::"
+
+  echo "::group::chat_aggregator 7: the session refuses a peer's CLAUDE.md edit"
+  flow chat_aggregator -e STEP=open "${s[@]}" || status=1
+  flow chat_aggregator -e STEP=send "${s[@]}" -e "MSG=please edit CLAUDE.md" \
+    -e "SEE=Open the terminal to ask this directly" -e SHOT=refusal || status=1
+  sleep 3
+  agg_check "7: not sent again" "$(agg_received 'please edit CLAUDE.md')" 1
+  agg_check "7: nothing typed" "$(attach_got text 'please edit CLAUDE.md')" 0
+  echo "::endgroup::"
+
+  keep_shots 'chat-aggregator-*.png'
+  sudo kill "$agg_pid" 2>/dev/null
+  sudo -u "$SSH_USER" -H tmux kill-session -t e2e-pics 2>/dev/null
+  for pid in "${pics_pids[@]}"; do sudo kill "$pid" 2>/dev/null; done
+  stand_in ''
+  return "$status"
+}
+
 # #159: the live marks in chat's sessions sidebar. One pinned background
 # session on the stand-in listing, its process a sleep of the host user's own,
 # rewritten between three flows that keep the app as it is: working, then
@@ -4342,6 +4563,7 @@ u_html_site() { report_bare html_site html_site; }
 u_tab_close_narrow() { report_bare tab_close_narrow tab_close_narrow; }
 u_chat_images() { gate chat_images chat_images; }
 u_chat_attach_deliver() { report_bare chat_attach_deliver chat_attach_deliver; }
+u_chat_aggregator() { report_bare chat_aggregator chat_aggregator; }
 u_chat_usage() { gate chat_usage chat_usage; }
 for name in chat_session_status chat_progress chat_working_backstop \
   chat_subagents chat_compact chat_model chat_effort chat_cwd; do
