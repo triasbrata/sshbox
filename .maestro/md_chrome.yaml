@@ -112,23 +112,22 @@ env:
       - tapOn: "Select all"
       - waitForAnimationToEnd
       - takeScreenshot: md-chrome-${FILE}-selected
-      # The keyboard away first: its own b key is a "B" to Maestro too. Back
-      # closes Android's own selection toolbar before it closes the keyboard,
-      # so it is pressed again while Gboard's GIF key is still there, and
-      # never with no keyboard up, where it would close the tab.
+      # The bar's B: with Gboard up, its own b key is a "B" to Maestro too,
+      # and Back closes Android's selection toolbar before the keyboard (and
+      # the keyboard came back after it on CI), so with the keyboard up the
+      # bar, just above it, is tapped where it is drawn: 38%,59% of the 320x640
+      # emulator. With no keyboard, by its name.
       - runFlow:
           when:
             visible: "GIF"
           commands:
-            - hideKeyboard
-            - waitForAnimationToEnd
+            - tapOn:
+                point: "38%,59%"
       - runFlow:
           when:
-            visible: "GIF"
+            notVisible: "GIF"
           commands:
-            - hideKeyboard
-            - waitForAnimationToEnd
-      - tapOn: "B"
+            - tapOn: "B"
       - waitForAnimationToEnd
       - takeScreenshot: md-chrome-${FILE}-bold
 
