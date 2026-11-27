@@ -12,7 +12,8 @@
 #   press     a long press on the text: termul's row, Copy and Select all,
 #             and no Bold, which is the desktop panel's; Copy tapped
 #   source    Source, and the text tapped for the caret; the runner pastes
-#   all-bold  a long press, Select all, the keyboard away and B on the bar
+#   all-select  a long press, Select all
+#   all-b     B on the bar (KB=up when Gboard is up)
 #   save      Unsaved changes, then Save to host
 #   unchanged nothing to save
 #   close     the file tab closed
@@ -101,7 +102,7 @@ env:
 
 - runFlow:
     when:
-      true: ${STEP == 'all-bold'}
+      true: ${STEP == 'all-select'}
     commands:
       - longPressOn:
           point: "50%,${AT}"
@@ -112,20 +113,24 @@ env:
       - tapOn: "Select all"
       - waitForAnimationToEnd
       - takeScreenshot: md-chrome-${FILE}-selected
-      # The bar's B: with Gboard up, its own b key is a "B" to Maestro too,
-      # and Back closes Android's selection toolbar before the keyboard (and
-      # the keyboard came back after it on CI), so with the keyboard up the
-      # bar, just above it, is tapped where it is drawn: 38%,59% of the 320x640
-      # emulator. With no keyboard, by its name.
+
+# B on the bar. tools/e2e_android.sh says whether Gboard is up (KB=up): its
+# own b key is a "B" to Maestro too, and Back would close Android's selection
+# toolbar before the keyboard, so with it up the bar, just above it, is tapped
+# where it is drawn, 38%,59% of the 320x640 emulator; with it down, by name.
+- runFlow:
+    when:
+      true: ${STEP == 'all-b'}
+    commands:
       - runFlow:
           when:
-            visible: "GIF"
+            true: ${KB == 'up'}
           commands:
             - tapOn:
                 point: "38%,59%"
       - runFlow:
           when:
-            notVisible: "GIF"
+            true: ${KB != 'up'}
           commands:
             - tapOn: "B"
       - waitForAnimationToEnd

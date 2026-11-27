@@ -913,10 +913,21 @@ md_chrome() {
   check 'Copy held the word: pasted in Source, the file has one more zebra' one_more
   flow md_chrome -e STEP=close -e FIRST=no -e FILE=x || status=1
 
+  # Select all, then B: where the bar is depends on the keyboard, read here.
+  bold_all() {
+    flow md_chrome -e STEP=all-select -e FIRST=no -e FILE="$1" -e AT="$2" ||
+      return 1
+    sleep 1
+    local kb=down
+    ime_shown && kb=up
+    echo "bold_all: the keyboard is $kb"
+    flow md_chrome -e STEP=all-b -e FIRST=no -e FILE="$1" -e KB=$kb
+  }
+
   # M13: Select all and B.
   flow md_chrome -e STEP=open -e FIRST=no -e FILE=jeansh-e2e-m13 || status=1
   check 'Select all and B on front matter, a fence and a paragraph' \
-    flow md_chrome -e STEP=all-bold -e FIRST=no -e FILE=jeansh-e2e-m13 -e AT=80%
+    bold_all jeansh-e2e-m13 80%
   flow md_chrome -e STEP=save -e FIRST=no -e FILE=x || status=1
   sleep 2
   got=$(read_back jeansh-e2e-m13)
@@ -929,7 +940,7 @@ md_chrome() {
 
   # A fence alone: Select all and B change nothing.
   flow md_chrome -e STEP=open -e FIRST=no -e FILE=jeansh-e2e-fence || status=1
-  flow md_chrome -e STEP=all-bold -e FIRST=no -e FILE=jeansh-e2e-fence -e AT=36% ||
+  bold_all jeansh-e2e-fence 36% ||
     status=1
   check 'B on a selection inside a fence leaves nothing to save' \
     flow md_chrome -e STEP=unchanged -e FIRST=no -e FILE=x
