@@ -186,6 +186,11 @@ Future<void> _newWindow(WidgetTester tester, String from, int count) async {
     await _xdo(['windowsize', ids[1], '600', '450']);
     await _xdo(['windowmove', ids[0], '20', '20']);
     await _xdo(['windowsize', ids[0], '600', '450']);
+    // Both windows laid out at their new size before anything is clicked: a
+    // click aimed at where a button was before the resize lands beside it.
+    await tester.pump(const Duration(seconds: 1));
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
   }
 }
 
