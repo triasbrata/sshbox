@@ -265,6 +265,15 @@ Future<void> _newWindow(WidgetTester tester, String from, int count) async {
   await _xdo(['key', 'ctrl+shift+n']);
   final ids = await _windowsAre(tester, count);
   await _until(tester, () => _views().length == count, 'a view a window');
+  // A third window opens at the runner's own size, which on Windows is wider
+  // than the screen, its buttons off it: it is put inside, over the others.
+  if (count == 3 && Platform.isWindows) {
+    await _xdo(['windowmove', ids[2], '260', '300']);
+    await _xdo(['windowsize', ids[2], '490', '400']);
+    await tester.pump(const Duration(seconds: 1));
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
+  }
   // Side by side, so a click in one lands on it and not on the one over it.
   if (count == 2) {
     await _xdo(['windowmove', ids[1], _bX, _bY]);
