@@ -17,6 +17,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -374,6 +375,19 @@ Future<void> _buttons(WidgetTester tester) async {
 /// same shell — and closes the second's own; a new window by the key; and the
 /// last window closing with no question and the process going.
 Future<void> _last(WidgetTester tester) async {
+  // Every error reported from here on, in the trace: a handover frame that
+  // threw would explain a frame that never ends.
+  final wasOnError = FlutterError.onError;
+  FlutterError.onError = (details) {
+    _trace('FlutterError: ${details.exceptionAsString().split('\n').first}');
+    _trace('  stack: ${'${details.stack}'.split('\n').take(6).join(' | ')}');
+    wasOnError?.call(details);
+  };
+  final wasPlatform = PlatformDispatcher.instance.onError;
+  PlatformDispatcher.instance.onError = (error, stack) {
+    _trace('PlatformDispatcher: ${'$error'.split('\n').first}');
+    return wasPlatform?.call(error, stack) ?? false;
+  };
   var ids = await _windowsAre(tester, 1);
   var a = _views().single;
   // A live shell in A, so closing it is asked.

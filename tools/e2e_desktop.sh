@@ -111,13 +111,15 @@ mw_phases() {
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
-        --dart-define=JEANSH_E2E_MWINDOW=$phase || true
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/last.log" || true
       if grep -q ready "$note" 2>/dev/null && grep -q ended "$note" &&
         ! grep -q asked "$note"; then
         echo "✅ multi-window: the last window closed with no question and the process ended"
       else
         echo "❌ multi-window: the last window: $(cat "$note" 2>/dev/null | tr '\n' ' ')"
         echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
+        echo "--- the last phase's output, its tail:"
+        tail -n 80 "$data/last.log"
         rc=1
       fi
     elif [ "$phase" = churn ]; then
