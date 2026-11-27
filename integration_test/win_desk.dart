@@ -53,6 +53,12 @@ final _keybdEvent = _user32
       Void Function(Uint8, Uint8, Uint32, UintPtr),
       void Function(int, int, int, int)
     >('keybd_event');
+final _getForegroundWindow = _user32
+    .lookupFunction<IntPtr Function(), int Function()>('GetForegroundWindow');
+final _mapVirtualKey = _user32
+    .lookupFunction<Uint32 Function(Uint32, Uint32), int Function(int, int)>(
+      'MapVirtualKeyW',
+    );
 final _moveWindow = _user32
     .lookupFunction<
       Int32 Function(IntPtr, Int32, Int32, Int32, Int32, Int32),
@@ -93,13 +99,17 @@ String winRect(String id) {
 /// The window brought to the front and given the keys: Windows lets a process
 /// take the foreground when it has just seen an Alt press, which is why one
 /// is made first.
-void winFocus(String id) {
+bool winFocus(String id) {
   final h = int.parse(id);
   _showWindow(h, 9);
-  _keybdEvent(0x12, 0, 0, 0);
+  _keybdEvent(0x12, _mapVirtualKey(0x12, 0), 0, 0);
   _setForegroundWindow(h);
-  _keybdEvent(0x12, 0, 2, 0);
+  _keybdEvent(0x12, _mapVirtualKey(0x12, 0), 2, 0);
+  return _getForegroundWindow() == h;
 }
+
+/// The window that has the keyboard now.
+String winForeground() => '${_getForegroundWindow()}';
 
 /// A click at [x], [y] in the window's own client area, in physical pixels.
 void winClick(String id, int x, int y, {int button = 1}) {
@@ -147,10 +157,12 @@ void winKey(String chord) {
       throw ArgumentError('no key called $part');
     }
   }
+  // With scan codes, as a keyboard sends them: Flutter's embedder names the
+  // physical key from the scan code.
   for (final code in codes) {
-    _keybdEvent(code, 0, 0, 0);
+    _keybdEvent(code, _mapVirtualKey(code, 0), 0, 0);
   }
   for (final code in codes.reversed) {
-    _keybdEvent(code, 0, 2, 0);
+    _keybdEvent(code, _mapVirtualKey(code, 0), 2, 0);
   }
 }
