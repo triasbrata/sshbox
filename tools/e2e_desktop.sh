@@ -117,6 +117,7 @@ mw_phases() {
         echo "✅ multi-window: the last window closed with no question and the process ended"
       else
         echo "❌ multi-window: the last window: $(cat "$note" 2>/dev/null | tr '\n' ' ')"
+        echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
         rc=1
       fi
     else

@@ -343,48 +343,71 @@ Future<void> _buttons(WidgetTester tester) async {
 /// 6 and the negative of 4: the first window closed while the second stays,
 /// a new one by the key, and the last closing with no question and the
 /// process going.
+void _trace(String what) {
+  debugPrint('multi-window: $what');
+  _note('trace').writeAsStringSync('$what\n', mode: FileMode.append);
+}
+
 Future<void> _last(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
+  _trace('step 1');
   var a = _views().single;
+  _trace('step 2');
   // A live shell in A, so closing it is asked.
   await _click(tester, ids[0], a, await _first(tester, _card, a, 'the card'));
+  _trace('step 3');
   await tester.pump(const Duration(seconds: 4));
+  _trace('step 4');
   await _newWindow(tester, ids[0], 2);
+  _trace('step 5');
   ids = await _windows();
   final views = _views();
+  _trace('step 6');
   a = views[0];
   final b = views[1];
+  _trace('step 7');
   final xa = ids[0];
+  _trace('step 8');
   final xb = ids[1];
+  _trace('step 9');
 
   // Close the first window: asked, as it holds a live shell; then B works.
   await _click(tester, xa, a, await _first(tester, _close, a, 'A\'s Close'));
+  _trace('step 10');
   await _until(
     tester,
     () => _in(find.byType(TuiDialog), a).isNotEmpty,
     'the question before A closes',
   );
+  _trace('step 11');
   await _click(
     tester,
     xa,
     a,
     await _first(tester, _button('Close window'), a, 'Close window'),
   );
+  _trace('step 12');
   await _windowsAre(tester, 1);
+  _trace('step 13');
   expect(await _windows(), [xb], reason: 'the wrong window is left');
   await _click(tester, xb, b, await _first(tester, _card, b, 'B\'s card'));
+  _trace('step 14');
   await _until(tester, () => _in(_tabClose, b).length == 1, 'a tab in B');
+  _trace('step 15');
   debugPrint('multi-window: A closed, B still opens a Local shell');
 
   // The key brings a window back, with Home.
   await _newWindow(tester, xb, 2);
+  _trace('step 16');
   ids = await _windows();
   final revived = ids.firstWhere((id) => id != xb);
+  _trace('step 17');
   await _until(
     tester,
     () => _in(find.text('Home'), 0).isNotEmpty,
     'Home in the new window',
   );
+  _trace('step 18');
   expect(_in(_tabClose, 0), isEmpty, reason: 'the new window has A\'s old tab');
   debugPrint('multi-window: a new window is back with Home and no tabs');
   await _click(
@@ -393,7 +416,9 @@ Future<void> _last(WidgetTester tester) async {
     0,
     await _first(tester, _close, 0, 'the new window\'s Close'),
   );
+  _trace('step 19');
   await _windowsAre(tester, 1);
+  _trace('step 20');
 
   // The last window, holding a live shell: nothing is asked, and the
   // process ends. A watcher outside it says when.
@@ -406,13 +431,18 @@ Future<void> _last(WidgetTester tester) async {
   ], mode: ProcessStartMode.detached);
   marker.writeAsStringSync('ready\n', mode: FileMode.append);
   await _click(tester, xb, b, await _first(tester, _close, b, 'B\'s Close'));
+  _trace('step 21');
   final asked = _in(find.byType(TuiDialog), b).isNotEmpty;
+  _trace('step 22');
   if (asked) marker.writeAsStringSync('asked\n', mode: FileMode.append);
   // No frame is waited for: the window may be gone, and a pump would wait.
   await Future<void>.delayed(const Duration(seconds: 3));
+  _trace('step 23');
   marker.writeAsStringSync(
     'windows left ${(await _windows()).length}\n',
     mode: FileMode.append,
   );
+  _trace('step 24');
   await Future<void>.delayed(const Duration(seconds: 20));
+  _trace('step 25');
 }
