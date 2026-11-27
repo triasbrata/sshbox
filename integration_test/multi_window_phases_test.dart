@@ -76,7 +76,12 @@ Future<String> _xdo(List<String> args) async {
 Future<String> _xdoWindows(List<String> a) async {
   switch (a.first) {
     case 'windowfocus':
-      winFocus(a[1]);
+      final got = winFocus(a[1]);
+      if (!got) {
+        _trace(
+          '${a[1]} did not take the foreground; ${winForeground()} has it',
+        );
+      }
     case 'mousemove':
       // mousemove --window ID X Y sleep S click B
       final at = a.indexOf('--window');
@@ -87,6 +92,7 @@ Future<String> _xdoWindows(List<String> a) async {
       );
       winClick(a[at + 1], x, y, button: int.parse(a.last));
     case 'key':
+      _trace('key ${a[1]}, foreground ${winForeground()}');
       winKey(a[1]);
     case 'windowmove':
       winPlace(a[1], x: int.parse(a[2]), y: int.parse(a[3]));
@@ -1165,51 +1171,70 @@ Future<void> _drop(WidgetTester tester) async {
     'both shells to draw their prompts',
   );
   final dir = Directory.systemTemp.createTempSync('jeansh-e2e-drop-');
+
+  // One file, dragged with the X pointer from a source window of its own to
+  // the middle of the window whose id is [target].
+  Future<void> dragTo(File file, String target) async {
+    final source = File('${dir.path}/drag_source_${file.uri.pathSegments.last}.py')
+      ..writeAsStringSync(_dragSource);
+    final process = await Process.start('python3', [source.path, file.path]);
+    try {
+      final sourceId = (await _xdo([
+        'search',
+        '--sync',
+        '--onlyvisible',
+        '--name',
+        r'^e2e drag source$',
+      ])).split('\n').first;
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      // Where the source really is: a window manager places it where it likes.
+      final geometry = await _xdo(['getwindowgeometry', '--shell', sourceId]);
+      int geo(String key) =>
+          int.parse(RegExp('$key=(-?\\d+)').firstMatch(geometry)!.group(1)!);
+      final sx = geo('X') + geo('WIDTH') ~/ 2;
+      final sy = geo('Y') + geo('HEIGHT') ~/ 2;
+      final r = (await _rect(target)).split(' ').map(int.parse).toList();
+      final cx = r[0] + r[2] ~/ 2;
+      final cy = r[1] + r[3] ~/ 2;
+      _trace('drop: ${file.uri.pathSegments.last}: from $sx,$sy to $cx,$cy');
+      await _xdo(['mousemove', '$sx', '$sy']);
+      await _xdo(['mousedown', '1']);
+      for (final (x, y) in [
+        (sx + 10, sy - 5),
+        (sx + 30, sy - 20),
+        (sx + 200, sy - 150),
+        (cx - 200, cy + 150),
+        (cx - 5, cy - 5),
+        (cx, cy),
+        (cx + 5, cy + 5),
+      ]) {
+        await _xdo(['mousemove', '$x', '$y']);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        await tester.pump();
+      }
+      await _xdo(['mouseup', '1']);
+      await tester.pump(const Duration(milliseconds: 500));
+    } finally {
+      process.kill();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+  }
+
+  // The control: a file dropped on the first window, which has always taken
+  // one, reaches its shell. Without it, a miss below might be the drag.
+  final first = File('${dir.path}/dropped-on-the-first.txt')
+    ..writeAsStringSync('x');
+  await dragTo(first, ids[0]);
+  await _until(
+    tester,
+    () => _shellText(shellIn(a)).contains('dropped-on-the-first.txt'),
+    'the control: the first window\'s shell to be handed the path',
+  );
+  _trace('drop: the control reached the first window\'s shell');
+
   final file = File('${dir.path}/dropped-on-the-second.txt')
     ..writeAsStringSync('x');
-  final source = File('${dir.path}/drag_source.py')
-    ..writeAsStringSync(_dragSource);
-  final process = await Process.start('python3', [source.path, file.path]);
-  try {
-    final sourceId = (await _xdo([
-      'search',
-      '--sync',
-      '--onlyvisible',
-      '--name',
-      r'^e2e drag source$',
-    ])).split('\n').first;
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    // Where the source really is: a window manager places it where it likes.
-    final geometry = await _xdo(['getwindowgeometry', '--shell', sourceId]);
-    int geo(String key) =>
-        int.parse(RegExp('$key=(-?\\d+)').firstMatch(geometry)!.group(1)!);
-    final sx = geo('X') + geo('WIDTH') ~/ 2;
-    final sy = geo('Y') + geo('HEIGHT') ~/ 2;
-    _trace('drop: the drag source is at $sx,$sy; the second window is '
-        '${await _rect(ids[1])}');
-    final r = (await _rect(ids[1])).split(' ').map(int.parse).toList();
-    final cx = r[0] + r[2] ~/ 2;
-    final cy = r[1] + r[3] ~/ 2;
-    await _xdo(['mousemove', '$sx', '$sy']);
-    await _xdo(['mousedown', '1']);
-    for (final (x, y) in [
-      (sx + 10, sy - 5),
-      (sx + 30, sy - 20),
-      (sx + 200, sy - 150),
-      (cx - 200, cy + 150),
-      (cx - 5, cy - 5),
-      (cx, cy),
-      (cx + 5, cy + 5),
-    ]) {
-      await _xdo(['mousemove', '$x', '$y']);
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-      await tester.pump();
-    }
-    await _xdo(['mouseup', '1']);
-    await tester.pump(const Duration(milliseconds: 500));
-  } finally {
-    process.kill();
-  }
+  await dragTo(file, ids[1]);
   final name = 'dropped-on-the-second.txt';
   try {
     await _until(
