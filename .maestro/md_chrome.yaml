@@ -112,7 +112,16 @@ env:
       - tapOn: "Select all"
       - waitForAnimationToEnd
       - takeScreenshot: md-chrome-${FILE}-selected
-      # The keyboard away first: its own b key is a "B" to Maestro too.
+      # The keyboard away first: its own b key is a "B" to Maestro too. Back
+      # closes Android's own selection toolbar before it closes the keyboard,
+      # so it is pressed again while Gboard's GIF key is still there, and
+      # never with no keyboard up, where it would close the tab.
+      - runFlow:
+          when:
+            visible: "GIF"
+          commands:
+            - hideKeyboard
+            - waitForAnimationToEnd
       - runFlow:
           when:
             visible: "GIF"
