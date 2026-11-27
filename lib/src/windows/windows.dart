@@ -175,7 +175,13 @@ class ChannelWindowBackend implements WindowBackend {
   @override
   Future<bool> get supported async {
     try {
-      return await _channel.invokeMethod<bool>('supported') ?? false;
+      // The engine's id goes with it: a runner that opens windows through
+      // the engine's C API, as Windows' does, finds the engine by it.
+      return await _channel.invokeMethod<bool>(
+            'supported',
+            PlatformDispatcher.instance.engineId,
+          ) ??
+          false;
     } on MissingPluginException {
       return false;
     } on PlatformException {
