@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+import 'package:xterm2/xterm.dart' show TerminalKey, TerminalView;
 import 'package:sshbox/src/ui/termul/tui_button.dart' show TuiButton;
 import 'package:sshbox/src/ui/termul/tui_dialog.dart' show TuiDialog;
 
@@ -368,145 +369,144 @@ Future<void> _buttons(WidgetTester tester) async {
   debugPrint('multi-window: B closed, A is the one left');
 }
 
-/// 6 and the negative of 4: the first window closed while the second stays,
-/// a new one by the key, and the last closing with no question and the
-/// process going.
+/// 6 and the negative of 4: closing the first window while the second is
+/// open moves the second into the first's X window — its frame, its tabs, the
+/// same shell — and closes the second's own; a new window by the key; and the
+/// last window closing with no question and the process going.
 Future<void> _last(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
-  _trace('step 1');
   var a = _views().single;
-  _trace('step 2');
   // A live shell in A, so closing it is asked.
   await _click(tester, ids[0], a, await _first(tester, _card, a, 'the card'));
-  _trace('step 3');
-  await tester.pump(const Duration(seconds: 4));
-  _trace('step 4');
+  await _until(tester, () => _in(_tabClose, a).length == 1, 'A\'s shell tab');
+  await tester.pump(const Duration(seconds: 3));
   await _newWindow(tester, ids[0], 2);
-  _trace('step 5');
   ids = await _windows();
   final views = _views();
-  _trace('step 6');
   a = views[0];
   final b = views[1];
-  _trace('step 7');
   final xa = ids[0];
-  _trace('step 8');
   final xb = ids[1];
-  _trace('step 9');
+  _trace('A and B open');
 
-  // Where B's card is, kept for a click made with no frame to wait for.
-  final bCard = await _first(tester, _card, b, 'B\'s card');
-  final bBox = bCard.renderObject! as RenderBox;
-  final bAt = bBox.localToGlobal(bBox.size.center(Offset.zero));
-  final bRatio = tester.binding.platformDispatcher
-      .view(id: b)!
-      .devicePixelRatio;
+  // A shell in B, and its process id kept.
+  await _click(tester, xb, b, await _first(tester, _card, b, 'B\'s card'));
+  await _until(tester, () => _in(_tabClose, b).length == 1, 'a tab in B');
+  TerminalView shellIn(int view) =>
+      _in(find.byType(TerminalView), view).first.widget as TerminalView;
+  await _until(
+    tester,
+    () =>
+        _in(find.byType(TerminalView), b).isNotEmpty &&
+        _drew(shellIn(b)),
+    'B\'s shell to draw its prompt',
+  );
+  final pid1 = _note('pid1');
+  if (pid1.existsSync()) pid1.deleteSync();
+  shellIn(b).terminal.textInput('echo \$\$ > ${pid1.path}');
+  shellIn(b).terminal.keyInput(TerminalKey.enter);
+  await _until(
+    tester,
+    () => pid1.existsSync() && pid1.readAsStringSync().trim().isNotEmpty,
+    'B\'s shell to write its process id',
+  );
+  final bRect = await _rect(xb);
+  _trace('B has a shell, pid ${pid1.readAsStringSync().trim()}, frame $bRect');
 
-  // Close the first window: asked, as it holds a live shell; then B works.
+  // Close the first window: asked, as it holds a live shell.
   await _click(tester, xa, a, await _first(tester, _close, a, 'A\'s Close'));
-  _trace('step 10');
   await _until(
     tester,
     () => _in(find.byType(TuiDialog), a).isNotEmpty,
     'the question before A closes',
   );
-  _trace('step 11');
   await _click(
     tester,
     xa,
     a,
     await _first(tester, _button('Close window'), a, 'Close window'),
   );
-  _trace('step 12');
   await _windowsAre(tester, 1);
-  _trace('step 13');
-  // Frames still come with the first window hidden? A pump waits for one.
+  _trace('one window left');
+
+  // Positive: window 0's own X window is the one left, at B's old frame.
+  final left = await _windows();
+  expect(left, [xa], reason: 'the window left is not the first one: $left');
+  final now = await _rect(xa);
+  _trace('the first window is at $now, B was at $bRect');
+  expect(now, bRect, reason: 'the first window is not at B\'s old frame');
+  // Negative: nothing left over, mapped or not, parked or not.
+  final all = await Process.run('xdotool', ['search', '--name', r'^Jeansh']);
+  final named = '${all.stdout}'.trim().split('\n').where((x) => x.isNotEmpty);
+  _trace('windows named Jeansh*, mapped or not: ${named.length}');
+  expect(named, hasLength(1), reason: 'a window is left over: $named');
+
+  // Frames come, and B's tab is in window 0, the same shell.
   WidgetsBinding.instance.scheduleFrame();
   final frame = await Future.any([
     WidgetsBinding.instance.endOfFrame.then((_) => true),
     Future<bool>.delayed(const Duration(seconds: 8), () => false),
   ]);
   _trace('a frame after the first window closed: $frame');
-  {
-    // With or without frames: is B dead, or only the test's pump? A click on its card
-    // and a command typed into the shell it opens, answered by a file.
-    IntegrationTestWidgetsFlutterBinding.instance
-            .shouldPropagateDevicePointerEvents =
-        true;
-    await _xdo(['windowfocus', xb]);
-    await _xdo([
-      'mousemove',
-      '--window',
-      xb,
-      '${(bAt.dx * bRatio).round()}',
-      '${(bAt.dy * bRatio).round()}',
-      'sleep',
-      '0.3',
-      'click',
-      '1',
-    ]);
-    await Future<void>.delayed(const Duration(seconds: 5));
-    final alive = _note('b-alive');
-    if (alive.existsSync()) alive.deleteSync();
-    await _xdo(['type', '--delay', '30', 'touch ${alive.path}']);
-    await _xdo(['key', 'Return']);
-    var answered = false;
-    for (var i = 0; i < 100 && !answered; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      answered = alive.existsSync();
-    }
-    _trace('B opened a shell and ran a command, no pump waited for: $answered');
-    IntegrationTestWidgetsFlutterBinding.instance
-            .shouldPropagateDevicePointerEvents =
-        false;
-    expect(answered, isTrue, reason: 'B did not answer real input');
-    expect(frame, isTrue, reason: 'no frame came after the first window closed');
-    final parked = await Process.run('xdotool', [
-      'search',
-      '--name',
-      r'^Jeansh \(parked\)$',
-    ]);
-    final parkedCount = '${parked.stdout}'.trim().split('\n').where((x) => x.isNotEmpty).length;
-    _trace('parked windows: $parkedCount');
-    expect(parkedCount, 1, reason: 'the first window is not parked');
-  }
-  expect(await _windows(), [xb], reason: 'the wrong window is left');
-  await _click(tester, xb, b, await _first(tester, _card, b, 'B\'s card'));
-  _trace('step 14');
-  await _until(tester, () => _in(_tabClose, b).length == 1, 'a tab in B');
-  _trace('step 15');
-  debugPrint('multi-window: A closed, B still opens a Local shell');
-
-  // The key brings a window back, with Home.
-  await _newWindow(tester, xb, 2);
-  _trace('step 16');
-  ids = await _windows();
-  final revived = ids.firstWhere((id) => id != xb);
-  final stillParked = await Process.run('xdotool', [
-    'search',
-    '--name',
-    r'^Jeansh \(parked\)$',
-  ]);
-  _trace('parked after the key: ${'${stillParked.stdout}'.trim().isEmpty ? 0 : 1}');
-  expect('${stillParked.stdout}'.trim(), isEmpty, reason: 'still parked');
-  _trace('step 17');
+  expect(frame, isTrue, reason: 'no frame came after the first window closed');
+  await _until(tester, () => _in(_tabClose, 0).length == 1, 'B\'s tab in window 0');
   await _until(
     tester,
-    () => _in(find.text('Home'), 0).isNotEmpty,
-    'Home in the new window',
+    () => _in(find.byType(TerminalView), 0).isNotEmpty,
+    'B\'s terminal in window 0',
   );
-  _trace('step 18');
-  expect(_in(_tabClose, 0), isEmpty, reason: 'the new window has A\'s old tab');
-  debugPrint('multi-window: a new window is back with Home and no tabs');
+  // Real input: a click on the terminal and a command typed to it, answered
+  // by a file; no pump is waited for.
+  final box = _in(find.byType(TerminalView), 0).first.renderObject! as RenderBox;
+  final at = box.localToGlobal(box.size.center(Offset.zero));
+  final ratio = tester.binding.platformDispatcher.view(id: 0)!.devicePixelRatio;
+  final binding = IntegrationTestWidgetsFlutterBinding.instance;
+  binding.shouldPropagateDevicePointerEvents = true;
+  final pid2 = _note('pid2');
+  if (pid2.existsSync()) pid2.deleteSync();
+  await _xdo(['windowfocus', xa]);
+  await _xdo([
+    'mousemove',
+    '--window',
+    xa,
+    '${(at.dx * ratio).round()}',
+    '${(at.dy * ratio).round()}',
+    'sleep',
+    '0.3',
+    'click',
+    '1',
+  ]);
+  await Future<void>.delayed(const Duration(seconds: 1));
+  await _xdo(['type', '--delay', '30', 'echo \$\$ > ${pid2.path}']);
+  await _xdo(['key', 'Return']);
+  var answered = false;
+  for (var i = 0; i < 100 && !answered; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    answered = pid2.existsSync() && pid2.readAsStringSync().trim().isNotEmpty;
+  }
+  binding.shouldPropagateDevicePointerEvents = false;
+  _trace('window 0 answered real input: $answered');
+  expect(answered, isTrue, reason: 'window 0 did not answer real input');
+  expect(
+    pid2.readAsStringSync().trim(),
+    pid1.readAsStringSync().trim(),
+    reason: 'the shell was not the same one: it was started again',
+  );
+  _trace('the same shell, pid ${pid2.readAsStringSync().trim()}');
+
+  // The key then opens a window as it always does, and it closes again.
+  await _newWindow(tester, xa, 2);
+  ids = await _windows();
+  final nowViews = _views();
+  expect(nowViews, hasLength(2));
   await _click(
     tester,
-    revived,
-    0,
-    await _first(tester, _close, 0, 'the new window\'s Close'),
+    ids[1],
+    nowViews[1],
+    await _first(tester, _close, nowViews[1], 'the new window\'s Close'),
   );
-  _trace('step 19');
   await _windowsAre(tester, 1);
-  _trace('step 20');
+  _trace('a new window opened and closed');
 
   // The last window, holding a live shell: nothing is asked, and the
   // process ends. A watcher outside it says when.
@@ -518,21 +518,16 @@ Future<void> _last(WidgetTester tester) async {
         'echo ended >> ${marker.path}',
   ], mode: ProcessStartMode.detached);
   marker.writeAsStringSync('ready\n', mode: FileMode.append);
-  await _click(tester, xb, b, await _first(tester, _close, b, 'B\'s Close'));
-  _trace('step 21');
-  final asked = _in(find.byType(TuiDialog), b).isNotEmpty;
-  _trace('step 22');
+  await _click(tester, xa, 0, await _first(tester, _close, 0, 'the last Close'));
+  final asked = _in(find.byType(TuiDialog), 0).isNotEmpty;
   if (asked) marker.writeAsStringSync('asked\n', mode: FileMode.append);
   // No frame is waited for: the window may be gone, and a pump would wait.
   await Future<void>.delayed(const Duration(seconds: 3));
-  _trace('step 23');
   marker.writeAsStringSync(
     'windows left ${(await _windows()).length}\n',
     mode: FileMode.append,
   );
-  _trace('step 24');
   await Future<void>.delayed(const Duration(seconds: 20));
-  _trace('step 25');
 }
 
 /// 10 rounds of A, B and C opened and closed, C first: the sequence that
@@ -565,4 +560,12 @@ Future<void> _churn(WidgetTester tester) async {
     ids = await _windowsAre(tester, 1);
     _trace('churn round $round done');
   }
+}
+
+bool _drew(TerminalView view) {
+  final lines = view.terminal.buffer.lines;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].getText().trim().isNotEmpty) return true;
+  }
+  return false;
 }
