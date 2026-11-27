@@ -207,6 +207,8 @@ mw_phases_windows() {
   note="$data/jeansh-e2e-mw-last.txt"
   for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore last}; do
     echo "experiment: windows phase: $phase"
+    # No window of a phase before is left on the screen to be counted.
+    taskkill //F //IM Jeansh.exe >/dev/null 2>&1
     case "$phase" in
       t[1-4] | last) home=$(mktemp -d) ;;
       *) home=$data ;;

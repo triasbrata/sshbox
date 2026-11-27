@@ -146,10 +146,15 @@ Future<List<String>> _windows() async {
 
 Future<List<String>> _windowsAre(WidgetTester tester, int count) async {
   var ids = <String>[];
-  await _until(tester, () async {
-    ids = await _windows();
-    return ids.length == count;
-  }, '$count windows (now ${ids.length}: $ids)');
+  try {
+    await _until(tester, () async {
+      ids = await _windows();
+      return ids.length == count;
+    }, '$count windows');
+  } on TestFailure {
+    _trace('wanted $count windows, saw ${ids.length}: $ids');
+    rethrow;
+  }
   debugPrint('multi-window: $count windows: $ids');
   return ids;
 }
