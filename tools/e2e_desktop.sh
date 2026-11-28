@@ -149,11 +149,15 @@ mw_phases() {
       rm -f "$data/jeansh-e2e-mw-trace.txt"
     elif [ "$phase" = churn ]; then
       # The app's stderr is in flutter test's output, kept to be read for a
-      # crash line.
+      # crash line. A repeated churn phase (E2E_MW_PHASES="churn churn …")
+      # starts from an empty trace, so each run counts its own rounds.
+      rm -f "$data/jeansh-e2e-mw-trace.txt"
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 400 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
         --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/churn.log" || true
       rounds=$(grep -c 'churn round' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)
+      echo "churn run result: $rounds of 10 rounds"
+      grep -a 'win:' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -n 12 | sed 's/^/last win line: /'
       crashes=$(grep -ciE 'segmentation|signal 11|core dumped|CRITICAL|Lost connection' "$data/churn.log")
       if [ "$rounds" = 10 ] && [ "$crashes" = 0 ]; then
         echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit, no crash line in stderr"
@@ -220,11 +224,19 @@ mw_phases_windows() {
       t[1-4] | last) home=$(mktemp -d) ;;
       *) home=$data ;;
     esac
+    # The runner's own log of what it does to each window and how the process
+    # ends (appended, one "---- start, pid N" a launch), in the real roaming
+    # profile whatever APPDATA says: emptied before a phase, shown after it.
+    runner_log="$(cygpath -u "$USERPROFILE")/AppData/Roaming/cloud.brata/Jeansh/runner.log"
+    rm -f "$runner_log"
     JEANSH_E2E_MW_DIR=$(cygpath -m "$data") APPDATA=$(cygpath -w "$home") \
       timeout 400 flutter test integration_test/multi_window_phases_test.dart \
       -d windows --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/$phase.log"
     flutter_rc=${PIPESTATUS[0]}
     echo "exit: phase $phase flutter test exit code $flutter_rc"
+    echo "--- runner.log after phase $phase:"
+    tail -n 80 "$runner_log" 2>&1 | cut -c1-240
+    echo "--- end of runner.log"
     # What Windows says of a Jeansh.exe that crashed in this phase: an
     # Application Error event carries the exception code (0xc0000005 is an
     # access violation); no event means the process left by itself.
