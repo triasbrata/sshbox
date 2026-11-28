@@ -4669,6 +4669,22 @@ touch '${done.path}'
         'packed scrollback: tmux fill $packed of '
         '${terminal.buffer.lines.length} lines packed',
       );
+      if (packed <= 100) {
+        // Which lines, as runs from the oldest: P packed, . not.
+        final runs = StringBuffer();
+        final all = terminal.buffer.lines;
+        var from = 0;
+        for (var i = 1; i <= all.length; i++) {
+          if (i == all.length || all[i].isPacked != all[from].isPacked) {
+            runs.write('${all[from].isPacked ? 'P' : '.'}${i - from} ');
+            from = i;
+          }
+        }
+        debugPrint(
+          'PROBE unpacked fill: runs $runs, view ${terminal.viewWidth}x'
+          '${terminal.viewHeight}, scrollBack ${terminal.buffer.scrollBack}',
+        );
+      }
       expect(
         packed,
         greaterThan(100),
