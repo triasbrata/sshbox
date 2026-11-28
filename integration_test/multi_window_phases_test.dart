@@ -249,6 +249,7 @@ Future<List<String>> _windowsAre(WidgetTester tester, int count) async {
     }, '$count windows');
   } on TestFailure {
     _trace('wanted $count windows, saw ${ids.length}: $ids');
+    if (Platform.isMacOS) _trace('windows: ${await macDump()}');
     rethrow;
   }
   debugPrint('multi-window: $count windows: $ids');

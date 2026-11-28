@@ -53,6 +53,19 @@ case "windows":
       "\(window.number) \(Int(window.rect.minX.rounded())) \(Int(window.rect.minY.rounded())) "
         + "\(Int(window.rect.width.rounded())) \(Int(window.rect.height.rounded()))")
   }
+case "dump":
+  // Everything the window server says of this process's windows.
+  let pid = pid_t(args[2])!
+  let list =
+    CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+  for window in list where (window[kCGWindowOwnerPID as String] as? pid_t) == pid {
+    let number = window[kCGWindowNumber as String] ?? "?"
+    let layer = window[kCGWindowLayer as String] ?? "?"
+    let alpha = window[kCGWindowAlpha as String] ?? "?"
+    let onscreen = window[kCGWindowIsOnscreen as String] ?? "no"
+    let bounds = window[kCGWindowBounds as String] ?? "?"
+    print("#\(number) layer \(layer) alpha \(alpha) onscreen \(onscreen) \(bounds)")
+  }
 case "screen":
   let frame = NSScreen.main?.frame ?? .zero
   print("\(Int(frame.width)) \(Int(frame.height))")
