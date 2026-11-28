@@ -22,3 +22,9 @@ may name the view an event is for with a "view" call before it, and
 Windows attach to the first window's view alone). A `DropTarget` ignores an
 event for a view it is not in, so a file dropped on one window is not handed
 to the drop targets of another, and so not uploaded to its host.
+
+Linux and Windows: the plugin now keeps its channel for every window, each
+window's drop target says its view before each event, and
+`desktop_drop_plugin_attach_view` (Linux) and `DesktopDropAttachWindow` /
+`DesktopDropDetachWindow` (Windows) put one on the view of a window the app
+opens after the first, so a file can be dropped on any window.

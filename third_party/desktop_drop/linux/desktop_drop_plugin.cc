@@ -13,6 +13,18 @@ struct _DesktopDropPlugin {
   GObject parent_instance;
 };
 
+// The plugin's one channel, which every window's view says its events on.
+static FlMethodChannel *g_channel = nullptr;
+
+// Says which view the event that follows is for. A channel keeps its
+// messages in order, so the Dart side reads the view first, and gives the
+// event to the drop targets of that window alone.
+static void say_view(FlMethodChannel *channel, GtkWidget *widget) {
+  g_autoptr(FlValue) id = fl_value_new_int(fl_view_get_id(FL_VIEW(widget)));
+  fl_method_channel_invoke_method(channel, "view", id, nullptr, nullptr,
+                                  nullptr);
+}
+
 static gboolean isKDE = FALSE;
 static gboolean ignoreNext = FALSE;
 
@@ -22,6 +34,7 @@ void on_drag_data_received(GtkWidget *widget, GdkDragContext *drag_context,
                            gint x, gint y, GtkSelectionData *sdata, guint info,
                            guint time, gpointer user_data) {
   auto *channel = static_cast<FlMethodChannel *>(user_data);
+  say_view(channel, widget);
   const gchar *method_name = "performOperation_linux";
 
   // The portal target carries a one-time transfer key instead of URIs.
@@ -56,6 +69,7 @@ void on_drag_motion(GtkWidget *widget, GdkDragContext *drag_context,
   }
 
   auto *channel = static_cast<FlMethodChannel *>(user_data);
+  say_view(channel, widget);
   double point[] = {double(x), double(y)};
   g_autoptr(FlValue) args = fl_value_new_float_list(point, 2);
   fl_method_channel_invoke_method(channel, "updated", args,
@@ -64,6 +78,7 @@ void on_drag_motion(GtkWidget *widget, GdkDragContext *drag_context,
 
 void on_drag_leave(GtkWidget *widget, GdkDragContext *drag_context, guint time, gpointer user_data) {
   auto *channel = static_cast<FlMethodChannel *>(user_data);
+  say_view(channel, widget);
   fl_method_channel_invoke_method(channel, "exited", nullptr,
                                   nullptr, nullptr, nullptr);
 }
@@ -107,11 +122,11 @@ static void method_call_cb(FlMethodChannel *channel, FlMethodCall *method_call,
   desktop_drop_plugin_handle_method_call(plugin, method_call);
 }
 
-void desktop_drop_plugin_register_with_registrar(FlPluginRegistrar *registrar) {
-  DesktopDropPlugin *plugin = DESKTOP_DROP_PLUGIN(
-      g_object_new(desktop_drop_plugin_get_type(), nullptr));
-
-  auto *fl_view = fl_plugin_registrar_get_view(registrar);
+// Makes [fl_view] a place files can be dropped, its events on the plugin's
+// channel. The first window's view is attached when the plugin registers; the
+// app calls this for each window after it.
+void desktop_drop_plugin_attach_view(FlView *fl_view) {
+  if (g_channel == nullptr) return;
   // Register portal file transfer target FIRST (highest priority)
   // then STRING, then URI targets
   static GtkTargetEntry entries[] = {
@@ -121,6 +136,22 @@ void desktop_drop_plugin_register_with_registrar(FlPluginRegistrar *registrar) {
   gtk_drag_dest_set(GTK_WIDGET(fl_view), GTK_DEST_DEFAULT_ALL, entries, 2, GDK_ACTION_COPY);
   gtk_drag_dest_add_uri_targets(GTK_WIDGET(fl_view));
 
+  g_signal_connect(fl_view, "drag-motion",
+                   G_CALLBACK(on_drag_motion), g_channel);
+  g_signal_connect(GTK_WIDGET(fl_view), "drag-data-received",
+                   G_CALLBACK(on_drag_data_received), g_channel);
+  g_signal_connect(GTK_WIDGET(fl_view), "drag-leave",
+                   G_CALLBACK(on_drag_leave), g_channel);
+  g_signal_connect(fl_view, "focus-in-event",
+                   G_CALLBACK(on_focus_in_event), nullptr);
+}
+
+void desktop_drop_plugin_register_with_registrar(FlPluginRegistrar *registrar) {
+  DesktopDropPlugin *plugin = DESKTOP_DROP_PLUGIN(
+      g_object_new(desktop_drop_plugin_get_type(), nullptr));
+
+  auto *fl_view = fl_plugin_registrar_get_view(registrar);
+
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
   FlMethodChannel *channel =
       fl_method_channel_new(fl_plugin_registrar_get_messenger(registrar),
@@ -129,15 +160,8 @@ void desktop_drop_plugin_register_with_registrar(FlPluginRegistrar *registrar) {
   fl_method_channel_set_method_call_handler(channel, method_call_cb,
                                             g_object_ref(plugin),
                                             g_object_unref);
-
-  g_signal_connect(fl_view, "drag-motion",
-                   G_CALLBACK(on_drag_motion), channel);
-  g_signal_connect(GTK_WIDGET(fl_view), "drag-data-received",
-                   G_CALLBACK(on_drag_data_received), channel);
-  g_signal_connect(GTK_WIDGET(fl_view), "drag-leave",
-                   G_CALLBACK(on_drag_leave), channel);
-  g_signal_connect(fl_view, "focus-in-event",
-                   G_CALLBACK(on_focus_in_event), nullptr);
+  g_channel = channel;
+  desktop_drop_plugin_attach_view(fl_view);
 
   g_object_unref(plugin);
 }

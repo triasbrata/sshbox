@@ -12,7 +12,10 @@
 
 namespace {
 
-    using FlutterMethodChannel = std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>;
+    // Shared: every window's drop target says its events on the one channel.
+    using FlutterMethodChannel = std::shared_ptr<flutter::MethodChannel<flutter::EncodableValue>>;
+
+    FlutterMethodChannel g_channel;
 
 
     using namespace std::literals::string_literals;
@@ -81,7 +84,7 @@ namespace {
     class DesktopDropTarget : public IDropTarget {
     public:
 
-        DesktopDropTarget(FlutterMethodChannel channel, HWND window_handle);
+        DesktopDropTarget(FlutterMethodChannel channel, HWND window_handle, int64_t view_id);
 
         HRESULT DragEnter(IDataObject *pDataObj, DWORD grfKeyState, POINTL pt, DWORD *pdwEffect) override;
 
@@ -100,7 +103,13 @@ namespace {
         virtual ~DesktopDropTarget();
 
     private:
+        // Says which view the event that follows is for: a channel keeps its
+        // messages in order, so the Dart side reads the view first, and gives
+        // the event to the drop targets of that window alone.
+        void SayView();
+
         FlutterMethodChannel channel_;
+        int64_t view_id_;
         HWND window_handle_;
         LONG ref_count_;
         bool need_revoke_ole_initialize_;
@@ -134,7 +143,7 @@ namespace {
     void DesktopDropPlugin::RegisterWithRegistrar(
             flutter::PluginRegistrarWindows *registrar) {
         auto channel =
-                std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+                std::make_shared<flutter::MethodChannel<flutter::EncodableValue>>(
                         registrar->messenger(), "desktop_drop",
                         &flutter::StandardMethodCodec::GetInstance());
 
@@ -152,7 +161,8 @@ namespace {
             result->NotImplemented();
         });
 
-        auto drop_target = new DesktopDropTarget(std::move(channel), hwnd);
+        g_channel = channel;
+        auto drop_target = new DesktopDropTarget(std::move(channel), hwnd, 0);
 
         auto plugin = std::make_unique<DesktopDropPlugin>(drop_target);
 
@@ -160,8 +170,8 @@ namespace {
     }
 
 
-    DesktopDropTarget::DesktopDropTarget(FlutterMethodChannel channel, HWND window_handle) : channel_(
-            std::move(channel)), window_handle_(window_handle), ref_count_(0), need_revoke_ole_initialize_(false) {
+    DesktopDropTarget::DesktopDropTarget(FlutterMethodChannel channel, HWND window_handle, int64_t view_id) : channel_(
+            std::move(channel)), view_id_(view_id), window_handle_(window_handle), ref_count_(0), need_revoke_ole_initialize_(false) {
         auto ret = RegisterDragDrop(window_handle_, this);
         if (ret == E_OUTOFMEMORY) {
             OleInitialize(nullptr);
@@ -176,9 +186,14 @@ namespace {
         }
     }
 
+    void DesktopDropTarget::SayView() {
+        channel_->InvokeMethod("view", std::make_unique<flutter::EncodableValue>(view_id_));
+    }
+
     HRESULT DesktopDropTarget::DragEnter(IDataObject *pDataObj, DWORD grfKeyState, POINTL pt, DWORD *pdwEffect) {
         POINT point = {pt.x, pt.y};
         ScreenToClient(window_handle_, &point);
+        SayView();
         channel_->InvokeMethod("entered", std::make_unique<flutter::EncodableValue>(
                 flutter::EncodableList{
                         flutter::EncodableValue(double(point.x)),
@@ -191,6 +206,7 @@ namespace {
     HRESULT DesktopDropTarget::DragOver(DWORD grfKeyState, POINTL pt, DWORD *pdwEffect) {
         POINT point = {pt.x, pt.y};
         ScreenToClient(window_handle_, &point);
+        SayView();
         channel_->InvokeMethod("updated", std::make_unique<flutter::EncodableValue>(
                 flutter::EncodableList{
                         flutter::EncodableValue(double(point.x)),
@@ -201,6 +217,7 @@ namespace {
     }
 
     HRESULT DesktopDropTarget::DragLeave() {
+        SayView();
         channel_->InvokeMethod("exited", std::make_unique<flutter::EncodableValue>());
         return 0;
     }
@@ -236,6 +253,7 @@ namespace {
                 ReleaseStgMedium(&stgmed);
             }
         }
+        SayView();
         channel_->InvokeMethod("performOperation", std::make_unique<flutter::EncodableValue>(list));
 
         return 0;
@@ -282,4 +300,17 @@ void DesktopDropPluginRegisterWithRegistrar(
             flutter::PluginRegistrarManager::GetInstance()
                     ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
 
+}
+
+// A drop target on the view of a window the app opened after the first: its
+// events name the view. The first window's is made on registering.
+void DesktopDropAttachWindow(HWND view, int64_t view_id) {
+    if (!g_channel || view == nullptr) return;
+    // Held by OLE once registered, and let go when it is revoked.
+    new DesktopDropTarget(g_channel, view, view_id);
+}
+
+// Takes it away again, before the window goes.
+void DesktopDropDetachWindow(HWND view) {
+    if (view != nullptr) RevokeDragDrop(view);
 }
