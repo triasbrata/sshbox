@@ -192,7 +192,9 @@ if [ "$target" = mw-phases ]; then
   sleep 1
   rc=0
   mw_phases || rc=1
-  kill $wm 2>/dev/null
+  # The drop phase stops the window manager itself, so there may be none left
+  # to kill; under `set -e` that failed kill would end the script with 1.
+  kill $wm 2>/dev/null || true
   exit $rc
 fi
 
