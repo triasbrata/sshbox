@@ -458,7 +458,7 @@ final class Windows {
       // leave the app's tree.
       RunnerLog.write("call hide \(call.arguments ?? "?")")
       if let id = call.arguments as? Int, let entry = entries[id] {
-        entry.window.orderOut(nil)
+        // MUTATION: hide is a no-op.
       }
       result(nil)
     case "place":
