@@ -55,6 +55,10 @@ class _Runner implements WindowBackend {
   Future<void> activate(int id) async => activated.add(id);
 
   final placed = <(int, WindowFrame)>[];
+  final hidden = <int>[];
+
+  @override
+  Future<void> hide(int id) async => hidden.add(id);
 
   @override
   Future<void> place(int id, WindowFrame frame) async =>
@@ -421,7 +425,8 @@ void main() {
           make: _make,
           restore: (_) async {},
           settle: () async {
-            order.add('settle');
+            // Off the screen by now, before its view is out of the tree.
+            order.add('settle, hidden ${runner.hidden}');
             await gate.future;
           },
         );
@@ -435,7 +440,7 @@ void main() {
         expect(runner.closed, isEmpty);
         gate.complete();
         await closing;
-        expect(order, ['settle']);
+        expect(order, ['settle, hidden [${second.id}]']);
         expect(runner.closed, [second.id]);
       },
     );
@@ -489,6 +494,8 @@ void main() {
       expect(second.viewId, 7);
       expect([for (final s in second.sessions.sessions) s.host.id], ['other']);
       expect(runner.placed, [(0, place)]);
+      // The heir's own window came off the screen before the swap.
+      expect(runner.hidden, [secondId]);
       // The view that was its own is what goes, and the first window's
       // never does.
       expect(runner.closed, [secondId]);
@@ -658,6 +665,24 @@ void main() {
       },
     );
 
+    test(
+      'takes a window off the screen, and leaves it when the runner cannot',
+      () async {
+        final backend = ChannelWindowBackend(channel);
+        await backend.hide(4);
+        expect(calls.single.method, 'hide');
+        expect(calls.single.arguments, 4);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              throw PlatformException(code: 'no');
+            });
+        await backend.hide(4);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+        await backend.hide(4);
+      },
+    );
+
     test('is single where the runner has no half of it', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
@@ -718,6 +743,7 @@ void main() {
       expect(await single.open(), isNull);
       await single.close(0);
       await single.activate(0);
+      await single.hide(1);
       await single.place(0, const WindowFrame(x: 0, y: 0, width: 1, height: 1));
       expect(await single.events.isEmpty, isTrue);
     });
