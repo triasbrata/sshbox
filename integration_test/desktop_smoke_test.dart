@@ -196,6 +196,22 @@ Future<void> _until(
   Duration timeout = const Duration(seconds: 20),
 }) => _timed('until', () => _untilTimed(tester, done, what, timeout: timeout));
 
+/// Taps [finder] once it is drawn inside the window: the files drawer slides
+/// in from the right, and its rows exist before they are on the screen.
+Future<void> _tapInWindow(
+  WidgetTester tester,
+  Finder finder,
+  String what,
+) async {
+  final width = tester.view.physicalSize.width / tester.view.devicePixelRatio;
+  await _until(
+    tester,
+    () => finder.evaluate().isNotEmpty && tester.getCenter(finder).dx < width,
+    '$what to slide into the window',
+  );
+  await tester.tap(finder);
+}
+
 Future<void> _untilTimed(
   WidgetTester tester,
   FutureOr<bool> Function() done,
@@ -3160,7 +3176,7 @@ touch '${done.path}'
         () => folder.evaluate().isNotEmpty,
         "the drawer to list the test's folder in the home",
       );
-      await tester.tap(folder);
+      await _tapInWindow(tester, folder, "the drawer's folder row");
       await _until(
         tester,
         () => find.text(name).evaluate().isNotEmpty,
@@ -7155,7 +7171,7 @@ touch '${done.path}'
         () => folder.evaluate().isNotEmpty,
         "the drawer to list the test's folder",
       );
-      await tester.tap(folder);
+      await _tapInWindow(tester, folder, "the drawer's folder row");
       await _until(
         tester,
         () => find.text(name).evaluate().isNotEmpty,
@@ -7293,7 +7309,11 @@ touch '${done.path}'
         () => folder.evaluate().isNotEmpty,
         "the drawer to list the test's folder",
       );
-      await tester.tap(folder);
+      // The drawer slides in from the right edge, and its rows exist before
+      // they are on the screen: a tap on the row then lands outside the
+      // window (Offset(828.5, 132.0) on a Mac, run 46007645811). Wait for
+      // the row to be drawn inside it.
+      await _tapInWindow(tester, folder, "the drawer's folder row");
       await _until(
         tester,
         () => find.text(name(0)).evaluate().isNotEmpty,
