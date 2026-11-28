@@ -44,6 +44,9 @@ struct Windows {
   FlutterDesktopEngineRef engine = nullptr;
   FlutterWindow* first = nullptr;
   std::vector<FlutterWindow*> others;
+  // Windows the app has closed, hidden with their view still on the engine,
+  // for the next one it opens.
+  std::vector<FlutterWindow*> pool;
   flutter::MethodChannel<flutter::EncodableValue>* window_channel = nullptr;
   flutter::MethodChannel<flutter::EncodableValue>* windows_channel = nullptr;
   // The app asked for several windows, so it is asked before one closes.
@@ -243,6 +246,30 @@ bool FlutterWindow::OnCreate() {
   flutter_controller_->ForceRedraw();
 
   return true;
+}
+
+// The app has closed this window: out of sight, off the screen's input and out
+// of the app's list, its view still on the engine.
+void FlutterWindow::Park() {
+  runner_log::Write("window id %d: parked", id_);
+  int closed = id_;
+  if (view_ != nullptr) SetProp(view_, kClosingProp, HANDLE(1));
+  if (GetHandle() != nullptr) {
+    EnableWindow(GetHandle(), FALSE);
+    ShowWindow(GetHandle(), SW_HIDE);
+  }
+  auto& others = g_windows.others;
+  others.erase(std::remove(others.begin(), others.end(), this), others.end());
+  g_windows.pool.push_back(this);
+  id_ = -1;
+  NotifyWindows("closed", flutter::EncodableValue(closed));
+}
+
+// A parked window opened again as window |id|.
+void FlutterWindow::Unpark(int id) {
+  id_ = id;
+  if (view_ != nullptr) RemoveProp(view_, kClosingProp);
+  EnableWindow(GetHandle(), TRUE);
 }
 
 // The view goes, and the engine stays. Done while the window and the view's own
@@ -528,8 +555,29 @@ void FlutterWindow::OnWindowsCall(
     bool maximized = false;
     bool framed = FrameOf(arguments, &rect, &maximized);
     int id = g_windows.next_id++;
-    runner_log::Write("call open -> id %d", id);
-    auto* window = new FlutterWindow(g_windows.engine, id);
+    runner_log::Write("call open -> id %d, %d parked", id,
+                      static_cast<int>(g_windows.pool.size()));
+    FlutterWindow* window = nullptr;
+    if (!g_windows.pool.empty()) {
+      window = g_windows.pool.back();
+      g_windows.pool.pop_back();
+      window->Unpark(id);
+      unsigned int step = 40 * static_cast<unsigned int>(id % 8);
+      SetWindowPos(window->GetHandle(), nullptr, 10 + step, 10 + step, 0, 0,
+                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      if (framed) window->ApplyPlacement(rect, maximized);
+      window->Show();
+      g_windows.others.push_back(window);
+      NotifyWindows("opened",
+                    flutter::EncodableValue(flutter::EncodableMap{
+                        {flutter::EncodableValue("id"),
+                         flutter::EncodableValue(id)},
+                        {flutter::EncodableValue("viewId"),
+                         flutter::EncodableValue(window->view_id_)}}));
+      result->Success(flutter::EncodableValue(id));
+      return;
+    }
+    window = new FlutterWindow(g_windows.engine, id);
     // Each a little lower and to the right of the last, as a window manager
     // would place them; a saved frame replaces that.
     unsigned int step = 40 * static_cast<unsigned int>(id % 8);
@@ -572,10 +620,13 @@ void FlutterWindow::OnWindowsCall(
       // engine's lifecycle, which turns the close of what it counts as the last
       // window into a request to quit the app. The engine's rule should only
       // ever see the user's own close of the final window.
-      runner_log::Write("close %d: DestroyWindow %p", id, target->GetHandle());
-      target->ReleaseView();
-      if (target->GetHandle() != nullptr) DestroyWindow(target->GetHandle());
-      runner_log::Write("close %d: DestroyWindow returned", id);
+      // Not destroyed at all: taking a view off the engine and destroying its
+      // window ended the process with an access violation in
+      // flutter_windows.dll (FlutterDesktopViewControllerDestroy, runner.log
+      // of run 46137597351) for the third window, and for the heir after a
+      // handover, though not for the second. The window goes out of sight and
+      // waits, view and all, for the next one the app opens.
+      target->Park();
     }
     result->Success();
   } else if (method == "hide" && arguments != nullptr &&
