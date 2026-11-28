@@ -101,6 +101,12 @@ case "click":
   post(up, at: at, button: button)
   usleep(50_000)
   print("clicked \(Int(at.x)),\(Int(at.y)) in window \(number) (\(bounds))")
+case "moveto":
+  // The pointer put somewhere, as a hand puts it, with no button.
+  let at = CGPoint(x: Double(args[2])!, y: Double(args[3])!)
+  post(.mouseMoved, at: at, button: .left)
+  usleep(100_000)
+  print("moved to \(Int(at.x)),\(Int(at.y))")
 case "clickat":
   // A click at a point of the screen, as it is.
   let at = CGPoint(x: Double(args[2])!, y: Double(args[3])!)
