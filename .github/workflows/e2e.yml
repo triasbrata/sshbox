@@ -655,7 +655,7 @@ jobs:
         timeout-minutes: 30
         run: |
           feed=http://127.0.0.1:47719
-          E2E_MW_ONLY=1 tools/e2e_desktop.sh macos \
+          E2E_MW_ONLY=1 E2E_MW_PHASES="save save save" tools/e2e_desktop.sh macos \
             --dart-define=JEANSH_UPDATE_HOST=$feed \
             --dart-define=JEANSH_UPDATE_FEED=$feed/latest.json \
             --dart-define=JEANSH_VERSION=1.0.0+1
