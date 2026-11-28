@@ -26,8 +26,11 @@ func listed(pid: pid_t, all: Bool) -> [(number: Int, rect: CGRect)] {
       let dictionary = window[kCGWindowBounds as String] as? NSDictionary,
       let rect = CGRect(dictionaryRepresentation: dictionary)
     else { continue }
-    // The helper windows an app keeps are small or empty; a window is wider.
-    if rect.width < 100 || rect.height < 100 { continue }
+    // On the screen, a window is whatever size it has: one that opened tiny is
+    // still a window. Off it, the helper windows an app keeps (the menu bar's
+    // strips) are not, and are left out by their size.
+    let onScreen = (window[kCGWindowIsOnscreen as String] as? Bool) ?? false
+    if all ? (rect.width < 100 || rect.height < 100) : !onScreen { continue }
     found.append((number, rect))
   }
   return found.sorted { $0.number < $1.number }
