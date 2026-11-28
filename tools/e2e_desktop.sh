@@ -315,6 +315,7 @@ mw_phases_macos() {
     echo "--- runner.log after phase $phase:"
     tail -n 80 "$runner_log" 2>&1 | cut -c1-240
     echo "--- end of runner.log"
+    echo "runner.log counts after phase $phase: released $(grep -c 'NSWindow released' "$runner_log" 2>/dev/null), still held $(grep -c 'STILL HELD' "$runner_log" 2>/dev/null)"
     # What macOS says of a Jeansh that crashed in this phase.
     ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i "jeansh\|sshbox" | head -3 | sed 's/^/crash report: /'
     echo "bad state: $(grep "phase $phase .*bad state tolerated" "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -1)"

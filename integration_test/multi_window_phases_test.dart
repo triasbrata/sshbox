@@ -295,7 +295,20 @@ List<int> _views() => {
 
 /// A window's own close: the app's Close button where it draws one, ⌘W on a
 /// Mac, whose title bar is the system's.
-Future<void> _clickClose(WidgetTester tester, String xid, int viewId) async {
+Future<void> _clickClose(
+  WidgetTester tester,
+  String xid,
+  int viewId, {
+  bool key = false,
+}) async {
+  if (Platform.isMacOS && key) {
+    await _xdo(['windowfocus', xid]);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    _trace('close by key: cmd+w');
+    await _xdo(['key', 'cmd+w']);
+    await tester.pump(const Duration(milliseconds: 400));
+    return;
+  }
   if (Platform.isMacOS) {
     await _xdo(['windowfocus', xid]);
     await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -305,7 +318,12 @@ Future<void> _clickClose(WidgetTester tester, String xid, int viewId) async {
     await tester.pump(const Duration(milliseconds: 400));
     return;
   }
-  await _clickClose(tester, xid, viewId);
+  await _click(
+    tester,
+    xid,
+    viewId,
+    await _first(tester, _close, viewId, 'Close'),
+  );
 }
 
 List<Element> _in(Finder finder, int viewId) => [
@@ -514,7 +532,7 @@ void main() {
               '$ex'.contains('RenderFlex overflowed')) {
             overflowed++;
             _trace(
-              'tolerated overflow (#$overflowed): ${'$ex'.split('\n').first}',
+              'tolerated overflow (#$overflowed): ${'$ex'.split('\n').first}; views ${[for (final v in PlatformDispatcher.instance.views) '${v.viewId} ${v.physicalSize} @${v.devicePixelRatio}']}',
             );
             return;
           }
@@ -1340,7 +1358,8 @@ Future<void> _t4(WidgetTester tester) async {
   );
   await tester.pump(const Duration(seconds: 1));
 
-  Future<void> closeB() async => _clickClose(tester, ids[1], b);
+  Future<void> closeB({bool key = false}) async =>
+      _clickClose(tester, ids[1], b, key: key);
   // Asked, and Keep it keeps B and its shell.
   await closeB();
   await _until(
@@ -1361,13 +1380,25 @@ Future<void> _t4(WidgetTester tester) async {
   expect(_in(_tabClose, b), hasLength(1), reason: 'B lost its shell');
   _trace('t4: Keep it kept B and its shell');
 
-  // Asked again, and Close window closes B alone.
-  await closeB();
+  // On a Mac, Ctrl+W is not a close: nothing is asked.
+  if (Platform.isMacOS) {
+    await _xdo(['windowfocus', ids[1]]);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _xdo(['key', 'ctrl+w']);
+    await tester.pump(const Duration(seconds: 2));
+    expect(_in(find.byType(TuiDialog), b), isEmpty, reason: 'Ctrl+W asked');
+    expect(await _windows(), hasLength(2), reason: 'Ctrl+W closed a window');
+    _trace('t4: Ctrl+W closed nothing and asked nothing');
+  }
+
+  // Asked again (on a Mac by ⌘W), and Close window closes B alone.
+  await closeB(key: true);
   await _until(
     tester,
     () => _in(find.byType(TuiDialog), b).isNotEmpty,
     'the question again',
   );
+  if (Platform.isMacOS) _trace('t4: ⌘W asked the question');
   await _click(
     tester,
     ids[1],

@@ -254,6 +254,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     if (isDesktop) {
       FocusManager.instance.addEarlyKeyEventHandler(_onSettingsKey);
       FocusManager.instance.addEarlyKeyEventHandler(_onNewWindowKey);
+      FocusManager.instance.addEarlyKeyEventHandler(_onCloseWindowKey);
     }
     if (defaultTargetPlatform != TargetPlatform.iOS) {
       FocusManager.instance.addEarlyKeyEventHandler(_zoomKeys.handle);
@@ -375,6 +376,38 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     if (event is KeyDownEvent) {
       appLog.add('action new window');
       unawaited(_windowSet.openNew());
+    }
+    return KeyEventResult.handled;
+  }
+
+  bool _closeWindowKeyDown = false;
+
+  /// ⌘W on a Mac closes the window in front, by the same way its red button
+  /// does, the question about live sessions included. Taken here for the
+  /// reason ⌘N is: Flutter hears a ⌘ key before the menu does. Only where
+  /// the runner has several windows.
+  KeyEventResult _onCloseWindowKey(KeyEvent event) {
+    if (defaultTargetPlatform != TargetPlatform.macOS ||
+        !_windowSet.multi ||
+        event.logicalKey != LogicalKeyboardKey.keyW) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyUpEvent) {
+      if (!_closeWindowKeyDown) return KeyEventResult.ignored;
+      _closeWindowKeyDown = false;
+      return KeyEventResult.handled;
+    }
+    final keys = HardwareKeyboard.instance;
+    if (!keys.isMetaPressed ||
+        keys.isControlPressed ||
+        keys.isAltPressed ||
+        keys.isShiftPressed) {
+      return KeyEventResult.ignored;
+    }
+    _closeWindowKeyDown = true;
+    if (event is KeyDownEvent) {
+      appLog.add('action close window');
+      unawaited(_windowSet.closeWindow(_window));
     }
     return KeyEventResult.handled;
   }
@@ -835,6 +868,7 @@ class _SshboxAppState extends State<SshboxApp> with WidgetsBindingObserver {
     localTmux.removeListener(_noTmux.clear);
     FocusManager.instance.removeEarlyKeyEventHandler(_onSettingsKey);
     FocusManager.instance.removeEarlyKeyEventHandler(_onNewWindowKey);
+    FocusManager.instance.removeEarlyKeyEventHandler(_onCloseWindowKey);
     WidgetsBinding.instance.removeObserver(this);
     FocusManager.instance.removeEarlyKeyEventHandler(_zoomKeys.handle);
     unawaited(_linkSubscription?.cancel());

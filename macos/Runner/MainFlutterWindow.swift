@@ -213,6 +213,11 @@ final class TitleBar {
   private let window: NSWindow
   private weak var controller: FlutterViewController?
   private let channel: FlutterMethodChannel
+  private var observers: [NSObjectProtocol] = []
+
+  deinit {
+    for token in observers { NotificationCenter.default.removeObserver(token) }
+  }
 
   /// Every window's, by the id of the view it draws in, and the first's:
   /// the one channel's calls name the view they are for, and a call that
@@ -265,17 +270,19 @@ final class TitleBar {
     // back: once it is there, and before it leaves, so on neither way does a
     // button stand over a tab.
     let center = NotificationCenter.default
-    _ = center.addObserver(
-      forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main
-    ) { [weak self] _ in
-      self?.channel.invokeMethod("titleBar", arguments: Self.hidden)
-    }
-    _ = center.addObserver(
-      forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main
-    ) { [weak self] _ in
-      guard let self else { return }
-      self.channel.invokeMethod("titleBar", arguments: self.measured)
-    }
+    observers.append(
+      center.addObserver(
+        forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        self?.channel.invokeMethod("titleBar", arguments: Self.hidden)
+      })
+    observers.append(
+      center.addObserver(
+        forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        guard let self else { return }
+        self.channel.invokeMethod("titleBar", arguments: self.measured)
+      })
   }
 
   private func handle(_ method: String, _ result: FlutterResult) {
@@ -500,6 +507,13 @@ final class Windows {
     window.title = "Jeansh"
     window.contentViewController = controller
     window.minSize = NSSize(width: 300, height: 200)
+    // Taking a view controller as its content makes the window the view's
+    // fitting size, a point or so, and centring or cascading it then keeps
+    // that. So it is given a size first: the first window's, never under
+    // 640 by 400.
+    let first = entries[0]?.window.frame.size ?? NSSize(width: 1280, height: 720)
+    window.setContentSize(
+      NSSize(width: max(first.width, 640), height: max(first.height, 400)))
     if let rect = Self.rect(of: frame) {
       window.setFrame(Self.fitted(rect), display: false)
     } else {
@@ -570,6 +584,13 @@ final class Windows {
   func didClose(_ id: Int) {
     guard let entry = entries.removeValue(forKey: id) else { return }
     RunnerLog.write("window id \(id): closed, releasing its view")
+    // Whether the NSWindow is really let go: checked a little later, when
+    // nothing here holds it. The window server lists a closed window for a
+    // while whether or not the object is gone.
+    weak var released = entry.window
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+      RunnerLog.write("window id \(id): NSWindow \(released == nil ? "released" : "STILL HELD")")
+    }
     allowed.remove(id)
     if let view = entry.controller?.viewIdentifier {
       TitleBar.forget(viewIdentifier: Int(view))
