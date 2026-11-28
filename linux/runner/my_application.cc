@@ -8,6 +8,7 @@
 #include <gdk/gdkx.h>
 #endif
 
+
 #include "flutter/generated_plugin_registrant.h"
 
 // A window after the first: its own GtkWindow with its own view on the one
@@ -704,6 +705,13 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     } else if (extra != nullptr) {
       gtk_widget_destroy(GTK_WIDGET(extra->window));
     }
+    fl_method_call_respond_success(call, nullptr, nullptr);
+  } else if (strcmp(method, "hide") == 0 && args != nullptr &&
+             fl_value_get_type(args) == FL_VALUE_TYPE_INT) {
+    // A window that is about to close takes no more input: its view is about
+    // to leave the app's tree. The first window's view stays.
+    ExtraWindow* extra = extra_by_id(self, static_cast<gint>(fl_value_get_int(args)));
+    if (extra != nullptr) gtk_widget_hide(GTK_WIDGET(extra->window));
     fl_method_call_respond_success(call, nullptr, nullptr);
   } else if (strcmp(method, "place") == 0 && args != nullptr &&
              fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
