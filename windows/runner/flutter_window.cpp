@@ -538,7 +538,7 @@ void FlutterWindow::OnWindowsCall(
     int id = static_cast<int>(*NumberOf(arguments));
     for (FlutterWindow* other : g_windows.others) {
       if (other->id_ == id && other->GetHandle() != nullptr) {
-        ShowWindow(other->GetHandle(), SW_HIDE);
+        // MUTATION: hide is a no-op.
       }
     }
     result->Success();
