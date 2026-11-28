@@ -574,6 +574,10 @@ jobs:
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
           JEANSH_E2E_SHARD: ${{ matrix.shard }}/2
+          # PROBE, not for main: the several-windows phases alone, repeated.
+          E2E_MW_ONLY: '1'
+          E2E_MW_REPEAT: '6'
+          E2E_MW_PHASES: 't1 t2 churn'
         run: |
           feed=http://127.0.0.1:47719
           tools/e2e_desktop.sh linux \

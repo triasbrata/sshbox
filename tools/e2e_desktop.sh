@@ -110,8 +110,17 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn last}; do
+  # E2E_MW_REPEAT=N: the phases N times over, each followed by what the
+  # runner logged (runner.log), to see how a phase that ends badly ended.
+  mwphases=
+  for _r in $(seq "${E2E_MW_REPEAT:-1}"); do
+    mwphases="$mwphases ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn last}"
+  done
+  local lastlog
+  for phase in $mwphases; do
     echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
+    lastlog=$data/cloud.brata.terminal/runner.log
+    rm -f "$lastlog"
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
@@ -162,12 +171,17 @@ mw_phases() {
         t[1-4]) home=$(mktemp -d) ;;
         *) home=$data ;;
       esac
+      lastlog=$home/cloud.brata.terminal/runner.log
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
         --dart-define=JEANSH_E2E_MWINDOW=$phase || {
           rc=1
           echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
         }
+    fi
+    if [ -n "${E2E_MW_REPEAT:-}" ]; then
+      echo "RUNNER LOG after $phase:"
+      cat "$lastlog" 2>&1 | tail -n 40
     fi
   done
   rm -rf "$data"
