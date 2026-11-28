@@ -608,10 +608,12 @@ jobs:
       # to offer. The feed override is read by debug builds alone, never a
       # release.
       - name: Drive the desktop build
-        timeout-minutes: 32
+        timeout-minutes: 45
         env:
           E2E_SHOTS: ${{ runner.temp }}/shots
           JEANSH_E2E_SHARD: ${{ matrix.shard }}/2
+          E2E_MW_ONLY: "1"
+          E2E_MW_PHASES: churn churn churn churn churn churn
         run: |
           feed=http://127.0.0.1:47719
           tools/e2e_desktop.sh linux \

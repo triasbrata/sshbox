@@ -110,8 +110,15 @@ mw_phases() {
   local rc=0 data note
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn last}; do
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn drop last}; do
     echo "experiment: ${JEANSH_WIN_EXPERIMENT:-control} phase: $phase"
+    # A drag between windows is run with no window manager, as the smoke
+    # tests' file drops are: under openbox the same drag reached no window.
+    if [ "$phase" = drop ] && [ -n "${MW_WM_PID:-}" ]; then
+      kill "$MW_WM_PID" 2>/dev/null
+      MW_WM_PID=
+      sleep 1
+    fi
     if [ "$phase" = last ]; then
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 240 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
@@ -142,11 +149,15 @@ mw_phases() {
       rm -f "$data/jeansh-e2e-mw-trace.txt"
     elif [ "$phase" = churn ]; then
       # The app's stderr is in flutter test's output, kept to be read for a
-      # crash line.
+      # crash line. A repeated churn phase (E2E_MW_PHASES="churn churn …")
+      # starts from an empty trace, so each run counts its own rounds.
+      rm -f "$data/jeansh-e2e-mw-trace.txt"
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$data timeout 400 flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
         --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/churn.log" || true
       rounds=$(grep -c 'churn round' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)
+      echo "churn run result: $rounds of 10 rounds"
+      grep -a 'win:' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -n 12 | sed 's/^/last win line: /'
       crashes=$(grep -ciE 'segmentation|signal 11|core dumped|CRITICAL|Lost connection' "$data/churn.log")
       if [ "$rounds" = 10 ] && [ "$crashes" = 0 ]; then
         echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit, no crash line in stderr"
@@ -159,7 +170,7 @@ mw_phases() {
       # The first four checks are independent: a data folder each, so one
       # that fails leaves no window behind for the next.
       case "$phase" in
-        t[1-4]) home=$(mktemp -d) ;;
+        t[1-4] | drop) home=$(mktemp -d) ;;
         *) home=$data ;;
       esac
       JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
@@ -177,12 +188,82 @@ mw_phases() {
 if [ "$target" = mw-phases ]; then
   openbox >/dev/null 2>&1 &
   wm=$!
+  MW_WM_PID=$wm
   sleep 1
   rc=0
   mw_phases || rc=1
-  kill $wm
+  kill $wm 2>/dev/null
   exit $rc
 fi
+
+# The several-windows phases on Windows (#344), the ones that prove the
+# Windows runner's own windows: the key that opens one, the close button of
+# each, the first closing while another stays, and the windows coming back
+# after a restart. Win32 calls from the app's own process (integration_test/
+# win_desk.dart) press the keys and click; no window manager here, no
+# maximize or minimize, no file drag. A data folder (APPDATA) a phase for the
+# independent ones, one for the phases that follow each other.
+mw_phases_windows() {
+  local rc=0 data home note phase rounds flutter_rc
+  # A phase that ends with the app killed exits non-zero: the loop goes on.
+  set +e
+  data=$(mktemp -d)
+  note="$data/jeansh-e2e-mw-last.txt"
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore churn last}; do
+    echo "experiment: windows phase: $phase"
+    # No window of a phase before is left on the screen to be counted.
+    taskkill //F //IM Jeansh.exe >/dev/null 2>&1
+    # The app's saved windows and tabs live in the user's own profile, whatever
+    # APPDATA says: a phase that is not the second half of one starts without
+    # them.
+    case "$phase" in
+      restore) ;;
+      *) rm -rf "$APPDATA/cloud.brata" ;;
+    esac
+    case "$phase" in
+      t[1-4] | last) home=$(mktemp -d) ;;
+      *) home=$data ;;
+    esac
+    JEANSH_E2E_MW_DIR=$(cygpath -m "$data") APPDATA=$(cygpath -w "$home") \
+      timeout 400 flutter test integration_test/multi_window_phases_test.dart \
+      -d windows --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/$phase.log"
+    flutter_rc=${PIPESTATUS[0]}
+    echo "exit: phase $phase flutter test exit code $flutter_rc"
+    # What Windows says of a Jeansh.exe that crashed in this phase: an
+    # Application Error event carries the exception code (0xc0000005 is an
+    # access violation); no event means the process left by itself.
+    powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-8)} -ErrorAction SilentlyContinue | Where-Object { \$_.Message -match 'Jeansh' } | ForEach-Object { 'event: ' + \$_.ProviderName + ' ' + (\$_.Message -replace '\\s+',' ').Substring(0, [Math]::Min(300, (\$_.Message -replace '\\s+',' ').Length)) }" 2>&1 | head -10
+    echo "bad state: $(grep "phase $phase .*bad state tolerated" "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -1)"
+    echo "trace tail: $(tail -n 14 "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' '|' | cut -c1-1800)"
+    case "$phase" in
+      last)
+        if grep -q ready "$note" 2>/dev/null && ! grep -q asked "$note" &&
+          { grep -q ended "$note" || ! grep -q 'windows left' "$note"; }; then
+          echo "✅ multi-window: the last window closed with no question and the process ended"
+        else
+          echo "❌ multi-window: the last window: $(tr '\n' ' ' <"$note" 2>/dev/null)"
+          echo "trace: $(tr '\n' ' ' <"$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)"
+          rc=1
+        fi ;;
+      churn)
+        rounds=$(grep -c 'churn round' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)
+        if [ "$rounds" = 10 ]; then
+          echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit"
+        else
+          echo "❌ multi-window: $rounds of 10 A+B+C rounds"
+          echo "trace: $(tr '\n' ' ' <"$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -c 6000)"
+          rc=1
+        fi ;;
+      *)
+        if [ "$flutter_rc" != 0 ]; then
+          rc=1
+          echo "trace: $(tr '\n' ' ' <"$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)"
+        fi ;;
+    esac
+  done
+  rm -rf "$data"
+  return $rc
+}
 
 # The Linux run's second half, inside its Xvfb (below), with a window
 # manager to maximize under, there from the start as on a desktop.
@@ -269,10 +350,16 @@ case "$target" in
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
+    # E2E_MW_ONLY=1: the several-windows phases alone, no smoke run.
+    if [ -n "${E2E_MW_ONLY:-}" ] && [ "$target" = windows ]; then
+      mw_phases_windows
+      exit $?
+    fi
     rc=0
     flutter test "$tests" -d "$target" "$@" || rc=1
     # Only after a whole run, as above.
     [ -z "$JEANSH_E2E_PHASES" ] || window_phases "$target" || rc=1
+    [ -z "$JEANSH_E2E_PHASES" ] || [ "$target" != windows ] || mw_phases_windows || rc=1
     exit $rc
     ;;
   *)
