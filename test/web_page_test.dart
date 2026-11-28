@@ -66,6 +66,44 @@ void main() {
     expect(reported.last, (Uri.parse(url), 'Vite + React'));
   });
 
+  testWidgets('a title the page sets after it finished names the tab', (
+    tester,
+  ) async {
+    const url = 'http://box.ts.net:3001/';
+    await pumpPage(tester, url);
+    final view = platform.view;
+    final channel = view.channels['JeanshTitle']!;
+
+    // The view still reads the title the page had before its script ran, and
+    // the page is asked to post its title from here on.
+    view.title = 'js did not run';
+    view.page.started(url);
+    view.page.finished(url);
+    await tester.pump();
+    expect(reported.last, (Uri.parse(url), 'js did not run'));
+    expect(
+      view.scripts.where((s) => s.contains('MutationObserver')),
+      hasLength(1),
+    );
+    expect(view.scripts.last, contains('window.JeanshTitle'));
+
+    // The page's word follows, once and again, cut and without controls.
+    channel.onMessageReceived(JavaScriptMessage(message: 'Jeansh e2e js ran'));
+    expect(reported.last, (Uri.parse(url), 'Jeansh e2e js ran'));
+    channel.onMessageReceived(JavaScriptMessage(message: ' a\nb\u0007c '));
+    expect(reported.last.$2, 'a b c');
+    channel.onMessageReceived(JavaScriptMessage(message: 'x' * 500));
+    expect(reported.last.$2, hasLength(200));
+    channel.onMessageReceived(JavaScriptMessage(message: '  '));
+    expect(reported.last.$2, isNull);
+
+    // A message after the tab has gone is dropped.
+    final count = reported.length;
+    await tester.pumpWidget(const SizedBox());
+    channel.onMessageReceived(JavaScriptMessage(message: 'late'));
+    expect(reported, hasLength(count));
+  });
+
   testWidgets('a mailto: goes to the phone, a download to the browser', (
     tester,
   ) async {

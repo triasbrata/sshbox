@@ -59,6 +59,17 @@ const webLoadTimeout = Duration(seconds: 30);
 @visibleForTesting
 DateTime Function() webGestureClock = DateTime.now;
 
+/// The channel a page's title is posted to, and the script that posts it: now
+/// and at every change in the document's head, where a <title> lives.
+const _titleChannel = 'JeanshTitle';
+const _watchTitle =
+    '(function(){var c=window.$_titleChannel;'
+    'if(!c||window.__jeanshTitleWatch)return;window.__jeanshTitleWatch=1;'
+    'var last=null;function send(){var t=document.title;'
+    'if(t!==last){last=t;c.postMessage(t);}}send();'
+    'new MutationObserver(send).observe(document.head||document.documentElement,'
+    '{subtree:true,childList:true,characterData:true});})();';
+
 class _WebPageState extends State<WebPage> {
   final _view = WebViewController();
   final _address = TextEditingController();
@@ -89,6 +100,15 @@ class _WebPageState extends State<WebPage> {
     _address.text = '$_url';
     _addressFocus.addListener(_onAddressFocus);
     unawaited(_view.setJavaScriptMode(JavaScriptMode.unrestricted));
+    // The page's own word of its title, whenever it changes: read once at
+    // finish, a title a script sets a moment later, or that WKWebView has not
+    // caught up with yet, stayed out of the tab's name for good.
+    unawaited(
+      _view.addJavaScriptChannel(
+        _titleChannel,
+        onMessageReceived: (m) => _titleFromPage(m.message),
+      ),
+    );
     unawaited(
       _view.setNavigationDelegate(
         NavigationDelegate(
@@ -109,6 +129,7 @@ class _WebPageState extends State<WebPage> {
             if (!mounted) return;
             setState(() => _progress = null);
             unawaited(_readBack());
+            unawaited(_view.runJavaScript(_watchTitle));
           },
           // Only the page itself: a picture that fails is the site's line.
           onWebResourceError: (error) {
@@ -338,6 +359,21 @@ class _WebPageState extends State<WebPage> {
       _address.text = '$url';
     }
     widget.onChanged(url, title);
+  }
+
+  /// What a page said its title is. Only a string, and only a name for the
+  /// tab: cut, and with control characters left out, since the page wrote it.
+  void _titleFromPage(String message) {
+    if (!mounted) return;
+    final title = message
+        .replaceAll(RegExp(r'[\u0000-\u001f\u007f]'), ' ')
+        .trim();
+    widget.onChanged(
+      _url,
+      title.isEmpty
+          ? null
+          : (title.length > 200 ? title.substring(0, 200) : title),
+    );
   }
 
   /// Reads back where the view has got to — its history, address and title.
