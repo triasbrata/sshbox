@@ -466,7 +466,7 @@ final class Windows {
       if let args = call.arguments as? [String: Any], let id = args["id"] as? Int,
         let entry = entries[id], let rect = Self.rect(of: args)
       {
-        entry.window.setFrame(Self.fitted(rect), display: true)
+        // MUTATION: place is a no-op.
         if args["maximized"] as? Bool == true && !entry.window.isZoomed {
           entry.window.zoom(nil)
         }
