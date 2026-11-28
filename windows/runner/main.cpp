@@ -15,6 +15,26 @@ LONG WINAPI OnUnhandled(EXCEPTION_POINTERS* info) {
   runner_log::Write("unhandled exception %08lx at %p",
                     info->ExceptionRecord->ExceptionCode,
                     info->ExceptionRecord->ExceptionAddress);
+  // Where: the module and the offset in it, for the caller and the frames
+  // above it.
+  void* frames[24];
+  USHORT count = CaptureStackBackTrace(0, 24, frames, nullptr);
+  void* at = info->ExceptionRecord->ExceptionAddress;
+  for (USHORT i = 0; i <= count; i++) {
+    void* address = i == 0 ? at : frames[i - 1];
+    HMODULE module = nullptr;
+    wchar_t name[MAX_PATH] = L"?";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(address), &module)) {
+      GetModuleFileNameW(module, name, MAX_PATH);
+    }
+    const wchar_t* base = wcsrchr(name, L'\\');
+    runner_log::Write("  frame %u: %ls+0x%llx", i, base ? base + 1 : name,
+                      static_cast<unsigned long long>(
+                          reinterpret_cast<uintptr_t>(address) -
+                          reinterpret_cast<uintptr_t>(module)));
+  }
   return EXCEPTION_CONTINUE_SEARCH;
 }
 void OnInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*,
