@@ -205,7 +205,7 @@ mw_phases_windows() {
   set +e
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
-  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore last}; do
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore churn last}; do
     echo "experiment: windows phase: $phase"
     # No window of a phase before is left on the screen to be counted.
     taskkill //F //IM Jeansh.exe >/dev/null 2>&1
@@ -224,6 +224,14 @@ mw_phases_windows() {
       timeout 400 flutter test integration_test/multi_window_phases_test.dart \
       -d windows --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/$phase.log"
     flutter_rc=${PIPESTATUS[0]}
+    echo "exit: phase $phase flutter test exit code $flutter_rc"
+    # What Windows says of a Jeansh.exe that crashed in this phase: an
+    # Application Error event carries the exception code (0xc0000005 is an
+    # access violation); no event means the process left by itself.
+    powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-8)} -ErrorAction SilentlyContinue | Where-Object { \$_.Message -match 'Jeansh' } | ForEach-Object { 'event: ' + \$_.ProviderName + ' ' + (\$_.Message -replace '\\s+',' ').Substring(0, [Math]::Min(300, (\$_.Message -replace '\\s+',' ').Length)) }" 2>&1 | head -10
+    echo "bad state tolerated in $phase: $(grep -c 'tolerated Bad state' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)"
+    echo "last lines of the phase trace: $(tail -n 12 "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' '|' | cut -c1-1500)"
+    : >"$data/jeansh-e2e-mw-trace.txt"
     case "$phase" in
       last)
         if grep -q ready "$note" 2>/dev/null && ! grep -q asked "$note" &&
