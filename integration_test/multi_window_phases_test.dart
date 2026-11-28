@@ -387,12 +387,18 @@ Future<void> _click(
   }
 }
 
+/// "x y width height" of the newest window as it opened.
+String _openedAt = '0 0 0 0';
+
 Future<void> _newWindow(WidgetTester tester, String from, int count) async {
   await _xdo(['windowfocus', from]);
   await Future<void>.delayed(const Duration(milliseconds: 300));
   await _xdo(['key', 'ctrl+shift+n']);
   final ids = await _windowsAre(tester, count);
   await _until(tester, () => _views().length == count, 'a view a window');
+  // What the window server says of the new window before it is placed.
+  _openedAt = await _rect(ids[count - 1]);
+  _trace('window $count opened at $_openedAt');
   // A third window opens at the runner's own size, which on Windows is wider
   // than the screen, its buttons off it: it is put inside, over the others.
   if (count == 3 && (Platform.isWindows || Platform.isMacOS)) {
@@ -1182,6 +1188,13 @@ Future<void> _t1(WidgetTester tester) async {
   await _newWindow(tester, ids[0], 2);
   ids = await _windows();
   _trace('t1: Ctrl+Shift+N opened a second window: ${ids.length} windows');
+  // A new window opens at a size a person can use.
+  final opened = _openedAt.split(' ').map(int.parse).toList();
+  expect(
+    opened[2] >= 300 && opened[3] >= 200,
+    isTrue,
+    reason: 'the second window opened at $_openedAt (x y width height)',
+  );
   // And the first window's terminal heard nothing of it.
   await _xdo(['windowfocus', ids[0]]);
   await Future<void>.delayed(const Duration(milliseconds: 300));
