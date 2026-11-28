@@ -240,7 +240,7 @@ mw_phases_windows() {
     # What Windows says of a Jeansh.exe that crashed in this phase: an
     # Application Error event carries the exception code (0xc0000005 is an
     # access violation); no event means the process left by itself.
-    powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-8)} -ErrorAction SilentlyContinue | Where-Object { \$_.Message -match 'Jeansh' } | ForEach-Object { 'event: ' + \$_.ProviderName + ' ' + (\$_.Message -replace '\\s+',' ').Substring(0, [Math]::Min(300, (\$_.Message -replace '\\s+',' ').Length)) }" 2>&1 | head -10
+    powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-8)} -ErrorAction SilentlyContinue | Where-Object { \$_.Id -in 1000,1001,1002 -or \$_.Message -match 'Jeansh' } | ForEach-Object { \$m = (\$_.Message -replace '\\s+',' '); 'event: ' + \$_.TimeCreated.ToString('HH:mm:ss') + ' id ' + \$_.Id + ' ' + \$_.ProviderName + ' ' + \$m.Substring(0, [Math]::Min(700, \$m.Length)) }" 2>&1 | head -12
     echo "bad state: $(grep "phase $phase .*bad state tolerated" "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -1)"
     echo "trace tail: $(tail -n 14 "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' '|' | cut -c1-1800)"
     case "$phase" in
