@@ -267,7 +267,7 @@ case "$target" in
         [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || { s=$?; rc=1; echo "e2e_desktop: the window phases exited $s"; }
         [ -z "$JEANSH_E2E_PHASES" ] || "$0" mw-phases || { s=$?; rc=1; echo "e2e_desktop: the multi-window phases exited $s"; }
         echo "e2e_desktop: leaving with exit $rc"
-        exit $rc'"$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
+        exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
     rc=0
