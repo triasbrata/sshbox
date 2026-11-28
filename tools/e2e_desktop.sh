@@ -224,11 +224,19 @@ mw_phases_windows() {
       t[1-4] | last) home=$(mktemp -d) ;;
       *) home=$data ;;
     esac
+    # The runner's own log of what it does to each window and how the process
+    # ends (appended, one "---- start, pid N" a launch), in the real roaming
+    # profile whatever APPDATA says: emptied before a phase, shown after it.
+    runner_log="$(cygpath -u "$USERPROFILE")/AppData/Roaming/cloud.brata/Jeansh/runner.log"
+    rm -f "$runner_log"
     JEANSH_E2E_MW_DIR=$(cygpath -m "$data") APPDATA=$(cygpath -w "$home") \
       timeout 400 flutter test integration_test/multi_window_phases_test.dart \
       -d windows --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/$phase.log"
     flutter_rc=${PIPESTATUS[0]}
     echo "exit: phase $phase flutter test exit code $flutter_rc"
+    echo "--- runner.log after phase $phase:"
+    tail -n 80 "$runner_log" 2>&1 | cut -c1-240
+    echo "--- end of runner.log"
     # What Windows says of a Jeansh.exe that crashed in this phase: an
     # Application Error event carries the exception code (0xc0000005 is an
     # access violation); no event means the process left by itself.
