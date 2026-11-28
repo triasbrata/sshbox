@@ -113,6 +113,18 @@ void main() {
       .widget<TerminalView>(find.byType(TerminalView, skipOffstage: false))
       .focusNode!;
 
+  testWidgets('the tab strip and its page fit a 490 by 450 window, and a window '
+      'as small as a strip', (tester) async {
+    for (final size in const [Size(490, 450), Size(490, 60)]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await pumpTabs(tester);
+      await tester.pump(const Duration(seconds: 1));
+      expect(tester.takeException(), isNull, reason: '$size');
+    }
+  });
+
   testWidgets('hardware arrows reach the shell as its cursor keys', (
     tester,
   ) async {
