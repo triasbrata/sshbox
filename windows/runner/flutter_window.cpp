@@ -557,7 +557,7 @@ void FlutterWindow::OnWindowsCall(
       if (target != nullptr && target->GetHandle() != nullptr) {
         HWND hwnd = target->GetHandle();
         if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-        target->ApplyPlacement(rect, false);
+        // MUTATION: place is a no-op.
         if (maximized) ShowWindow(hwnd, SW_MAXIMIZE);
       }
     }
