@@ -289,6 +289,10 @@ mw_phases_macos() {
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
   tool="$data/mwtool"
+  # macOS has no timeout of its own; coreutils' is gtimeout, and none is fine.
+  local mwtimeout=""
+  if command -v timeout >/dev/null 2>&1; then mwtimeout="timeout 600"
+  elif command -v gtimeout >/dev/null 2>&1; then mwtimeout="gtimeout 600"; fi
   swiftc -O "$ROOT/tools/mw_mac_tool.swift" -o "$tool" || {
     echo "❌ multi-window: the mac input tool did not compile"
     return 1
@@ -301,7 +305,7 @@ mw_phases_macos() {
     esac
     rm -f "$runner_log"
     JEANSH_E2E_MW_DIR="$data" JEANSH_E2E_MW_TOOL="$tool" \
-      timeout 600 flutter test integration_test/multi_window_phases_test.dart \
+      ${mwtimeout:-} flutter test integration_test/multi_window_phases_test.dart \
       -d macos --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/$phase.log"
     flutter_rc=${PIPESTATUS[0]}
     echo "exit: phase $phase flutter test exit code $flutter_rc"
