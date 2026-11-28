@@ -10,6 +10,7 @@
 
 
 #include "flutter/generated_plugin_registrant.h"
+#include "runner_log.h"
 
 // A window after the first: its own GtkWindow with its own view on the one
 // engine, which the app opens and closes through sshbox/windows. The first
@@ -245,6 +246,7 @@ static void flush_geometry(MyApplication* self) {
 static gboolean delete_cb(GtkWidget* widget, GdkEvent* event,
                           gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
+  runner_log("window id 0: delete-event, closing %d", self->closing);
   // The app decides whether the window goes, and says so with `close`.
   if (!self->closing && ask_close(self, 0)) return TRUE;
   flush_geometry(self);
@@ -583,6 +585,7 @@ static gboolean extra_focus_cb(GtkWidget* widget, GdkEventFocus* event,
 static gboolean extra_delete_cb(GtkWidget* widget, GdkEvent* event,
                                 gpointer user_data) {
   ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
+  runner_log("window id %d: delete-event", extra->id);
   // Stays until the app says `close`.
   return ask_close(extra->app, extra->id);
 }
@@ -590,6 +593,7 @@ static gboolean extra_delete_cb(GtkWidget* widget, GdkEvent* event,
 static void extra_destroy_cb(GtkWidget* widget, gpointer user_data) {
   ExtraWindow* extra = static_cast<ExtraWindow*>(user_data);
   MyApplication* self = extra->app;
+  runner_log("window id %d: destroyed", extra->id);
   if (extra->moved_source != 0) g_source_remove(extra->moved_source);
   self->extras = g_list_remove(self->extras, extra);
   if (self->windows_channel != nullptr) {
@@ -687,6 +691,7 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     // every window opened here is another.
     ExtraWindow* extra = create_extra(self, args);
     gint id = extra->id;
+    runner_log("call open -> id %d", id);
     announce_later(self, id, extra->view);
     g_autoptr(FlValue) answer = fl_value_new_int(id);
     fl_method_call_respond_success(call, answer, nullptr);
@@ -694,6 +699,7 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
              fl_value_get_type(args) == FL_VALUE_TYPE_INT) {
     gint id = static_cast<gint>(fl_value_get_int(args));
     ExtraWindow* extra = id == 0 ? nullptr : extra_by_id(self, id);
+    runner_log("call close %d, extras %u", id, g_list_length(self->extras));
     if (id == 0) {
       // Only the last window: the app quits, and keeps where it was. With
       // others open the app moves one of them into the first window and
@@ -703,7 +709,9 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
         gtk_window_close(self->window);
       }
     } else if (extra != nullptr) {
+      runner_log("close %d: gtk_widget_destroy", id);
       gtk_widget_destroy(GTK_WIDGET(extra->window));
+      runner_log("close %d: gtk_widget_destroy returned", id);
     }
     fl_method_call_respond_success(call, nullptr, nullptr);
   } else if (strcmp(method, "hide") == 0 && args != nullptr &&
@@ -711,6 +719,7 @@ static void windows_call_cb(FlMethodChannel* channel, FlMethodCall* call,
     // A window that is about to close takes no more input: its view is about
     // to leave the app's tree. The first window's view stays.
     ExtraWindow* extra = extra_by_id(self, static_cast<gint>(fl_value_get_int(args)));
+    runner_log("call hide %d", static_cast<gint>(fl_value_get_int(args)));
     if (extra != nullptr) gtk_widget_hide(GTK_WIDGET(extra->window));
     fl_method_call_respond_success(call, nullptr, nullptr);
   } else if (strcmp(method, "place") == 0 && args != nullptr &&
@@ -839,6 +848,7 @@ static void my_application_startup(GApplication* application) {
 // Implements GApplication::shutdown.
 static void my_application_shutdown(GApplication* application) {
   // MyApplication* self = MY_APPLICATION(object);
+  runner_log("application shutdown");
 
   // Perform any actions required at application shutdown.
 
@@ -877,6 +887,7 @@ MyApplication* my_application_new() {
   // corresponding .desktop file. This ensures better integration by allowing
   // the application to be recognized beyond its binary name.
   g_set_prgname(APPLICATION_ID);
+  runner_log_start();
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
