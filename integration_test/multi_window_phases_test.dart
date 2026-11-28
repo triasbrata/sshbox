@@ -24,7 +24,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
+
 import 'win_desk.dart';
+
 import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
 import 'package:xterm2/xterm.dart' show TerminalKey, TerminalView;
 import 'package:sshbox/src/ui/termul/tui_button.dart' show TuiButton;
@@ -89,7 +91,10 @@ Future<String> _xdoWindows(List<String> a) async {
       final x = int.parse(a[at + 2]);
       final y = int.parse(a[at + 3]);
       await Future<void>.delayed(
-        Duration(milliseconds: (double.parse(a[a.indexOf('sleep') + 1]) * 1000).round()),
+        Duration(
+          milliseconds: (double.parse(a[a.indexOf('sleep') + 1]) * 1000)
+              .round(),
+        ),
       );
       await winClick(a[at + 1], x, y, button: int.parse(a.last));
     case 'key':
@@ -231,6 +236,7 @@ Future<void> _click(
       seen.add('${e.runtimeType} view ${e.viewId} at ${e.position}');
     }
   }
+
   if (Platform.isWindows) {
     GestureBinding.instance.pointerRouter.addGlobalRoute(heard);
   }
@@ -327,9 +333,47 @@ void main() {
     skip: _phase.isEmpty || !(Platform.isLinux || Platform.isWindows),
     (tester) async {
       await _launch(tester);
+      // The app log's `win:` lines are written to the trace as they come, so a
+      // process that ends leaves them behind (a failure prints them again).
+      var seen = 0;
+      final follow = Timer.periodic(const Duration(milliseconds: 200), (_) {
+        final wins = appLog.current
+            .split('\n')
+            .where((l) => l.contains('win:'))
+            .toList();
+        for (final line in wins.skip(seen)) {
+          _trace('live app log: $line');
+        }
+        seen = wins.length;
+      });
+      // On Windows alone: a pointer packet for a view the test binding has no
+      // render view for throws `Bad state: No element` from flutter_test's
+      // LiveTestWidgetsFlutterBinding.handlePointerEvent (a firstWhere), where
+      // the product's RendererBinding.hitTestInView does `_viewIdToRenderView
+      // [viewId]?.hitTest`, so an unknown view is no error. Only that error,
+      // from that frame, is let through, and each one is counted and traced.
+      var tolerated = 0;
+      final previous = FlutterError.onError;
+      if (Platform.isWindows) {
+        FlutterError.onError = (details) {
+          final ex = details.exception;
+          if (ex is StateError &&
+              ex.message == 'No element' &&
+              '${details.stack}'.contains(
+                'LiveTestWidgetsFlutterBinding.handlePointerEvent',
+              )) {
+            tolerated++;
+            _trace('tolerated Bad state: No element (#$tolerated, harness)');
+            return;
+          }
+          previous?.call(details);
+        };
+      }
       try {
         await _runPhase(tester);
+        _trace('phase $_phase done, bad state tolerated: $tolerated');
       } catch (_) {
+        _trace('phase $_phase failed, bad state tolerated: $tolerated');
         // What the app's own log says of every close, from the click on.
         final wins = appLog.current
             .split('\n')
@@ -339,6 +383,9 @@ void main() {
           _trace('app log: $line');
         }
         rethrow;
+      } finally {
+        follow.cancel();
+        FlutterError.onError = previous;
       }
     },
   );
@@ -1220,14 +1267,18 @@ String _shellText(TerminalView view) {
 Future<void> _drop(WidgetTester tester) async {
   var ids = await _windowsAre(tester, 1);
   final a0 = _views().single;
-  await _click(tester, ids[0], a0, await _first(tester, _card, a0, 'A\'s card'));
+  await _click(
+    tester,
+    ids[0],
+    a0,
+    await _first(tester, _card, a0, 'A\'s card'),
+  );
   await _until(tester, () => _in(_tabClose, a0).length == 1, 'A\'s shell tab');
   TerminalView shellIn(int view) =>
       _in(find.byType(TerminalView), view).first.widget as TerminalView;
   await _until(
     tester,
-    () =>
-        _in(find.byType(TerminalView), a0).isNotEmpty && _drew(shellIn(a0)),
+    () => _in(find.byType(TerminalView), a0).isNotEmpty && _drew(shellIn(a0)),
     'A\'s shell to draw its prompt',
   );
   final dir = Directory.systemTemp.createTempSync('jeansh-e2e-drop-');
@@ -1304,8 +1355,7 @@ Future<void> _drop(WidgetTester tester) async {
   await _until(tester, () => _in(_tabClose, b).length == 1, 'B\'s shell tab');
   await _until(
     tester,
-    () =>
-        _in(find.byType(TerminalView), b).isNotEmpty && _drew(shellIn(b)),
+    () => _in(find.byType(TerminalView), b).isNotEmpty && _drew(shellIn(b)),
     'B\'s shell to draw its prompt',
   );
 
@@ -1329,11 +1379,25 @@ Future<void> _drop(WidgetTester tester) async {
   // own.
   final raised = tester.takeException();
   if (raised != null) {
-    _trace('drop: the framework raised during the drags: '
-        '${'$raised'.split('\n').first}');
+    _trace(
+      'drop: the framework raised during the drags: '
+      '${'$raised'.split('\n').first}',
+    );
   }
   expect(alone, isTrue, reason: 'a drop on the first window alone failed');
-  expect(first, isTrue, reason: 'a drop on the first window, a second open, failed');
-  expect(second, isTrue, reason: 'a drop on the second window did not reach its shell');
-  expect(strayed, isFalse, reason: 'the first window\'s shell got the second\'s file');
+  expect(
+    first,
+    isTrue,
+    reason: 'a drop on the first window, a second open, failed',
+  );
+  expect(
+    second,
+    isTrue,
+    reason: 'a drop on the second window did not reach its shell',
+  );
+  expect(
+    strayed,
+    isFalse,
+    reason: 'the first window\'s shell got the second\'s file',
+  );
 }
