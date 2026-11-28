@@ -639,9 +639,9 @@ void FlutterWindow::OnWindowsCall(
     for (FlutterWindow* other : g_windows.others) {
       if (other->id_ == id && other->GetHandle() != nullptr) {
         // Its view hears no pointer from here on, hidden or not.
-        if (other->view_ != nullptr) SetProp(other->view_, kClosingProp, HANDLE(1));
-        EnableWindow(other->GetHandle(), FALSE);
-        ShowWindow(other->GetHandle(), SW_HIDE);
+        // MUTATION hide no-op: SetProp(other->view_, kClosingProp, HANDLE(1));
+        // EnableWindow
+        // ShowWindow hide
       }
     }
     result->Success();
