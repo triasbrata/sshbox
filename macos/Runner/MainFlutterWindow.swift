@@ -244,6 +244,8 @@ final class TitleBar {
     target.handle(call.method, result)
   }
 
+  static var count: Int { all.count }
+
   /// A window going: its view's calls are answered no more.
   static func forget(viewIdentifier: Int) {
     let gone = all.removeValue(forKey: viewIdentifier)
@@ -588,14 +590,28 @@ final class Windows {
     // nothing here holds it. The window server lists a closed window for a
     // while whether or not the object is gone.
     weak var released = entry.window
-    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-      RunnerLog.write("window id \(id): NSWindow \(released == nil ? "released" : "STILL HELD")")
+    for delay in [3.0, 15.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        if let held = released {
+          RunnerLog.write(
+            "window id \(id): NSWindow STILL HELD after \(Int(delay)) s, retain count "
+              + "\(CFGetRetainCount(held)), visible \(held.isVisible), "
+              + "content \(held.contentView == nil ? "nil" : "set"), "
+              + "delegate \(held.delegate == nil ? "nil" : "set"), "
+              + "titlebars \(TitleBar.count)")
+        } else {
+          RunnerLog.write("window id \(id): NSWindow released after \(Int(delay)) s")
+        }
+      }
     }
     allowed.remove(id)
     if let view = entry.controller?.viewIdentifier {
       TitleBar.forget(viewIdentifier: Int(view))
     }
     entry.window.delegate = nil
+    entry.observer.stop()
+    // Nothing of its own left in it: no view, no pending drag, out of sight.
+    entry.window.orderOut(nil)
     // Its view goes with it, and the engine stays for the others.
     entry.window.contentViewController = nil
     entry.controller = nil
@@ -633,6 +649,12 @@ final class WindowObserver: NSObject, NSWindowDelegate {
   }
 
   func windowShouldClose(_ sender: NSWindow) -> Bool { windows.shouldClose(id) }
+
+  /// The window is going: nothing it said is to be said again.
+  func stop() {
+    pending?.cancel()
+    pending = nil
+  }
 
   func windowWillClose(_ notification: Notification) {
     pending?.cancel()
