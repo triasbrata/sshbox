@@ -107,8 +107,10 @@ Future<void> _macPlace(
 }) async {
   final r = (await macRect(number)).split(' ').map(int.parse).toList();
   final (_, screenHeight) = await macScreen();
-  final w = width ?? r[2];
-  final h = height ?? r[3];
+  // The runner ignores a frame under 200 by 150: a window that opened tiny is
+  // given room while it is moved.
+  final w = width ?? (r[2] < 300 ? 300 : r[2]);
+  final h = height ?? (r[3] < 200 ? 200 : r[3]);
   final top = y ?? r[1];
   await _windowsChannel.invokeMethod<void>('place', {
     'id': _macRunnerId(number),
@@ -201,13 +203,13 @@ Future<String> _xdoWindows(List<String> a) async {
 /// Where the two windows stand: side by side on Linux's 1280 wide display, and
 /// within the 1024 wide screen of the Windows runner, where a window placed
 /// further right has its buttons off the screen.
-final _aX = Platform.isWindows ? '10' : (Platform.isMacOS ? '20' : '20');
+final _aX = Platform.isWindows ? '10' : (Platform.isMacOS ? '10' : '20');
 final _aY = Platform.isWindows ? '10' : (Platform.isMacOS ? '60' : '20');
-final _aW = Platform.isWindows ? '490' : (Platform.isMacOS ? '520' : '600');
+final _aW = Platform.isWindows ? '490' : (Platform.isMacOS ? '490' : '600');
 final _aH = '450';
-final _bX = Platform.isWindows ? '520' : (Platform.isMacOS ? '560' : '650');
+final _bX = Platform.isWindows ? '520' : (Platform.isMacOS ? '520' : '650');
 final _bY = Platform.isWindows ? '10' : (Platform.isMacOS ? '60' : '40');
-final _bW = Platform.isWindows ? '490' : (Platform.isMacOS ? '520' : '600');
+final _bW = Platform.isWindows ? '490' : (Platform.isMacOS ? '490' : '600');
 final _bH = '450';
 
 /// The Windows windows in the order they were first seen.
@@ -302,7 +304,9 @@ Future<void> _clickClose(WidgetTester tester, String xid, int viewId) async {
   if (Platform.isMacOS) {
     await _xdo(['windowfocus', xid]);
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    await _xdo(['key', 'cmd+w']);
+    // The title bar's red button, found by accessibility and clicked for
+    // real: ⌘W reached no close (the runner saw no windowShouldClose).
+    _trace('close: ${await macClickClose(await macRect(xid))}');
     await tester.pump(const Duration(milliseconds: 400));
     return;
   }

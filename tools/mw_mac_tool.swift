@@ -101,6 +101,16 @@ case "click":
   post(up, at: at, button: button)
   usleep(50_000)
   print("clicked \(Int(at.x)),\(Int(at.y)) in window \(number) (\(bounds))")
+case "clickat":
+  // A click at a point of the screen, as it is.
+  let at = CGPoint(x: Double(args[2])!, y: Double(args[3])!)
+  post(.mouseMoved, at: at, button: .left)
+  usleep(200_000)
+  post(.leftMouseDown, at: at, button: .left)
+  usleep(60_000)
+  post(.leftMouseUp, at: at, button: .left)
+  usleep(50_000)
+  print("clicked \(Int(at.x)),\(Int(at.y))")
 case "key":
   let parts = args[2].split(separator: "+").map { String($0).lowercased() }
   // Each modifier with the bit naming its left key, as a keyboard sets it:
