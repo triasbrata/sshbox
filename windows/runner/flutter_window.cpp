@@ -12,6 +12,7 @@
 #include <desktop_drop/desktop_drop_plugin.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "runner_log.h"
 
 // Declared in the engine's flutter_windows_internal.h, not in the public
 // header, and exported by flutter_windows.dll all the same, as a dumpbin of
@@ -249,7 +250,9 @@ void FlutterWindow::OnDestroy() {
     // A window after the first: its view goes, and the engine stays.
     if (controller_ != nullptr) {
       DesktopDropDetachWindow(view_);
+      runner_log::Write("window id %d: destroying its view controller", id_);
       FlutterDesktopViewControllerDestroy(controller_);
+      runner_log::Write("window id %d: view controller destroyed", id_);
       controller_ = nullptr;
       auto& others = g_windows.others;
       others.erase(std::remove(others.begin(), others.end(), this),
@@ -264,6 +267,7 @@ void FlutterWindow::OnDestroy() {
     return;
   }
 
+  runner_log::Write("first window: OnDestroy");
   g_windows.first = nullptr;
   g_windows.window_channel = nullptr;
   g_windows.windows_channel = nullptr;
@@ -508,6 +512,7 @@ void FlutterWindow::OnWindowsCall(
     bool maximized = false;
     bool framed = FrameOf(arguments, &rect, &maximized);
     int id = g_windows.next_id++;
+    runner_log::Write("call open -> id %d", id);
     auto* window = new FlutterWindow(g_windows.engine, id);
     // Each a little lower and to the right of the last, as a window manager
     // would place them; a saved frame replaces that.
@@ -530,6 +535,8 @@ void FlutterWindow::OnWindowsCall(
   } else if (method == "close" && arguments != nullptr &&
              NumberOf(arguments).has_value()) {
     int id = static_cast<int>(*NumberOf(arguments));
+    runner_log::Write("call close %d, %d others", id,
+                      static_cast<int>(g_windows.others.size()));
     FlutterWindow* target = nullptr;
     for (FlutterWindow* other : g_windows.others) {
       if (other->id_ == id) target = other;
@@ -540,6 +547,7 @@ void FlutterWindow::OnWindowsCall(
       // closes that one instead, since the first window's view is the
       // engine's own and has to stay.
       if (g_windows.others.empty()) {
+        runner_log::Write("close 0: last window, posting a forced WM_CLOSE");
         force_close_ = true;
         PostMessage(GetHandle(), WM_CLOSE, 0, 0);
       }
@@ -548,7 +556,9 @@ void FlutterWindow::OnWindowsCall(
       // engine's lifecycle, which turns the close of what it counts as the last
       // window into a request to quit the app. The engine's rule should only
       // ever see the user's own close of the final window.
+      runner_log::Write("close %d: DestroyWindow %p", id, target->GetHandle());
       if (target->GetHandle() != nullptr) DestroyWindow(target->GetHandle());
+      runner_log::Write("close %d: DestroyWindow returned", id);
     }
     result->Success();
   } else if (method == "hide" && arguments != nullptr &&
@@ -557,6 +567,7 @@ void FlutterWindow::OnWindowsCall(
     // the app's tree, and a pointer over a window whose view is gone is an
     // event for a view that is not there. The first window's view stays.
     int id = static_cast<int>(*NumberOf(arguments));
+    runner_log::Write("call hide %d", id);
     for (FlutterWindow* other : g_windows.others) {
       if (other->id_ == id && other->GetHandle() != nullptr) {
         // Its view hears no pointer from here on, hidden or not.
@@ -607,6 +618,12 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_CLOSE || message == WM_DESTROY || message == WM_NCDESTROY) {
+    runner_log::Write("window id %d hwnd %p: %s", id_, hwnd,
+                      message == WM_CLOSE     ? "WM_CLOSE"
+                      : message == WM_DESTROY ? "WM_DESTROY"
+                                              : "WM_NCDESTROY");
+  }
   // No title bar: the app draws the tab strip there, and the window's
   // buttons at its right (title_bar.dart). The frame stays, for the resize
   // edges, the shadow and snapping.
@@ -679,6 +696,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
     case kFreeWindow:
       if (id_ == 0 && lparam != 0) {
+        runner_log::Write("freeing a closed window");
         delete reinterpret_cast<FlutterWindow*>(lparam);
         return 0;
       }
