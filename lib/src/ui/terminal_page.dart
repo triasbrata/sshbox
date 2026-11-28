@@ -314,7 +314,8 @@ class _TerminalPageState extends State<TerminalPage> {
             paneCommand: _session.tmux?.focusedCommand,
           );
           if (refused != null && mounted) {
-            showToast(context, refused, type: TuiToastType.warning);
+            // MUTANT: the refusal says nothing.
+            debugPrint(refused);
           }
       }
     }
