@@ -245,15 +245,28 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+// The view goes, and the engine stays. Done while the window and the view's own
+// window are both alive, outside any WM_DESTROY: torn down inside the parent's
+// destruction the controller touched windows already being freed, an access
+// violation that ended the process.
+void FlutterWindow::ReleaseView() {
+  if (controller_ == nullptr) return;
+  DesktopDropDetachWindow(view_);
+  runner_log::Write("window id %d: destroying its view controller", id_);
+  FlutterDesktopViewControllerDestroy(controller_);
+  runner_log::Write("window id %d: view controller destroyed", id_);
+  controller_ = nullptr;
+  view_ = nullptr;
+}
+
 void FlutterWindow::OnDestroy() {
   if (engine_ != nullptr) {
     // A window after the first: its view goes, and the engine stays.
-    if (controller_ != nullptr) {
-      DesktopDropDetachWindow(view_);
-      runner_log::Write("window id %d: destroying its view controller", id_);
-      FlutterDesktopViewControllerDestroy(controller_);
-      runner_log::Write("window id %d: view controller destroyed", id_);
-      controller_ = nullptr;
+    if (!finished_) {
+      finished_ = true;
+      // Normally already released by `close`, before the window was
+      // destroyed; a window that goes some other way releases it here.
+      ReleaseView();
       auto& others = g_windows.others;
       others.erase(std::remove(others.begin(), others.end(), this),
                    others.end());
@@ -557,6 +570,7 @@ void FlutterWindow::OnWindowsCall(
       // window into a request to quit the app. The engine's rule should only
       // ever see the user's own close of the final window.
       runner_log::Write("close %d: DestroyWindow %p", id, target->GetHandle());
+      target->ReleaseView();
       if (target->GetHandle() != nullptr) DestroyWindow(target->GetHandle());
       runner_log::Write("close %d: DestroyWindow returned", id);
     }
