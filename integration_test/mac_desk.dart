@@ -60,3 +60,13 @@ Future<String> macClick(
 Future<void> macKey(String chord) async {
   await _tool(['key', chord]);
 }
+
+/// Every window line of this process, the off-screen ones too, as the tool
+/// prints them; for a failure's trace.
+Future<String> macDump() async {
+  final on = await _tool(['windows', '$pid']);
+  final all = await _tool(['dump', '$pid']);
+  final screen = await _tool(['screen']);
+  return 'on screen: ${on.replaceAll('\n', ' | ')}; screen $screen; '
+      'all: ${all.replaceAll(RegExp(r'\s+'), ' ').replaceAll('# ', '| #')}';
+}
