@@ -57,6 +57,10 @@ class FlutterWindow : public Win32Window {
   // Takes the view of a window after the first off the engine.
   void ReleaseView();
 
+  // A window the app closes waits out of sight for the next it opens.
+  void Park();
+  void Unpark(int id);
+
   // Moves the window with the mouse, from a press on the tab strip.
   void BeginMove();
 
