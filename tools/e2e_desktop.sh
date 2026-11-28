@@ -301,7 +301,10 @@ mw_phases_macos() {
     echo "experiment: macos phase: $phase"
     case "$phase" in
       restore) ;;
-      *) defaults delete "$domain" >/dev/null 2>&1 ;;
+      # The first-run slides are done: their Skip is tapped through the test
+      # binding's own first view, which a runner with several views has not.
+      *) defaults delete "$domain" >/dev/null 2>&1
+         defaults write "$domain" flutter.sshbox.onboarding.done -bool true ;;
     esac
     rm -f "$runner_log"
     JEANSH_E2E_MW_DIR="$data" JEANSH_E2E_MW_TOOL="$tool" \
