@@ -262,10 +262,11 @@ case "$target" in
         # E2E_MW_ONLY=1: the several-windows phases alone, no smoke run.
         [ -z "$E2E_MW_ONLY" ] || exec "$0" mw-phases
         rc=0
-        flutter test "$tests" -d linux "$@" || rc=1
+        flutter test "$tests" -d linux "$@" || { s=$?; rc=1; echo "e2e_desktop: the smoke run exited $s"; }
         # Only after a whole run, as above.
-        [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || rc=1
-        [ -z "$JEANSH_E2E_PHASES" ] || "$0" mw-phases || rc=1
+        [ -z "$JEANSH_E2E_PHASES" ] || "$0" window-phases || { s=$?; rc=1; echo "e2e_desktop: the window phases exited $s"; }
+        [ -z "$JEANSH_E2E_PHASES" ] || "$0" mw-phases || { s=$?; rc=1; echo "e2e_desktop: the multi-window phases exited $s"; }
+        echo "e2e_desktop: leaving with exit $rc"
         exit $rc' "$ROOT/tools/e2e_desktop.sh" "$tests" "$@"
     ;;
   windows | macos)
