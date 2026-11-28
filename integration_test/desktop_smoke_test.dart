@@ -10596,7 +10596,13 @@ touch '${done.path}'
       // paragraph, placed as if the field were not scrolled (as the widget
       // test reads it); otherwise the field's text, where it is drawn.
       Offset at(String line) {
-        for (final p in tester.allRenderObjects.whereType<RenderParagraph>()) {
+        // The paragraphs through their own elements, not allRenderObjects:
+        // that takes every element's renderObject with a `!`, and one whose
+        // child is not built yet, as a section coming into view after the
+        // scroll jump, has none (a null check in run 46119695092).
+        for (final e in find.byType(RichText).evaluate()) {
+          final p = e.renderObject;
+          if (p is! RenderParagraph) continue;
           final i = p.text.toPlainText().indexOf(line);
           if (i < 0 || !p.attached || !p.hasSize) continue;
           final boxes = p.getBoxesForSelection(
