@@ -7,6 +7,10 @@ class AppDelegate: FlutterAppDelegate {
     return true
   }
 
+  override func applicationWillTerminate(_ notification: Notification) {
+    RunnerLog.write("application will terminate")
+  }
+
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
     return true
   }

@@ -3,6 +3,59 @@ import FlutterMacOS
 import desktop_drop
 import UniformTypeIdentifiers
 
+/// A log the runner writes itself, to runner.log in the app's Application
+/// Support folder, one line at a time and synced, so a process that ends
+/// without a word leaves how far it got: what the runner did to each window,
+/// and how the process ended, by exit or by a signal with its backtrace.
+/// Never anything a user typed or saw.
+enum RunnerLog {
+  private static var fd: Int32 = -1
+
+  static func start() {
+    let base = FileManager.default.urls(
+      for: .applicationSupportDirectory, in: .userDomainMask
+    ).first
+    guard
+      let dir = base?.appendingPathComponent(
+        Bundle.main.bundleIdentifier ?? "cloud.brata.terminal", isDirectory: true)
+    else { return }
+    try? FileManager.default.createDirectory(
+      at: dir, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    fd = open(dir.appendingPathComponent("runner.log").path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+    write("---- start, pid \(getpid())")
+    for number in [SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTRAP] {
+      signal(number) { received in
+        RunnerLog.crash(received)
+      }
+    }
+    NSSetUncaughtExceptionHandler { exception in
+      RunnerLog.write("uncaught exception \(exception.name.rawValue)")
+      for line in exception.callStackSymbols.prefix(30) { RunnerLog.write("  \(line)") }
+    }
+  }
+
+  static func write(_ text: String) {
+    guard fd >= 0 else { return }
+    let stamp = ISO8601DateFormatter().string(from: Date())
+    let line = "\(stamp) \(text)\n"
+    _ = line.withCString { Darwin.write(fd, $0, strlen($0)) }
+    fsync(fd)
+  }
+
+  private static func crash(_ number: Int32) {
+    if fd >= 0 {
+      let head = "fatal signal \(number)\n"
+      _ = head.withCString { Darwin.write(fd, $0, strlen($0)) }
+      var frames = [UnsafeMutableRawPointer?](repeating: nil, count: 40)
+      let count = backtrace(&frames, 40)
+      backtrace_symbols_fd(&frames, count, fd)
+    }
+    signal(number, SIG_DFL)
+    raise(number)
+  }
+}
+
 class MainFlutterWindow: NSWindow {
   /// Kept for as long as the window: it answers the tab strip's channel.
   private var titleBar: TitleBar?
@@ -12,6 +65,7 @@ class MainFlutterWindow: NSWindow {
     // the engine is made here, with that on, since it cannot be once a view
     // is on it. Otherwise the engine comes with the view controller as it
     // always did, and the app has the one window.
+    RunnerLog.start()
     let engine = Windows.makeEngine()
     let flutterViewController =
       engine.map { FlutterViewController(engine: $0, nibName: nil, bundle: nil) }
@@ -389,11 +443,22 @@ final class Windows {
     case "firstView":
       result(entries[0]?.controller?.viewIdentifier ?? 0)
     case "open":
-      result(open(frame: call.arguments as? [String: Any]))
+      let id = open(frame: call.arguments as? [String: Any])
+      RunnerLog.write("call open -> id \(id.map(String.init) ?? "nil")")
+      result(id)
     case "close":
+      RunnerLog.write("call close \(call.arguments ?? "?"), \(entries.count) windows")
       if let id = call.arguments as? Int, let entry = entries[id] {
         allowed.insert(id)
         entry.window.close()
+      }
+      result(nil)
+    case "hide":
+      // A window about to close takes no more input: its view is about to
+      // leave the app's tree.
+      RunnerLog.write("call hide \(call.arguments ?? "?")")
+      if let id = call.arguments as? Int, let entry = entries[id] {
+        entry.window.orderOut(nil)
       }
       result(nil)
     case "place":
@@ -496,6 +561,7 @@ final class Windows {
   /// Whether window [id] may close now. Once the app has asked for several
   /// windows it decides, and is asked; it answers with `close`.
   func shouldClose(_ id: Int) -> Bool {
+    RunnerLog.write("window id \(id): should close, allowed \(allowed.contains(id))")
     if !multi || allowed.contains(id) { return true }
     channel?.invokeMethod("closeRequested", arguments: id)
     return false
@@ -503,6 +569,7 @@ final class Windows {
 
   func didClose(_ id: Int) {
     guard let entry = entries.removeValue(forKey: id) else { return }
+    RunnerLog.write("window id \(id): closed, releasing its view")
     allowed.remove(id)
     if let view = entry.controller?.viewIdentifier {
       TitleBar.forget(viewIdentifier: Int(view))
@@ -511,6 +578,7 @@ final class Windows {
     // Its view goes with it, and the engine stays for the others.
     entry.window.contentViewController = nil
     entry.controller = nil
+    RunnerLog.write("window id \(id): view released")
     channel?.invokeMethod("closed", arguments: id)
   }
 
