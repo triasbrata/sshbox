@@ -169,6 +169,34 @@ void main() {
       });
     }
 
+    test('read lines are packed again, a bounded number a write', () {
+      final terminal = make(80, packed: true);
+      for (var i = 0; i < 600; i++) {
+        terminal.write('line $i of the history\r\n');
+      }
+      int unpacked() => [
+        for (var i = 0; i < 200; i++)
+          if (!terminal.buffer.lines[i].isPacked) i,
+      ].length;
+      expect(unpacked(), 0);
+      // Painting and copying read old lines; reading must not be undone by
+      // the next write for all of them at once.
+      for (var i = 0; i < 200; i++) {
+        terminal.buffer.lines[i].getText();
+      }
+      // The least recently used 256 stay unpacked on their own, so all 200
+      // are unpacked here.
+      expect(unpacked(), 200);
+      terminal.write('one more\r\n');
+      expect(unpacked(), 200 - BufferLine.repackBudget);
+      // A bounded pass a write brings the rest back.
+      for (var i = 0; i < 20; i++) {
+        terminal.write('more $i\r\n');
+      }
+      expect(unpacked(), 0);
+      expect(terminal.buffer.lines[7].getText(), 'line 7 of the history');
+    });
+
     test('a selection copies the same text packed or not', () {
       final text = feed(800, 3, 100);
       final plain = make(100, packed: false)..write(text);

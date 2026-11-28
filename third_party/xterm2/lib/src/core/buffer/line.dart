@@ -60,6 +60,22 @@ class BufferLine with IndexedItem {
   static final _unpacked = Queue<BufferLine>();
   static const _maxUnpacked = 256;
 
+  /// The most lines [repackUnpacked] packs again in one call, so a write
+  /// never pays for a whole scrollback that was read.
+  static const repackBudget = 16;
+
+  /// How many lines are unpacked now, to be packed again.
+  static int get unpackedCount => _unpacked.length;
+
+  /// Packs again up to [repackBudget] of the lines that were unpacked to be
+  /// read or changed, oldest first. The pass that packs new scrollback stops
+  /// at the first line already packed, so it never comes back to these.
+  static void repackUnpacked() {
+    for (var n = 0; n < repackBudget && _unpacked.isNotEmpty; n++) {
+      _unpacked.removeFirst().pack();
+    }
+  }
+
   Uint32List get data => _data;
 
   var isWrapped = false;
