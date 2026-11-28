@@ -285,7 +285,13 @@ Finder _semantic(String label) => find.byWidgetPredicate(
 /// The views with a window, as the ones holding the tab strip: a Mac window's
 /// Close is the title bar's own, not the app's.
 List<int> _views() => {
-  for (final e in (Platform.isMacOS ? find.text('Home') : _close).evaluate())
+  for (final e
+      in (Platform.isMacOS
+              ? find.byWidgetPredicate(
+                  (w) => w is Tooltip && w.message == 'Home',
+                )
+              : _close)
+          .evaluate())
     View.of(e).viewId,
 }.toList()..sort();
 
