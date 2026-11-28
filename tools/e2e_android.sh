@@ -4473,6 +4473,7 @@ u_editor_save() { report editor_save editor_save; }
 u_md_rich_text() { report_bare md_rich_text md_rich_text; }
 u_md_rich_caret() { report_bare md_rich_caret md_rich_caret; }
 u_md_rich_speed() { report_bare md_rich_speed md_rich_speed; }
+u_md_touch_scroll() { report_bare md_touch_scroll md_touch_scroll; }
 u_md_mermaid() { report md_mermaid md_mermaid; }
 u_md_chrome() { report md_chrome md_chrome; }
 u_file_editor() { report file_editor file_editor; }
