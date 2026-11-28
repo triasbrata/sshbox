@@ -84,15 +84,16 @@ int _clickView = 0;
 
 final _windowsChannel = const MethodChannel('sshbox/windows');
 
-/// The runner's id of the window whose number is [number]: window 0 is the
-/// first, the others have as many ids as views, in the order they opened.
+/// The runner's ids of the windows by their number: the first window is 0
+/// and each one opened after it takes the next, as the runner counts them. A
+/// window is given its id when first seen, which is in the order they opened.
+final _macIds = <String, int>{};
+int _macNext = 0;
+
 int _macRunnerId(String number) {
-  final index = _winOrder.indexOf(number);
-  final views = _views();
-  if (index < 0 || index >= views.length) {
-    fail('window $number is not one of $_winOrder for views $views');
-  }
-  return index == 0 ? 0 : views[index];
+  final id = _macIds[number];
+  if (id == null) fail('window $number has no runner id: $_macIds');
+  return id;
 }
 
 /// Moves and sizes a window through the runner's own `place`, which takes the
@@ -219,7 +220,10 @@ Future<List<String>> _windows() async {
     final now = Platform.isWindows ? winWindows() : await macWindows();
     _winOrder.removeWhere((h) => !now.contains(h));
     for (final h in now) {
-      if (!_winOrder.contains(h)) _winOrder.add(h);
+      if (!_winOrder.contains(h)) {
+        _winOrder.add(h);
+        if (Platform.isMacOS) _macIds[h] = _macIds.isEmpty ? 0 : ++_macNext;
+      }
     }
     return List.of(_winOrder);
   }
@@ -421,7 +425,17 @@ Future<void> _launch(WidgetTester tester) async {
   );
   if (skip.evaluate().isNotEmpty) await tester.tap(skip.first);
   await tester.pump(const Duration(milliseconds: 500));
+  // The first window's view is 0 where the engine has an implicit view, and
+  // the first one added on a Mac, whose runner turns the engine's views on.
+  if (Platform.isMacOS) {
+    await _until(tester, () => _views().isNotEmpty, 'the first window\'s view');
+    _view0 = _views().first;
+    _trace('the first window\'s view is $_view0');
+  }
 }
+
+/// The view of the first window.
+int _view0 = 0;
 
 Finder get _card => find.ancestor(
   of: find.text('Local shell'),
@@ -850,20 +864,22 @@ Future<void> _last(WidgetTester tester) async {
   }
   await _until(
     tester,
-    () => _in(_tabClose, 0).length == 1,
+    () => _in(_tabClose, _view0).length == 1,
     'B\'s tab in window 0',
   );
   await _until(
     tester,
-    () => _in(find.byType(TerminalView), 0).isNotEmpty,
+    () => _in(find.byType(TerminalView), _view0).isNotEmpty,
     'B\'s terminal in window 0',
   );
   // Real input: a click on the terminal and a command typed to it, answered
   // by a file; no pump is waited for.
   final box =
-      _in(find.byType(TerminalView), 0).first.renderObject! as RenderBox;
+      _in(find.byType(TerminalView), _view0).first.renderObject! as RenderBox;
   final at = box.localToGlobal(box.size.center(Offset.zero));
-  final ratio = tester.binding.platformDispatcher.view(id: 0)!.devicePixelRatio;
+  final ratio = tester.binding.platformDispatcher
+      .view(id: _view0)!
+      .devicePixelRatio;
   final binding = IntegrationTestWidgetsFlutterBinding.instance;
   binding.shouldPropagateDevicePointerEvents = true;
   final pid2 = _note('pid2');
@@ -884,7 +900,8 @@ Future<void> _last(WidgetTester tester) async {
   if (Platform.isWindows || Platform.isMacOS) {
     // The job has no keyboard layer that types text: the command goes
     // to the terminal as the key bar's would, after the real click above.
-    final term = _in(find.byType(TerminalView), 0).first.widget as TerminalView;
+    final term =
+        _in(find.byType(TerminalView), _view0).first.widget as TerminalView;
     term.terminal.textInput(_pidCommand(pid2));
     term.terminal.keyInput(TerminalKey.enter);
   } else {
@@ -937,8 +954,8 @@ Future<void> _last(WidgetTester tester) async {
     mode: ProcessStartMode.detached,
   );
   marker.writeAsStringSync('ready\n', mode: FileMode.append);
-  await _clickClose(tester, xa, 0);
-  final asked = _in(find.byType(TuiDialog), 0).isNotEmpty;
+  await _clickClose(tester, xa, _view0);
+  final asked = _in(find.byType(TuiDialog), _view0).isNotEmpty;
   if (asked) marker.writeAsStringSync('asked\n', mode: FileMode.append);
   // No frame is waited for: the window may be gone, and a pump would wait.
   await Future<void>.delayed(const Duration(seconds: 3));
