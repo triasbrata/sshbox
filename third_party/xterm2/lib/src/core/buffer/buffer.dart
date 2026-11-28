@@ -1312,6 +1312,7 @@ class Buffer {
   /// [BufferLine.pack].
   void compactScrollback({bool all = false}) {
     if (isAltBuffer || !compactionEnabled) return;
+    BufferLine.repackUnpacked();
     for (var i = lines.length - viewHeight - 1; i >= 0; i--) {
       final line = lines[i];
       if (line.isPacked) {
