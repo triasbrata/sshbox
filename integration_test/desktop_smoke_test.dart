@@ -4777,22 +4777,24 @@ touch '${done.path}'
         return shells.contains((await _paneCommand()).replaceFirst('-', ''));
       }, 'the pane to be at a shell');
       await Clipboard.setData(const ClipboardData(text: 'sentinel-before'));
+      // The toast is up for a second, and a frame on a loaded runner can take
+      // that long (this test took 66 s instead of 9 in the runs that missed
+      // it: 46140820222, 46150241312), so the widget is not what is read: the
+      // app log records every toast as it is shown, by type and never its
+      // text, and the share's refusal is the only warning here.
+      int warnings() => 'toast warning'.allMatches(appLog.current).length;
+      final warned = warnings();
       session.queueUploads([text]);
-      // A warning toast is up for about a second, which a slow runner's
-      // polling can miss: watched every frame until the clipboard, which
-      // stays, says the share was refused.
-      var toasted = false;
       final end = DateTime.now().add(const Duration(seconds: 20));
       while (await _clipboard() != text) {
         if (DateTime.now().isAfter(end)) fail('the share was not refused');
         await tester.pump(const Duration(milliseconds: 30));
-        toasted |= find.textContaining('Not pasted').evaluate().isNotEmpty;
       }
-      for (var i = 0; i < 60 && !toasted; i++) {
+      // The toast follows the clipboard write by a microtask or two.
+      for (var i = 0; i < 100 && warnings() == warned; i++) {
         await tester.pump(const Duration(milliseconds: 30));
-        toasted = find.textContaining('Not pasted').evaluate().isNotEmpty;
       }
-      expect(toasted, isTrue, reason: 'no refusal toast was shown');
+      expect(warnings(), warned + 1, reason: 'no refusal toast was shown');
       expect(
         (await _clipboard()),
         text,
@@ -4821,6 +4823,7 @@ touch '${done.path}'
         'the pane to run cat',
       );
       await Clipboard.setData(const ClipboardData(text: 'sentinel-after'));
+      final warnedAfter = warnings();
       session.queueUploads([text]);
       await _until(
         tester,
@@ -4837,6 +4840,7 @@ touch '${done.path}'
         reason: 'not pasted whole: ${jsonEncode(bytes)}',
       );
       expect(find.textContaining('Not pasted'), findsNothing);
+      expect(warnings(), warnedAfter, reason: 'a warning toast was shown');
       expect(
         await _clipboard(),
         'sentinel-after',
