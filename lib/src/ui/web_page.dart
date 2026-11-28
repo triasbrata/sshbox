@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert' show HtmlEscape;
+import 'dart:math' show Random;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
@@ -60,13 +61,16 @@ const webLoadTimeout = Duration(seconds: 30);
 DateTime Function() webGestureClock = DateTime.now;
 
 /// The channel a page's title is posted to, and the script that posts it: now
-/// and at every change in the document's head, where a <title> lives.
+/// and at every change in the document's head, where a <title> lives. The
+/// channel is in every frame of the page but this script runs in the main one
+/// alone, so it signs each message with a token made for this load: a frame
+/// that posts without it cannot name the tab.
 const _titleChannel = 'JeanshTitle';
-const _watchTitle =
+String _watchTitleScript(String token) =>
     '(function(){var c=window.$_titleChannel;'
     'if(!c||window.__jeanshTitleWatch)return;window.__jeanshTitleWatch=1;'
     'var last=null;function send(){var t=document.title;'
-    'if(t!==last){last=t;c.postMessage(t);}}send();'
+    "if(t!==last){last=t;c.postMessage('$token\\n'+t);}}send();"
     'new MutationObserver(send).observe(document.head||document.documentElement,'
     '{subtree:true,childList:true,characterData:true});})();';
 
@@ -113,7 +117,10 @@ class _WebPageState extends State<WebPage> {
       _view.setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: _onNavigation,
-          onPageStarted: (url) => _moved(Uri.tryParse(url) ?? _url, null),
+          onPageStarted: (url) {
+            _titleToken = '';
+            _moved(Uri.tryParse(url) ?? _url, null);
+          },
           onProgress: (progress) {
             if (!mounted) return;
             if (progress < 100) {
@@ -129,7 +136,8 @@ class _WebPageState extends State<WebPage> {
             if (!mounted) return;
             setState(() => _progress = null);
             unawaited(_readBack());
-            unawaited(_view.runJavaScript(_watchTitle));
+            _titleToken = _newToken();
+            unawaited(_view.runJavaScript(_watchTitleScript(_titleToken)));
           },
           // Only the page itself: a picture that fails is the site's line.
           onWebResourceError: (error) {
@@ -361,11 +369,30 @@ class _WebPageState extends State<WebPage> {
     widget.onChanged(url, title);
   }
 
+  /// The token the page's title script signs with, made when a page
+  /// finishes and dropped when the next starts; empty accepts nothing.
+  String _titleToken = '';
+
+  String _newToken() {
+    final random = Random.secure();
+    return List.generate(
+      16,
+      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+  }
+
   /// What a page said its title is. Only a string, and only a name for the
   /// tab: cut, and with control characters left out, since the page wrote it.
   void _titleFromPage(String message) {
-    if (!mounted) return;
+    final at = message.indexOf('\n');
+    if (!mounted ||
+        _titleToken.isEmpty ||
+        at < 0 ||
+        message.substring(0, at) != _titleToken) {
+      return;
+    }
     final title = message
+        .substring(at + 1)
         .replaceAll(RegExp(r'[\u0000-\u001f\u007f]'), ' ')
         .trim();
     widget.onChanged(

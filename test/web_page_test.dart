@@ -87,21 +87,52 @@ void main() {
     );
     expect(view.scripts.last, contains('window.JeanshTitle'));
 
+    // The script signs its messages with this load's token.
+    String tokenOf(String script) =>
+        RegExp(r"postMessage\('([0-9a-f]{32})\\n'").firstMatch(script)![1]!;
+    final token = tokenOf(view.scripts.last);
+    void say(String message) =>
+        channel.onMessageReceived(JavaScriptMessage(message: message));
+
     // The page's word follows, once and again, cut and without controls.
-    channel.onMessageReceived(JavaScriptMessage(message: 'Jeansh e2e js ran'));
+    say('$token\nJeansh e2e js ran');
     expect(reported.last, (Uri.parse(url), 'Jeansh e2e js ran'));
-    channel.onMessageReceived(JavaScriptMessage(message: ' a\nb\u0007c '));
+    say('$token\n a\nb\u0007c ');
     expect(reported.last.$2, 'a b c');
-    channel.onMessageReceived(JavaScriptMessage(message: 'x' * 500));
+    say('$token\n${'x' * 500}');
     expect(reported.last.$2, hasLength(200));
-    channel.onMessageReceived(JavaScriptMessage(message: '  '));
+    say('$token\n  ');
     expect(reported.last.$2, isNull);
 
-    // A message after the tab has gone is dropped.
+    // A frame that does not know the token, or posts none, names nothing.
+    say('$token\nkept');
     final count = reported.length;
-    await tester.pumpWidget(const SizedBox());
-    channel.onMessageReceived(JavaScriptMessage(message: 'late'));
+    say('evil title');
+    say('wrong\nevil title');
+    say('\nevil title');
+    say('${'0' * 32}\nevil title');
     expect(reported, hasLength(count));
+    expect(reported.last.$2, 'kept');
+
+    // A new load rotates the token: the old one is stale, also while the
+    // page is loading, when none is accepted at all.
+    view.page.started(url);
+    say('$token\nstale');
+    view.page.finished(url);
+    await tester.pump();
+    final fresh = tokenOf(view.scripts.last);
+    expect(fresh, isNot(token));
+    final after = reported.length;
+    say('$token\nstale');
+    expect(reported, hasLength(after));
+    say('$fresh\nfresh');
+    expect(reported.last.$2, 'fresh');
+
+    // A message after the tab has gone is dropped.
+    final gone = reported.length;
+    await tester.pumpWidget(const SizedBox());
+    say('$fresh\nlate');
+    expect(reported, hasLength(gone));
   });
 
   testWidgets('a mailto: goes to the phone, a download to the browser', (
