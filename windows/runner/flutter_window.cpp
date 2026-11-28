@@ -99,8 +99,26 @@ WNDPROC g_view_proc = nullptr;
 // window, what is under the pointer. Where the window has an answer of its
 // own — the top resize edge, the maximize button — the view stands aside
 // and Windows asks the window under it.
+// A view whose window is closing takes no pointer, touch or mouse message: the
+// app drops its view from the tree before the window goes, and a message for
+// it, a hover, a leave, anything the window's hiding raises, is an event for a
+// view that is no longer there. Set by `hide`.
+const wchar_t kClosingProp[] = L"JeanshViewClosing";
+
+bool IsPointerMessage(UINT message) {
+  return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
+         message == WM_MOUSELEAVE || message == WM_NCMOUSELEAVE ||
+         message == WM_NCMOUSEMOVE ||
+         // WM_POINTERDEVICECHANGE through WM_POINTERROUTEDRELEASED, which
+         // takes WM_TOUCH and the pointer enter, leave and update between.
+         (message >= 0x0238 && message <= 0x0253);
+}
+
 LRESULT CALLBACK ViewProc(HWND view, UINT message, WPARAM wparam,
                           LPARAM lparam) {
+  if (IsPointerMessage(message) && GetProp(view, kClosingProp) != nullptr) {
+    return 0;
+  }
   if (message == WM_NCHITTEST &&
       SendMessage(GetParent(view), WM_NCHITTEST, wparam, lparam) !=
           HTCLIENT) {
@@ -538,6 +556,9 @@ void FlutterWindow::OnWindowsCall(
     int id = static_cast<int>(*NumberOf(arguments));
     for (FlutterWindow* other : g_windows.others) {
       if (other->id_ == id && other->GetHandle() != nullptr) {
+        // Its view hears no pointer from here on, hidden or not.
+        if (other->view_ != nullptr) SetProp(other->view_, kClosingProp, HANDLE(1));
+        EnableWindow(other->GetHandle(), FALSE);
         ShowWindow(other->GetHandle(), SW_HIDE);
       }
     }
