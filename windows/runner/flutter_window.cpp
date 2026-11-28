@@ -257,13 +257,16 @@ void FlutterWindow::ReleaseView() {
   runner_log::Write("window id %d: view controller destroyed", id_);
   controller_ = nullptr;
   view_ = nullptr;
+  released_ = true;
 }
 
 void FlutterWindow::OnDestroy() {
   if (engine_ != nullptr) {
     // A window after the first: its view goes, and the engine stays.
-    if (!finished_) {
-      finished_ = true;
+    // Only a window that has a view, or has just had it released: OnDestroy is
+    // also reached for a window that has no view yet.
+    if (controller_ != nullptr || released_) {
+      released_ = false;
       // Normally already released by `close`, before the window was
       // destroyed; a window that goes some other way releases it here.
       ReleaseView();

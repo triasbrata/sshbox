@@ -90,8 +90,9 @@ class FlutterWindow : public Win32Window {
 
   // The app has said this window may go: its close is not asked of the app.
   bool force_close_ = false;
-  // A window after the first has been taken off the engine and told the app.
-  bool finished_ = false;
+  // The view of a window after the first was released by `close`, and the
+  // window's destruction has yet to tell the app.
+  bool released_ = false;
 
   // sshbox/window: the app asks the window to move, minimize, maximize and
   // close on it, and says where its maximize button is; the window says on
