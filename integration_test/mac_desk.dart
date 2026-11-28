@@ -56,6 +56,35 @@ Future<String> macClick(
   int button = 1,
 }) => _tool(['click', number, '$x', '$y', '$viewHeight', if (button == 3) '3']);
 
+/// The red close button of the window at [rect] ("x y width height"), found
+/// through the accessibility tree where the window's own buttons are, and
+/// clicked with a real mouse click at its centre.
+Future<String> macClickClose(String rect) async {
+  final p = rect.split(' ').map(int.parse).toList();
+  final script =
+      '''
+tell application "System Events" to tell process "Jeansh"
+  repeat with w in windows
+    set q to position of w
+    if (item 1 of q) is ${p[0]} and (item 2 of q) is ${p[1]} then
+      set b to first button of w whose subrole is "AXCloseButton"
+      set bp to position of b
+      set bs to size of b
+      return ((item 1 of bp) + (item 1 of bs) / 2) & " " & ((item 2 of bp) + (item 2 of bs) / 2)
+    end if
+  end repeat
+  return "none"
+end tell
+''';
+  final found = await Process.run('osascript', ['-e', script]);
+  final out = '${found.stdout}'.trim();
+  if (found.exitCode != 0 || out == 'none' || out.isEmpty) {
+    throw StateError('no close button for $rect: $out ${found.stderr}');
+  }
+  final at = out.split(RegExp(r'[ ,]+')).map(double.parse).toList();
+  return _tool(['clickat', '${at[0]}', '${at[1]}']);
+}
+
 /// A chord such as `cmd+shift+n`, pressed and released.
 Future<void> macKey(String chord) async {
   await _tool(['key', chord]);
