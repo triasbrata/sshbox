@@ -111,6 +111,13 @@ end tell
   }
 }
 
+/// The pointer taken to the bottom right corner of the screen, off every
+/// window, so none of them is hovered while a test ends.
+Future<void> macPointerAway() async {
+  final (w, h) = await macScreen();
+  await _tool(['moveto', '${w - 2}', '${h - 2}']);
+}
+
 /// A chord such as `cmd+shift+n`, pressed and released.
 Future<void> macKey(String chord) async {
   await _tool(['key', chord]);

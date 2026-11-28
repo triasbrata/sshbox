@@ -541,6 +541,15 @@ void main() {
         rethrow;
       } finally {
         follow.cancel();
+        if (Platform.isMacOS) {
+          // The pointer off every window while events still pass through, so
+          // no hover reaches the binding after they stop doing so.
+          try {
+            await macPointerAway();
+            await Future<void>.delayed(const Duration(milliseconds: 400));
+            await tester.pump(const Duration(milliseconds: 200));
+          } catch (_) {}
+        }
         IntegrationTestWidgetsFlutterBinding
                 .instance
                 .shouldPropagateDevicePointerEvents =
