@@ -275,6 +275,73 @@ mw_phases_windows() {
   return $rc
 }
 
+# The several-windows phases on macOS: the key that opens a window (Cmd+N),
+# each window's close (Cmd+W), the first closing while another stays, the
+# windows coming back after a restart, and A+B+C opened and closed ten times.
+# Real mouse and key events come from tools/mw_mac_tool.swift, compiled here
+# once. The app's saved windows and tabs live in its defaults domain: a phase
+# that is not the second half of one starts with that cleared.
+mw_phases_macos() {
+  local rc=0 data note phase rounds flutter_rc tool domain=dev.triasbrata.sshbox
+  local runner_log="$HOME/Library/Application Support/$domain/runner.log"
+  # A phase that ends with the app quitting exits non-zero: the loop goes on.
+  set +e
+  data=$(mktemp -d)
+  note="$data/jeansh-e2e-mw-last.txt"
+  tool="$data/mwtool"
+  swiftc -O "$ROOT/tools/mw_mac_tool.swift" -o "$tool" || {
+    echo "❌ multi-window: the mac input tool did not compile"
+    return 1
+  }
+  for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore churn last}; do
+    echo "experiment: macos phase: $phase"
+    case "$phase" in
+      restore) ;;
+      *) defaults delete "$domain" >/dev/null 2>&1 ;;
+    esac
+    rm -f "$runner_log"
+    JEANSH_E2E_MW_DIR="$data" JEANSH_E2E_MW_TOOL="$tool" \
+      timeout 600 flutter test integration_test/multi_window_phases_test.dart \
+      -d macos --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$data/$phase.log"
+    flutter_rc=${PIPESTATUS[0]}
+    echo "exit: phase $phase flutter test exit code $flutter_rc"
+    echo "--- runner.log after phase $phase:"
+    tail -n 80 "$runner_log" 2>&1 | cut -c1-240
+    echo "--- end of runner.log"
+    # What macOS says of a Jeansh that crashed in this phase.
+    ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i "jeansh\|sshbox" | head -3 | sed 's/^/crash report: /'
+    echo "bad state: $(grep "phase $phase .*bad state tolerated" "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -1)"
+    echo "trace tail: $(tail -n 14 "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' '|' | cut -c1-1800)"
+    case "$phase" in
+      last)
+        if grep -q ready "$note" 2>/dev/null && ! grep -q asked "$note" &&
+          { grep -q ended "$note" || ! grep -q 'windows left' "$note"; }; then
+          echo "✅ multi-window: the last window closed with no question and the process ended"
+        else
+          echo "❌ multi-window: the last window: $(tr '\n' ' ' <"$note" 2>/dev/null)"
+          echo "trace: $(tr '\n' ' ' <"$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)"
+          rc=1
+        fi ;;
+      churn)
+        rounds=$(grep -c 'churn round' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)
+        if [ "$rounds" = 10 ]; then
+          echo "✅ multi-window: 10 of 10 A+B+C rounds, no quit"
+        else
+          echo "❌ multi-window: $rounds of 10 A+B+C rounds"
+          echo "trace: $(tr '\n' ' ' <"$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -c 6000)"
+          rc=1
+        fi ;;
+      *)
+        if [ "$flutter_rc" != 0 ]; then
+          rc=1
+          echo "trace: $(tr '\n' ' ' <"$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)"
+        fi ;;
+    esac
+  done
+  rm -rf "$data"
+  return $rc
+}
+
 # The Linux run's second half, inside its Xvfb (below), with a window
 # manager to maximize under, there from the start as on a desktop.
 if [ "$target" = window-phases ]; then
@@ -365,11 +432,16 @@ case "$target" in
       mw_phases_windows
       exit $?
     fi
+    if [ -n "${E2E_MW_ONLY:-}" ] && [ "$target" = macos ]; then
+      mw_phases_macos
+      exit $?
+    fi
     rc=0
     flutter test "$tests" -d "$target" "$@" || rc=1
     # Only after a whole run, as above.
     [ -z "$JEANSH_E2E_PHASES" ] || window_phases "$target" || rc=1
     [ -z "$JEANSH_E2E_PHASES" ] || [ "$target" != windows ] || mw_phases_windows || rc=1
+    [ -z "$JEANSH_E2E_PHASES" ] || [ "$target" != macos ] || mw_phases_macos || rc=1
     exit $rc
     ;;
   *)

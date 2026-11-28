@@ -21,10 +21,12 @@ import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:sshbox/main.dart' as app;
 
+import 'mac_desk.dart';
 import 'win_desk.dart';
 
 import 'package:sshbox/src/telemetry/app_log.dart' show appLog;
@@ -68,11 +70,96 @@ Future<void> _until(
 
 Future<String> _xdo(List<String> args) async {
   if (Platform.isWindows) return _xdoWindows(args);
+  if (Platform.isMacOS) return _xdoMac(args);
   // A time limit: `windowfocus --sync` waits for ever on a window that holds
   // the focus already.
   final result = await Process.run('timeout', ['15', 'xdotool', ...args]);
   expect(result.exitCode, 0, reason: 'xdotool $args: ${result.stderr}');
   return '${result.stdout}'.trim();
+}
+
+/// The view whose window the next click is aimed at (the click's height in
+/// points is the view's, the title bar being above it).
+int _clickView = 0;
+
+final _windowsChannel = const MethodChannel('sshbox/windows');
+
+/// The runner's id of the window whose number is [number]: window 0 is the
+/// first, the others have as many ids as views, in the order they opened.
+int _macRunnerId(String number) {
+  final index = _winOrder.indexOf(number);
+  final views = _views();
+  if (index < 0 || index >= views.length) {
+    fail('window $number is not one of $_winOrder for views $views');
+  }
+  return index == 0 ? 0 : views[index];
+}
+
+/// Moves and sizes a window through the runner's own `place`, which takes the
+/// frame with its origin at the bottom left of the screen.
+Future<void> _macPlace(
+  String number, {
+  int? x,
+  int? y,
+  int? width,
+  int? height,
+}) async {
+  final r = (await macRect(number)).split(' ').map(int.parse).toList();
+  final (_, screenHeight) = await macScreen();
+  final w = width ?? r[2];
+  final h = height ?? r[3];
+  final top = y ?? r[1];
+  await _windowsChannel.invokeMethod<void>('place', {
+    'id': _macRunnerId(number),
+    'x': (x ?? r[0]).toDouble(),
+    'y': (screenHeight - top - h).toDouble(),
+    'width': w.toDouble(),
+    'height': h.toDouble(),
+  });
+}
+
+/// What xdotool calls this file makes, on macOS: see mac_desk.dart. The chords
+/// are the Mac's own: Cmd+N opens a window where Ctrl+Shift+N does elsewhere,
+/// Cmd+= zooms where Ctrl+= does.
+Future<String> _xdoMac(List<String> a) async {
+  switch (a.first) {
+    case 'windowfocus':
+      await _windowsChannel.invokeMethod<void>('activate', _macRunnerId(a[1]));
+    case 'mousemove':
+      final at = a.indexOf('--window');
+      final x = int.parse(a[at + 2]);
+      final y = int.parse(a[at + 3]);
+      await Future<void>.delayed(
+        Duration(
+          milliseconds: (double.parse(a[a.indexOf('sleep') + 1]) * 1000)
+              .round(),
+        ),
+      );
+      final view = PlatformDispatcher.instance.view(id: _clickView)!;
+      final ratio = view.devicePixelRatio;
+      await macClick(
+        a[at + 1],
+        x / ratio,
+        y / ratio,
+        view.physicalSize.height / ratio,
+        button: int.parse(a.last),
+      );
+    case 'key':
+      final chord = switch (a[1]) {
+        'ctrl+shift+n' => 'cmd+n',
+        'ctrl+equal' => 'cmd+equal',
+        final other => other,
+      };
+      _trace('key $chord');
+      await macKey(chord);
+    case 'windowmove':
+      await _macPlace(a[1], x: int.parse(a[2]), y: int.parse(a[3]));
+    case 'windowsize':
+      await _macPlace(a[1], width: int.parse(a[2]), height: int.parse(a[3]));
+    default:
+      throw UnsupportedError('no macOS version of xdotool ${a.first}');
+  }
+  return '';
 }
 
 /// What xdotool calls this file makes, on Windows: see win_desk.dart.
@@ -113,23 +200,23 @@ Future<String> _xdoWindows(List<String> a) async {
 /// Where the two windows stand: side by side on Linux's 1280 wide display, and
 /// within the 1024 wide screen of the Windows runner, where a window placed
 /// further right has its buttons off the screen.
-final _aX = Platform.isWindows ? '10' : '20';
-final _aY = Platform.isWindows ? '10' : '20';
-final _aW = Platform.isWindows ? '490' : '600';
+final _aX = Platform.isWindows ? '10' : (Platform.isMacOS ? '20' : '20');
+final _aY = Platform.isWindows ? '10' : (Platform.isMacOS ? '60' : '20');
+final _aW = Platform.isWindows ? '490' : (Platform.isMacOS ? '520' : '600');
 final _aH = '450';
-final _bX = Platform.isWindows ? '520' : '650';
-final _bY = Platform.isWindows ? '10' : '40';
-final _bW = Platform.isWindows ? '490' : '600';
+final _bX = Platform.isWindows ? '520' : (Platform.isMacOS ? '560' : '650');
+final _bY = Platform.isWindows ? '10' : (Platform.isMacOS ? '60' : '40');
+final _bW = Platform.isWindows ? '490' : (Platform.isMacOS ? '520' : '600');
 final _bH = '450';
 
 /// The Windows windows in the order they were first seen.
 final _winOrder = <String>[];
 
 Future<List<String>> _windows() async {
-  if (Platform.isWindows) {
+  if (Platform.isWindows || Platform.isMacOS) {
     // Oldest first, as the order they were first seen in: a window made later
     // can have a smaller handle than the first.
-    final now = winWindows();
+    final now = Platform.isWindows ? winWindows() : await macWindows();
     _winOrder.removeWhere((h) => !now.contains(h));
     for (final h in now) {
       if (!_winOrder.contains(h)) _winOrder.add(h);
@@ -167,6 +254,7 @@ Future<List<String>> _windowsAre(WidgetTester tester, int count) async {
 /// A window's place and size as X reports them, the same way both times.
 Future<String> _rect(String id) async {
   if (Platform.isWindows) return winRect(id);
+  if (Platform.isMacOS) return macRect(id);
   final info = await Process.run('xwininfo', ['-id', id]);
   expect(info.exitCode, 0, reason: 'xwininfo $id: ${info.stderr}');
   String value(String key) =>
@@ -190,8 +278,25 @@ Finder _semantic(String label) => find.byWidgetPredicate(
   (w) => w is Semantics && w.properties.label == label,
 );
 
-List<int> _views() =>
-    {for (final e in _close.evaluate()) View.of(e).viewId}.toList()..sort();
+/// The views with a window, as the ones holding the tab strip: a Mac window's
+/// Close is the title bar's own, not the app's.
+List<int> _views() => {
+  for (final e in (Platform.isMacOS ? find.text('Home') : _close).evaluate())
+    View.of(e).viewId,
+}.toList()..sort();
+
+/// A window's own close: the app's Close button where it draws one, ⌘W on a
+/// Mac, whose title bar is the system's.
+Future<void> _clickClose(WidgetTester tester, String xid, int viewId) async {
+  if (Platform.isMacOS) {
+    await _xdo(['windowfocus', xid]);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _xdo(['key', 'cmd+w']);
+    await tester.pump(const Duration(milliseconds: 400));
+    return;
+  }
+  await _clickClose(tester, xid, viewId);
+}
 
 List<Element> _in(Finder finder, int viewId) => [
   for (final e in finder.evaluate())
@@ -223,6 +328,7 @@ Future<void> _click(
   Element target, {
   int button = 1,
 }) async {
+  _clickView = viewId;
   final binding = IntegrationTestWidgetsFlutterBinding.instance;
   final ratio = tester.binding.platformDispatcher
       .view(id: viewId)!
@@ -278,7 +384,7 @@ Future<void> _newWindow(WidgetTester tester, String from, int count) async {
   await _until(tester, () => _views().length == count, 'a view a window');
   // A third window opens at the runner's own size, which on Windows is wider
   // than the screen, its buttons off it: it is put inside, over the others.
-  if (count == 3 && Platform.isWindows) {
+  if (count == 3 && (Platform.isWindows || Platform.isMacOS)) {
     await _xdo(['windowmove', ids[2], '260', '300']);
     await _xdo(['windowsize', ids[2], '490', '400']);
     await tester.pump(const Duration(seconds: 1));
@@ -330,7 +436,9 @@ void main() {
 
   testWidgets(
     'multi-window phase $_phase',
-    skip: _phase.isEmpty || !(Platform.isLinux || Platform.isWindows),
+    skip:
+        _phase.isEmpty ||
+        !(Platform.isLinux || Platform.isWindows || Platform.isMacOS),
     (tester) async {
       await _launch(tester);
       // The app log's `win:` lines are written to the trace as they come, so a
@@ -346,7 +454,7 @@ void main() {
         }
         seen = wins.length;
       });
-      // On Windows alone: a pointer packet for a view the test binding has no
+      // On Windows and macOS: a pointer packet for a view the test binding has no
       // render view for throws `Bad state: No element` from flutter_test's
       // LiveTestWidgetsFlutterBinding.handlePointerEvent (a firstWhere), where
       // the product's RendererBinding.hitTestInView does `_viewIdToRenderView
@@ -354,7 +462,7 @@ void main() {
       // from that frame, is let through, and each one is counted and traced.
       var tolerated = 0;
       final previous = FlutterError.onError;
-      if (Platform.isWindows) {
+      if (Platform.isWindows || Platform.isMacOS) {
         FlutterError.onError = (details) {
           final ex = details.exception;
           if (ex is StateError &&
@@ -457,12 +565,7 @@ Future<void> _save(WidgetTester tester) async {
     ids = await _windows();
     final c = _views()[2];
     _trace('save step 13');
-    await _click(
-      tester,
-      ids[2],
-      c,
-      await _first(tester, _close, c, 'C\'s Close'),
-    );
+    await _clickClose(tester, ids[2], c);
     _trace('save step 14');
     await _windowsAre(tester, 2);
     _trace('save step 15');
@@ -488,9 +591,10 @@ Future<void> _restore(WidgetTester tester) async {
   debugPrint('multi-window: frames now $now, saved $saved');
   // On Windows the windows are listed by first sight, which for windows that
   // came up together is by handle, so the two frames are matched as a set.
+  final asSet = Platform.isWindows || Platform.isMacOS;
   expect(
-    Platform.isWindows ? (List.of(now)..sort()) : now,
-    Platform.isWindows ? (List.of(saved)..sort()) : saved,
+    asSet ? (List.of(now)..sort()) : now,
+    asSet ? (List.of(saved)..sort()) : saved,
     reason: 'a window did not come back at its own frame',
   );
   await _until(tester, () => _views().length == 2, 'a view a window');
@@ -560,12 +664,7 @@ Future<void> _buttons(WidgetTester tester) async {
     () async => (await _state(ids[1])).startsWith('IsViewable'),
     'B to come back',
   );
-  await _click(
-    tester,
-    ids[1],
-    b,
-    await _first(tester, _close, b, 'B\'s Close'),
-  );
+  await _clickClose(tester, ids[1], b);
   // Its tabs were never connected in this run, so there is nothing to ask.
   await _windowsAre(tester, 1);
   expect(await _windows(), [ids[0]], reason: 'the wrong window closed');
@@ -640,7 +739,7 @@ Future<void> _last(WidgetTester tester) async {
   _trace('B has a shell, pid ${pid1.readAsStringSync().trim()}, frame $bRect');
 
   // Close the first window: asked, as it holds a live shell.
-  await _click(tester, xa, a, await _first(tester, _close, a, 'A\'s Close'));
+  await _clickClose(tester, xa, a);
   await _until(
     tester,
     () => _in(find.byType(TuiDialog), a).isNotEmpty,
@@ -668,7 +767,9 @@ Future<void> _last(WidgetTester tester) async {
     expect(now, bRect, reason: 'the first window is not at B\'s old frame');
   }
   // Negative: nothing left over, mapped or not, parked or not.
-  final named = Platform.isWindows
+  final named = Platform.isMacOS
+      ? await macWindows(all: true)
+      : Platform.isWindows
       ? winWindows()
       : '${(await Process.run('xdotool', ['search', '--name', r'^Jeansh'])).stdout}'
             .trim()
@@ -780,8 +881,8 @@ Future<void> _last(WidgetTester tester) async {
     '1',
   ]);
   await Future<void>.delayed(const Duration(seconds: 1));
-  if (Platform.isWindows) {
-    // The Windows job has no keyboard layer that types text: the command goes
+  if (Platform.isWindows || Platform.isMacOS) {
+    // The job has no keyboard layer that types text: the command goes
     // to the terminal as the key bar's would, after the real click above.
     final term = _in(find.byType(TerminalView), 0).first.widget as TerminalView;
     term.terminal.textInput(_pidCommand(pid2));
@@ -810,12 +911,7 @@ Future<void> _last(WidgetTester tester) async {
   ids = await _windows();
   final nowViews = _views();
   expect(nowViews, hasLength(2));
-  await _click(
-    tester,
-    ids[1],
-    nowViews[1],
-    await _first(tester, _close, nowViews[1], 'the new window\'s Close'),
-  );
+  await _clickClose(tester, ids[1], nowViews[1]);
   await _windowsAre(tester, 1);
   _trace('a new window opened and closed');
 
@@ -841,12 +937,7 @@ Future<void> _last(WidgetTester tester) async {
     mode: ProcessStartMode.detached,
   );
   marker.writeAsStringSync('ready\n', mode: FileMode.append);
-  await _click(
-    tester,
-    xa,
-    0,
-    await _first(tester, _close, 0, 'the last Close'),
-  );
+  await _clickClose(tester, xa, 0);
   final asked = _in(find.byType(TuiDialog), 0).isNotEmpty;
   if (asked) marker.writeAsStringSync('asked\n', mode: FileMode.append);
   // No frame is waited for: the window may be gone, and a pump would wait.
@@ -870,21 +961,11 @@ Future<void> _churn(WidgetTester tester) async {
     await _newWindow(tester, ids[1], 3);
     ids = await _windows();
     final views = _views();
-    await _click(
-      tester,
-      ids[2],
-      views[2],
-      await _first(tester, _close, views[2], 'C\'s Close'),
-    );
+    await _clickClose(tester, ids[2], views[2]);
     await _windowsAre(tester, 2);
     ids = await _windows();
     final left = _views();
-    await _click(
-      tester,
-      ids[1],
-      left[1],
-      await _first(tester, _close, left[1], 'B\'s Close'),
-    );
+    await _clickClose(tester, ids[1], left[1]);
     ids = await _windowsAre(tester, 1);
     _trace('churn round $round done');
   }
@@ -901,7 +982,7 @@ bool _drew(TerminalView view) {
 /// The window's pixels, [rect] being "x y w h", as the PNG ffmpeg grabs from
 /// the display; null when it cannot.
 Future<List<int>?> _grabWindow(String rect, String name) async {
-  if (Platform.isWindows) return null;
+  if (Platform.isWindows || Platform.isMacOS) return null;
   final r = rect.split(' ');
   final file = File('${_dir.path}/jeansh-e2e-mw-$name.png');
   final done = await Process.run('ffmpeg', [
@@ -967,7 +1048,7 @@ Future<void> _bisect(WidgetTester tester) async {
   final x = target == 'A' ? ids[0] : ids[1];
   final v = target == 'A' ? a : b;
   if (how == 'button') {
-    await _click(tester, x, v, await _first(tester, _close, v, 'its Close'));
+    await _clickClose(tester, x, v);
   } else {
     await _xdo(['windowfocus', x]);
     await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -1026,12 +1107,7 @@ int _caretN(TerminalView view) {
 Future<void> _closeSecond(WidgetTester tester) async {
   final ids = await _windows();
   final views = _views();
-  await _click(
-    tester,
-    ids[1],
-    views[1],
-    await _first(tester, _close, views[1], 'the second window\'s Close'),
-  );
+  await _clickClose(tester, ids[1], views[1]);
   await _windowsAre(tester, 1);
 }
 
@@ -1193,8 +1269,7 @@ Future<void> _t4(WidgetTester tester) async {
   );
   await tester.pump(const Duration(seconds: 1));
 
-  Future<void> closeB() async =>
-      _click(tester, ids[1], b, await _first(tester, _close, b, 'B\'s Close'));
+  Future<void> closeB() async => _clickClose(tester, ids[1], b);
   // Asked, and Keep it keeps B and its shell.
   await closeB();
   await _until(
