@@ -1,6 +1,7 @@
 import Cocoa
 import FlutterMacOS
 import desktop_drop
+import ObjectiveC
 import UniformTypeIdentifiers
 
 /// A log the runner writes itself, to runner.log in the app's Application
@@ -420,10 +421,35 @@ final class Windows {
     let engine = FlutterEngine(name: "io.flutter", project: nil, allowHeadlessExecution: true)
     guard responds(engine, to: enableMultiView) else { return nil }
     _ = engine.perform(enableMultiView)
+    // The first window is the engine's implicit view, number 0, as on Linux
+    // and Windows: Flutter's own tests, and every API that asks for "the"
+    // view, mean view 0, and with the views on the engine would number the
+    // first window 1 and have no view 0. A view numbered 0 is never added to
+    // the engine by the call the others go through, so it is the implicit
+    // one. The engine counts its views from an ivar that starts at 1; the
+    // first is given 0. Where the ivar is not there, or is not a number of
+    // that size, the first window is 1 as before.
+    Self.numberFirstViewZero(engine)
     // Running before any view is added, so each view added is told to the
     // engine as it is.
     guard engine.run(withEntrypoint: nil) else { return nil }
     return engine
+  }
+
+  private static func numberFirstViewZero(_ engine: FlutterEngine) {
+    guard let ivar = class_getInstanceVariable(FlutterEngine.self, "_nextViewIdentifier"),
+      let encoding = ivar_getTypeEncoding(ivar), String(cString: encoding) == "q"
+    else {
+      RunnerLog.write("view numbering: ivar not found, the first view stays 1")
+      return
+    }
+    let slot = Unmanaged.passUnretained(engine).toOpaque().advanced(by: ivar_getOffset(ivar))
+    guard slot.load(as: Int64.self) == 1 else {
+      RunnerLog.write("view numbering: engine starts at another number, left alone")
+      return
+    }
+    slot.storeBytes(of: 0, as: Int64.self)
+    RunnerLog.write("view numbering: the first view is 0")
   }
 
   /// The window the xib made, now that its engine and view are up.
@@ -614,6 +640,9 @@ final class Windows {
     entry.window.orderOut(nil)
     // Its view goes with it, and the engine stays for the others.
     entry.window.contentViewController = nil
+    // The window's own content view too, or it is held by the window, which
+    // runner.log showed staying on after a close.
+    entry.window.contentView = nil
     entry.controller = nil
     RunnerLog.write("window id \(id): view released")
     channel?.invokeMethod("closed", arguments: id)

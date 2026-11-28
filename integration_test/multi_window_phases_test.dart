@@ -648,6 +648,14 @@ Future<void> _save(WidgetTester tester) async {
     _trace('save step 14');
     await _windowsAre(tester, 2);
     _trace('save step 15');
+    // The runner checks that the closed window is let go at 3 s and at 15 s:
+    // the app stays up past both.
+    if (Platform.isMacOS) {
+      for (var i = 0; i < 18; i++) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
   }
   await tester.pump(const Duration(seconds: 3));
   _trace('save step 16');
