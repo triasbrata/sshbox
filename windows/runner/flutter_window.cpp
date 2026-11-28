@@ -530,6 +530,18 @@ void FlutterWindow::OnWindowsCall(
       PostMessage(target->GetHandle(), WM_CLOSE, 0, 0);
     }
     result->Success();
+  } else if (method == "hide" && arguments != nullptr &&
+             NumberOf(arguments).has_value()) {
+    // A window about to close takes no more input: its view is about to leave
+    // the app's tree, and a pointer over a window whose view is gone is an
+    // event for a view that is not there. The first window's view stays.
+    int id = static_cast<int>(*NumberOf(arguments));
+    for (FlutterWindow* other : g_windows.others) {
+      if (other->id_ == id && other->GetHandle() != nullptr) {
+        ShowWindow(other->GetHandle(), SW_HIDE);
+      }
+    }
+    result->Success();
   } else if (method == "place" && arguments != nullptr) {
     // Moves and sizes a window, as the app asks when the first window takes
     // the place of another that has closed.
