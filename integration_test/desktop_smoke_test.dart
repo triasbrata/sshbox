@@ -969,6 +969,30 @@ Future<Rect> _windowRect() async {
   );
 }
 
+/// openbox has taken the display and framed Jeansh's window, which the test's
+/// clicks are measured from: a window manager started two seconds earlier was
+/// not always done, and a click worked out from where the window was before
+/// its frame went on landed beside the Maximize button (run 46149960895). It
+/// owns _NET_SUPPORTING_WM_CHECK once it is up, and the window has been
+/// framed when its place stops changing.
+Future<void> _windowManagerReady(WidgetTester tester) async {
+  Rect? last;
+  var steady = 0;
+  final end = DateTime.now().add(const Duration(seconds: 20));
+  while (steady < 4) {
+    if (DateTime.now().isAfter(end)) {
+      fail('the window manager did not settle: $last');
+    }
+    final wm = await Process.run('xprop', ['-root', '_NET_SUPPORTING_WM_CHECK']);
+    final up = wm.exitCode == 0 && '${wm.stdout}'.contains('window id');
+    final rect = up ? await _windowRect() : null;
+    steady = rect != null && rect == last ? steady + 1 : 0;
+    last = rect;
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+  debugPrint('the window manager settled, the window at $last');
+}
+
 /// The real pointer on Windows, moved and pressed as a hand would: each
 /// step `move x y` in the client area's physical pixels, `moveby dx dy` on
 /// the screen, `down`, `up`, `restore` (the window, from minimized) or
@@ -8761,13 +8785,18 @@ touch '${done.path}'
     (tester) async {
       final binding = IntegrationTestWidgetsFlutterBinding.instance;
       binding.shouldPropagateDevicePointerEvents = true;
+      // Put back whatever happens: a test that failed before the end of its
+      // body left it set, and the next test then failed on it ("The value of
+      // shouldPropagateDevicePointerEvents was changed by the test", run
+      // 46149960895). The body still puts it back itself, before the binding
+      // checks it.
+      addTearDown(() => binding.shouldPropagateDevicePointerEvents = false);
       await _launch(tester);
       if (Platform.isLinux) {
         await _window();
         final wm = await Process.start('openbox', []);
         addTearDown(wm.kill);
-        await Future<void>.delayed(const Duration(seconds: 2));
-        await tester.pump();
+        await _windowManagerReady(tester);
       }
       final ratio = tester.view.devicePixelRatio;
 
@@ -8783,6 +8812,10 @@ touch '${done.path}'
 
       Future<void> click(Offset local, {int times = 1}) async {
         final at = await real(local);
+        debugPrint(
+          'real click at ${at.dx.round()},${at.dy.round()} for $local, '
+          'window ${Platform.isWindows ? '' : await _windowRect()}',
+        );
         if (Platform.isWindows) {
           await _winMouse([
             'move ${at.dx.round()} ${at.dy.round()}',
