@@ -4783,7 +4783,14 @@ touch '${done.path}'
       // stays, says the share was refused.
       var toasted = false;
       final end = DateTime.now().add(const Duration(seconds: 20));
-      while (await _clipboard() != text) {
+      final clock = Stopwatch()..start();
+      final probe = <String>[];
+      while (true) {
+        final read = clock.elapsedMilliseconds;
+        final now = await _clipboard();
+        probe.add('read@$read took ${clock.elapsedMilliseconds - read} ms'
+            '${now == text ? ' = text' : ''}');
+        if (now == text) break;
         if (DateTime.now().isAfter(end)) fail('the share was not refused');
         await tester.pump(const Duration(milliseconds: 30));
         toasted |= find.textContaining('Not pasted').evaluate().isNotEmpty;
@@ -4791,6 +4798,15 @@ touch '${done.path}'
       for (var i = 0; i < 60 && !toasted; i++) {
         await tester.pump(const Duration(milliseconds: 30));
         toasted = find.textContaining('Not pasted').evaluate().isNotEmpty;
+      }
+      if (!toasted) {
+        debugPrint(
+          'PROBE no toast: ${probe.length} reads, last 6: '
+          '${probe.skip(probe.length > 6 ? probe.length - 6 : 0).join('; ')}; '
+          'at ${clock.elapsedMilliseconds} ms; toast cards '
+          '${find.byType(TuiToastCard).evaluate().length}; texts '
+          '${find.byType(Text).evaluate().map((e) => (e.widget as Text).data ?? (e.widget as Text).textSpan?.toPlainText()).whereType<String>().take(40).join(' | ')}',
+        );
       }
       expect(toasted, isTrue, reason: 'no refusal toast was shown');
       expect(
