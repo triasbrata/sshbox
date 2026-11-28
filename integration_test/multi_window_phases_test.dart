@@ -96,8 +96,9 @@ int _macRunnerId(String number) {
   return id;
 }
 
-/// Moves and sizes a window through the runner's own `place`, which takes the
-/// frame with its origin at the bottom left of the screen.
+/// Moves and sizes a window through accessibility, as a hand would drag it,
+/// and not through the runner's own `place`, which the first window's
+/// handover is checked on.
 Future<void> _macPlace(
   String number, {
   int? x,
@@ -106,19 +107,13 @@ Future<void> _macPlace(
   int? height,
 }) async {
   final r = (await macRect(number)).split(' ').map(int.parse).toList();
-  final (_, screenHeight) = await macScreen();
-  // The runner ignores a frame under 200 by 150: a window that opened tiny is
-  // given room while it is moved.
-  final w = width ?? (r[2] < 300 ? 300 : r[2]);
-  final h = height ?? (r[3] < 200 ? 200 : r[3]);
-  final top = y ?? r[1];
-  await _windowsChannel.invokeMethod<void>('place', {
-    'id': _macRunnerId(number),
-    'x': (x ?? r[0]).toDouble(),
-    'y': (screenHeight - top - h).toDouble(),
-    'width': w.toDouble(),
-    'height': h.toDouble(),
-  });
+  await macMoveSize(
+    (await macRect(number)),
+    x ?? r[0],
+    y ?? r[1],
+    width ?? r[2],
+    height ?? r[3],
+  );
 }
 
 /// What xdotool calls this file makes, on macOS: see mac_desk.dart. The chords
@@ -472,6 +467,11 @@ void main() {
         !(Platform.isLinux || Platform.isWindows || Platform.isMacOS),
     (tester) async {
       await _launch(tester);
+      // On a Mac every real pointer event goes straight to the product path, which takes an event for a view it does not know; the test path (flutter_test binding.dart:2962) throws on one.
+      IntegrationTestWidgetsFlutterBinding
+              .instance
+              .shouldPropagateDevicePointerEvents =
+          Platform.isMacOS;
       // The app log's `win:` lines are written to the trace as they come, so a
       // process that ends leaves them behind (a failure prints them again).
       var seen = 0;
@@ -541,6 +541,10 @@ void main() {
         rethrow;
       } finally {
         follow.cancel();
+        IntegrationTestWidgetsFlutterBinding
+                .instance
+                .shouldPropagateDevicePointerEvents =
+            false;
         FlutterError.onError = previous;
       }
     },

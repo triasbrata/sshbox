@@ -85,6 +85,32 @@ end tell
   return _tool(['clickat', '${at[0]}', '${at[1]}']);
 }
 
+/// Moves and sizes the window now at [rect] ("x y width height") to the given
+/// frame, through accessibility's position and size of the window.
+Future<void> macMoveSize(String rect, int x, int y, int w, int h) async {
+  final p = rect.split(' ').map(int.parse).toList();
+  final script =
+      '''
+tell application "System Events" to tell process "Jeansh"
+  repeat with win in windows
+    set q to position of win
+    if (item 1 of q) is ${p[0]} and (item 2 of q) is ${p[1]} then
+      set size of win to {$w, $h}
+      set position of win to {$x, $y}
+      set size of win to {$w, $h}
+      return "ok"
+    end if
+  end repeat
+  return "none"
+end tell
+''';
+  final done = await Process.run('osascript', ['-e', script]);
+  final out = '${done.stdout}'.trim();
+  if (done.exitCode != 0 || out != 'ok') {
+    throw StateError('no window at $rect to move: $out ${done.stderr}');
+  }
+}
+
 /// A chord such as `cmd+shift+n`, pressed and released.
 Future<void> macKey(String chord) async {
   await _tool(['key', chord]);
