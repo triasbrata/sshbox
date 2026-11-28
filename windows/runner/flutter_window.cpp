@@ -9,7 +9,10 @@
 #include <string>
 #include <vector>
 
+#include <desktop_drop/desktop_drop_plugin.h>
+
 #include "flutter/generated_plugin_registrant.h"
+#include "runner_log.h"
 
 // Declared in the engine's flutter_windows_internal.h, not in the public
 // header, and exported by flutter_windows.dll all the same, as a dumpbin of
@@ -41,13 +44,13 @@ struct Windows {
   FlutterDesktopEngineRef engine = nullptr;
   FlutterWindow* first = nullptr;
   std::vector<FlutterWindow*> others;
+  // Windows the app has closed, hidden with their view still on the engine,
+  // for the next one it opens.
+  std::vector<FlutterWindow*> pool;
   flutter::MethodChannel<flutter::EncodableValue>* window_channel = nullptr;
   flutter::MethodChannel<flutter::EncodableValue>* windows_channel = nullptr;
   // The app asked for several windows, so it is asked before one closes.
   bool multi = false;
-  // The first window hidden after it was closed while others stay up, to be
-  // shown again by the next window the app opens.
-  bool first_hidden = false;
   int next_id = 1;
 };
 
@@ -100,8 +103,26 @@ WNDPROC g_view_proc = nullptr;
 // window, what is under the pointer. Where the window has an answer of its
 // own — the top resize edge, the maximize button — the view stands aside
 // and Windows asks the window under it.
+// A view whose window is closing takes no pointer, touch or mouse message: the
+// app drops its view from the tree before the window goes, and a message for
+// it, a hover, a leave, anything the window's hiding raises, is an event for a
+// view that is no longer there. Set by `hide`.
+const wchar_t kClosingProp[] = L"JeanshViewClosing";
+
+bool IsPointerMessage(UINT message) {
+  return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
+         message == WM_MOUSELEAVE || message == WM_NCMOUSELEAVE ||
+         message == WM_NCMOUSEMOVE ||
+         // WM_POINTERDEVICECHANGE through WM_POINTERROUTEDRELEASED, which
+         // takes WM_TOUCH and the pointer enter, leave and update between.
+         (message >= 0x0238 && message <= 0x0253);
+}
+
 LRESULT CALLBACK ViewProc(HWND view, UINT message, WPARAM wparam,
                           LPARAM lparam) {
+  if (IsPointerMessage(message) && GetProp(view, kClosingProp) != nullptr) {
+    return 0;
+  }
   if (message == WM_NCHITTEST &&
       SendMessage(GetParent(view), WM_NCHITTEST, wparam, lparam) !=
           HTCLIENT) {
@@ -167,6 +188,8 @@ bool FlutterWindow::OnCreate() {
     view_ = FlutterDesktopViewGetHWND(
         FlutterDesktopViewControllerGetView(controller_));
     SetChildContent(view_);
+    // A file can be dropped on it, as on the first window's view.
+    DesktopDropAttachWindow(view_, view_id_);
     if (g_view_proc == nullptr) {
       g_view_proc = reinterpret_cast<WNDPROC>(
           GetWindowLongPtr(view_, GWLP_WNDPROC));
@@ -225,12 +248,56 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+// The app has closed this window: out of sight, off the screen's input and out
+// of the app's list, its view still on the engine.
+void FlutterWindow::Park() {
+  runner_log::Write("window id %d: parked", id_);
+  int closed = id_;
+  if (view_ != nullptr) SetProp(view_, kClosingProp, HANDLE(1));
+  if (GetHandle() != nullptr) {
+    KillTimer(GetHandle(), kSaveTimer);
+    EnableWindow(GetHandle(), FALSE);
+    ShowWindow(GetHandle(), SW_HIDE);
+  }
+  auto& others = g_windows.others;
+  others.erase(std::remove(others.begin(), others.end(), this), others.end());
+  g_windows.pool.push_back(this);
+  id_ = -1;
+  NotifyWindows("closed", flutter::EncodableValue(closed));
+}
+
+// A parked window opened again as window |id|.
+void FlutterWindow::Unpark(int id) {
+  id_ = id;
+  if (view_ != nullptr) RemoveProp(view_, kClosingProp);
+  EnableWindow(GetHandle(), TRUE);
+}
+
+// The view goes, and the engine stays. Done while the window and the view's own
+// window are both alive, outside any WM_DESTROY: torn down inside the parent's
+// destruction the controller touched windows already being freed, an access
+// violation that ended the process.
+void FlutterWindow::ReleaseView() {
+  if (controller_ == nullptr) return;
+  DesktopDropDetachWindow(view_);
+  runner_log::Write("window id %d: destroying its view controller", id_);
+  FlutterDesktopViewControllerDestroy(controller_);
+  runner_log::Write("window id %d: view controller destroyed", id_);
+  controller_ = nullptr;
+  view_ = nullptr;
+  released_ = true;
+}
+
 void FlutterWindow::OnDestroy() {
   if (engine_ != nullptr) {
     // A window after the first: its view goes, and the engine stays.
-    if (controller_ != nullptr) {
-      FlutterDesktopViewControllerDestroy(controller_);
-      controller_ = nullptr;
+    // Only a window that has a view, or has just had it released: OnDestroy is
+    // also reached for a window that has no view yet.
+    if (controller_ != nullptr || released_) {
+      released_ = false;
+      // Normally already released by `close`, before the window was
+      // destroyed; a window that goes some other way releases it here.
+      ReleaseView();
       auto& others = g_windows.others;
       others.erase(std::remove(others.begin(), others.end(), this),
                    others.end());
@@ -244,6 +311,7 @@ void FlutterWindow::OnDestroy() {
     return;
   }
 
+  runner_log::Write("first window: OnDestroy");
   g_windows.first = nullptr;
   g_windows.window_channel = nullptr;
   g_windows.windows_channel = nullptr;
@@ -449,7 +517,7 @@ void FlutterWindow::NotifyWindows(const char* method,
 // Tells the app where the window is, once it has held still.
 void FlutterWindow::NotifyMoved() {
   HWND hwnd = GetHandle();
-  if (hwnd == nullptr || IsRectEmpty(&normal_)) return;
+  if (hwnd == nullptr || IsRectEmpty(&normal_) || id_ < 0) return;
   NotifyWindows(
       "moved",
       flutter::EncodableValue(flutter::EncodableMap{
@@ -487,24 +555,30 @@ void FlutterWindow::OnWindowsCall(
     RECT rect;
     bool maximized = false;
     bool framed = FrameOf(arguments, &rect, &maximized);
-    if (g_windows.first_hidden) {
-      // The first window comes back before a new one is made.
-      g_windows.first_hidden = false;
-      HWND hwnd = GetHandle();
-      SetWindowTextW(hwnd, L"Jeansh");
-      if (framed) ApplyPlacement(rect, maximized);
-      ShowWindow(hwnd, maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
-      SetForegroundWindow(hwnd);
-      NotifyWindows("opened", flutter::EncodableValue(flutter::EncodableMap{
-                                  {flutter::EncodableValue("id"),
-                                   flutter::EncodableValue(0)},
-                                  {flutter::EncodableValue("viewId"),
-                                   flutter::EncodableValue(0)}}));
-      result->Success(flutter::EncodableValue(0));
+    int id = g_windows.next_id++;
+    runner_log::Write("call open -> id %d, %d parked", id,
+                      static_cast<int>(g_windows.pool.size()));
+    FlutterWindow* window = nullptr;
+    if (!g_windows.pool.empty()) {
+      window = g_windows.pool.back();
+      g_windows.pool.pop_back();
+      window->Unpark(id);
+      unsigned int step = 40 * static_cast<unsigned int>(id % 8);
+      SetWindowPos(window->GetHandle(), nullptr, 10 + step, 10 + step, 0, 0,
+                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      if (framed) window->ApplyPlacement(rect, maximized);
+      window->Show();
+      g_windows.others.push_back(window);
+      NotifyWindows("opened",
+                    flutter::EncodableValue(flutter::EncodableMap{
+                        {flutter::EncodableValue("id"),
+                         flutter::EncodableValue(id)},
+                        {flutter::EncodableValue("viewId"),
+                         flutter::EncodableValue(window->view_id_)}}));
+      result->Success(flutter::EncodableValue(id));
       return;
     }
-    int id = g_windows.next_id++;
-    auto* window = new FlutterWindow(g_windows.engine, id);
+    window = new FlutterWindow(g_windows.engine, id);
     // Each a little lower and to the right of the last, as a window manager
     // would place them; a saved frame replaces that.
     unsigned int step = 40 * static_cast<unsigned int>(id % 8);
@@ -526,32 +600,69 @@ void FlutterWindow::OnWindowsCall(
   } else if (method == "close" && arguments != nullptr &&
              NumberOf(arguments).has_value()) {
     int id = static_cast<int>(*NumberOf(arguments));
+    runner_log::Write("call close %d, %d others", id,
+                      static_cast<int>(g_windows.others.size()));
     FlutterWindow* target = nullptr;
     for (FlutterWindow* other : g_windows.others) {
       if (other->id_ == id) target = other;
     }
     if (id == 0) {
+      // Only the last window: the app quits, and keeps where it was. With
+      // others open the app moves one of them into the first window and
+      // closes that one instead, since the first window's view is the
+      // engine's own and has to stay.
       if (g_windows.others.empty()) {
-        // The last window: the app quits, and keeps where it was.
+        runner_log::Write("close 0: last window, posting a forced WM_CLOSE");
         force_close_ = true;
         PostMessage(GetHandle(), WM_CLOSE, 0, 0);
-      } else {
-        // Hidden, not destroyed: its view is the engine's first, which has
-        // to stay. A title of its own, so a second Jeansh started now finds
-        // a window that is up.
-        KillTimer(GetHandle(), kSaveTimer);
-        SavePlacement();
-        SetWindowTextW(GetHandle(), L"Jeansh (hidden)");
-        ShowWindow(GetHandle(), SW_HIDE);
-        g_windows.first_hidden = true;
       }
     } else if (target != nullptr) {
-      if (g_windows.first_hidden && g_windows.others.size() == 1) {
-        // The last window left is this one: the app quits.
-        PostQuitMessage(0);
-      } else {
-        target->force_close_ = true;
-        PostMessage(target->GetHandle(), WM_CLOSE, 0, 0);
+      // Destroyed directly, not by a WM_CLOSE: a WM_CLOSE goes through the
+      // engine's lifecycle, which turns the close of what it counts as the last
+      // window into a request to quit the app. The engine's rule should only
+      // ever see the user's own close of the final window.
+      // Not destroyed at all: taking a view off the engine and destroying its
+      // window ended the process with an access violation in
+      // flutter_windows.dll (FlutterDesktopViewControllerDestroy, runner.log
+      // of run 46137597351) for the third window, and for the heir after a
+      // handover, though not for the second. The window goes out of sight and
+      // waits, view and all, for the next one the app opens.
+      target->Park();
+    }
+    result->Success();
+  } else if (method == "hide" && arguments != nullptr &&
+             NumberOf(arguments).has_value()) {
+    // A window about to close takes no more input: its view is about to leave
+    // the app's tree, and a pointer over a window whose view is gone is an
+    // event for a view that is not there. The first window's view stays.
+    int id = static_cast<int>(*NumberOf(arguments));
+    runner_log::Write("call hide %d", id);
+    for (FlutterWindow* other : g_windows.others) {
+      if (other->id_ == id && other->GetHandle() != nullptr) {
+        // Its view hears no pointer from here on, hidden or not.
+        if (other->view_ != nullptr) SetProp(other->view_, kClosingProp, HANDLE(1));
+        EnableWindow(other->GetHandle(), FALSE);
+        ShowWindow(other->GetHandle(), SW_HIDE);
+      }
+    }
+    result->Success();
+  } else if (method == "place" && arguments != nullptr) {
+    // Moves and sizes a window, as the app asks when the first window takes
+    // the place of another that has closed.
+    RECT rect;
+    bool maximized = false;
+    const auto* idv = Field(arguments, "id");
+    if (auto number = NumberOf(idv); number && FrameOf(arguments, &rect, &maximized)) {
+      int id = static_cast<int>(*number);
+      FlutterWindow* target = id == 0 ? this : nullptr;
+      for (FlutterWindow* other : g_windows.others) {
+        if (other->id_ == id) target = other;
+      }
+      if (target != nullptr && target->GetHandle() != nullptr) {
+        HWND hwnd = target->GetHandle();
+        if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        target->ApplyPlacement(rect, false);
+        if (maximized) ShowWindow(hwnd, SW_MAXIMIZE);
       }
     }
     result->Success();
@@ -576,6 +687,12 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_CLOSE || message == WM_DESTROY || message == WM_NCDESTROY) {
+    runner_log::Write("window id %d hwnd %p: %s", id_, hwnd,
+                      message == WM_CLOSE     ? "WM_CLOSE"
+                      : message == WM_DESTROY ? "WM_DESTROY"
+                                              : "WM_NCDESTROY");
+  }
   // No title bar: the app draws the tab strip there, and the window's
   // buttons at its right (title_bar.dart). The frame stays, for the resize
   // edges, the shadow and snapping.
@@ -648,6 +765,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
     case kFreeWindow:
       if (id_ == 0 && lparam != 0) {
+        runner_log::Write("freeing a closed window");
         delete reinterpret_cast<FlutterWindow*>(lparam);
         return 0;
       }

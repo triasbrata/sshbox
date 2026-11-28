@@ -4033,6 +4033,19 @@ void main() {
       return kept.existsSync() ? kept.readAsStringSync() : '';
     }
 
+    /// [file] once it holds [expected], or what it holds after 5 s. tmux writes
+    /// a paste to the pane's tty after the command that pasted it has
+    /// exited, and the stand-in `cat` writes it on from there, so reading the
+    /// file the moment the command ends can miss the last bytes, the `\r`
+    /// that comes last in the first place.
+    Future<String> arrived(String file, String expected) async {
+      final end = DateTime.now().add(const Duration(seconds: 5));
+      while (got(file) != expected && DateTime.now().isBefore(end)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      return got(file);
+    }
+
     test(
       'an answer goes into the pane only after the host has shown its '
       'screen and been told to, and only while the session asks',
@@ -4075,8 +4088,7 @@ void main() {
           'y \x1b[B$paste',
         );
         expect(answer, contains('sshbox:typed %'));
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        expect(got('claude'), ' \x1b[B$paste');
+        expect(await arrived('claude', ' \x1b[B$paste'), ' \x1b[B$paste');
         expect(File('${dir.path}/x').existsSync(), isFalse);
 
         // No longer asking: it stops before the screen.
@@ -4264,11 +4276,10 @@ void main() {
         expect(watch.elapsed, greaterThan(const Duration(seconds: 2)));
         expect(watch.elapsed, lessThan(const Duration(seconds: 6)));
         // One line: the newline taken out of the path, the rest as it is.
-        expect(
-          got('claude'),
-          'look \x1b[200~/tmp/it\'s \$(touch $pwned-sub)`touch $pwned-tick`; '
-          'x.png\x1b[201~ here\r',
-        );
+        final pasted =
+            'look \x1b[200~/tmp/it\'s \$(touch $pwned-sub)`touch $pwned-tick`; '
+            'x.png\x1b[201~ here\r';
+        expect(await arrived('claude', pasted), pasted);
         expect(
           dir
               .listSync()
@@ -4279,6 +4290,38 @@ void main() {
       },
       skip: hasTmux ? false : 'tmux is not installed here',
     );
+
+    test('-S goes to paste-buffer where this tmux takes it, and never where '
+        'it does not', () async {
+      for (final (listing, want) in [
+        ('paste-buffer (pasteb) [-dprS] [-s separator] [-b buffer-name]', '-S'),
+        ('paste-buffer (pasteb) [-dpr] [-s separator] [-b buffer-name]', ''),
+        ('paste-buffer (pasteb) [-dpSr] [-b buffer-name]', '-S'),
+        ('', ''),
+      ]) {
+        final fake = File('${dir.path}/tmux-fake')
+          ..writeAsStringSync('#!/bin/sh\necho "$listing"\n');
+        await Process.run('chmod', ['700', fake.path]);
+        final out = await Process.run('sh', [
+          '-c',
+          't=${fake.path}; ${ClaudeChat.pasteRaw} echo "[\$S]"',
+        ]);
+        expect((out.stdout as String).trim(), '[$want]', reason: listing);
+      }
+      // And both pasting commands use it.
+      expect(
+        ClaudeChat.paneCommand(
+          _live.sessionId,
+          pid: 1,
+          parts: [(length: 1, picture: false, tokens: 0)],
+        ),
+        allOf(contains('list-commands paste-buffer'), contains(r'paste-buffer $S')),
+      );
+      expect(
+        ClaudeChat.askPaneCommand(_live.sessionId, pid: 1, lengths: [1]),
+        allOf(contains('list-commands paste-buffer'), contains(r'paste-buffer $S')),
+      );
+    });
 
     test(
       'nothing is typed where a keystroke could land anywhere but an empty '
@@ -8787,9 +8830,14 @@ void main() {
       final said = chat.entries.whereType<ChatSaid>().single;
       expect(said.delivery, Delivery.failed);
       expect(said.why, contains('started a turn'));
-      final entry = (await onDiskOnce(
-        (box) => box.entries.singleOrNull?.attempts == 2,
-      )).entries.single;
+      // attempts reads 2 from the moment the last automatic try is scheduled,
+      // while the entry is still marked as going again; the file holds the
+      // final state only once the failure of that try is saved too, which
+      // goes to the disk in the background.
+      final entry = (await onDiskOnce((box) {
+        final e = box.entries.singleOrNull;
+        return e != null && e.attempts == 2 && e.failed;
+      })).entries.single;
       expect(entry.failed, isTrue);
       expect(entry.attempts, 2);
     });
@@ -10020,7 +10068,8 @@ void main() {
       chat.send('first');
       chat.send('second');
       chat.send('third');
-      await wait();
+      // All three are kept on the disk, in the background, and none typed.
+      await onDiskOnce((box) => box.entries.length == 3);
       expect(host.paneTyping, isEmpty);
       expect((await onDisk()).entries, hasLength(3));
 
@@ -10029,17 +10078,21 @@ void main() {
       host.down = false;
       await chat.resume();
       for (final (i, words) in ['second', 'third'].indexed) {
-        await wait();
+        // Until it is typed, not for a fixed time: how long the host takes
+        // to answer is the machine's. The next goes only once this one is
+        // recorded, so a second one arriving early would show here.
+        await until(() => host.paneTyping.length >= i + 1);
         expect(host.paneTyping, hasLength(i + 1), reason: words);
         host.adds(userLine('r${i + 2}', words));
       }
-      await wait();
+      final box = await onDiskOnce(
+        (box) => box.entries.isEmpty && box.consumed.contains('r3'),
+      );
 
       expect([for (final t in host.paneTyping) t.stdin.join()], [
         'second',
         'third',
       ]);
-      final box = await onDisk();
       expect(box.entries, isEmpty);
       expect(box.consumed, containsAll(['r1', 'r2', 'r3']));
     });

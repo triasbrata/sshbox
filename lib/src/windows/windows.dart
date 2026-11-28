@@ -143,6 +143,12 @@ abstract interface class WindowBackend {
   /// Moves and sizes window [id] to [frame]. A runner that cannot leaves the
   /// window where it is.
   Future<void> place(int id, WindowFrame frame);
+
+  /// Takes window [id] off the screen at once, so it takes no more input,
+  /// before the app drops its view from the tree and then closes it. A
+  /// pointer over a window whose view is gone is an event for a view that is
+  /// not there. The first window, whose view stays, is not hidden.
+  Future<void> hide(int id);
 }
 
 /// No second window: mobile, a runner without the native half, and tests.
@@ -169,6 +175,9 @@ class SingleWindow implements WindowBackend {
 
   @override
   Future<void> place(int id, WindowFrame frame) async {}
+
+  @override
+  Future<void> hide(int id) async {}
 }
 
 /// The runner's half, over the `sshbox/windows` channel.
@@ -231,6 +240,17 @@ class ChannelWindowBackend implements WindowBackend {
 
   @override
   Future<void> activate(int id) => _channel.invokeMethod<void>('activate', id);
+
+  @override
+  Future<void> hide(int id) async {
+    try {
+      await _channel.invokeMethod<void>('hide', id);
+    } on MissingPluginException {
+      // A runner without it leaves the window up until it closes.
+    } on PlatformException {
+      // The same.
+    }
+  }
 
   @override
   Future<void> place(int id, WindowFrame frame) async {
@@ -565,6 +585,8 @@ class WindowSet extends ChangeNotifier {
     if (window.id == 0) {
       return _handOver(window);
     }
+    // Off the screen first, then out of the tree.
+    await backend.hide(window.id);
     _windows.remove(window.id);
     if (_focused == window.id) _focused = _windows.keys.first;
     notifyListeners();
@@ -590,8 +612,10 @@ class WindowSet extends ChangeNotifier {
     final heir = _windows.values.firstWhere((window) => window.id != 0);
     final heirId = heir.id;
     final place = heir.frame;
-    // The first window takes the heir's place and size, before its view shows
-    // the heir's tabs.
+    // The heir's own window comes off the screen first, its view being about
+    // to leave the tree, and the first window takes its place and size before
+    // its view shows the heir's tabs.
+    await backend.hide(heirId);
     if (place != null) await backend.place(0, place);
     final rest = [
       for (final window in _windows.values)

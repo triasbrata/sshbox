@@ -1,4 +1,5 @@
 #include "win32_window.h"
+#include "runner_log.h"
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
@@ -183,6 +184,7 @@ Win32Window::MessageHandler(HWND hwnd,
       window_handle_ = nullptr;
       Destroy();
       if (quit_on_close_) {
+        runner_log::Write("PostQuitMessage from WM_DESTROY of %p", hwnd);
         PostQuitMessage(0);
       }
       return 0;

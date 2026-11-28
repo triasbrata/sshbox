@@ -54,6 +54,13 @@ class FlutterWindow : public Win32Window {
   void NotifyWindows(const char* method, flutter::EncodableValue value);
   void NotifyMoved();
 
+  // Takes the view of a window after the first off the engine.
+  void ReleaseView();
+
+  // A window the app closes waits out of sight for the next it opens.
+  void Park();
+  void Unpark(int id);
+
   // Moves the window with the mouse, from a press on the tab strip.
   void BeginMove();
 
@@ -87,6 +94,9 @@ class FlutterWindow : public Win32Window {
 
   // The app has said this window may go: its close is not asked of the app.
   bool force_close_ = false;
+  // The view of a window after the first was released by `close`, and the
+  // window's destruction has yet to tell the app.
+  bool released_ = false;
 
   // sshbox/window: the app asks the window to move, minimize, maximize and
   // close on it, and says where its maximize button is; the window says on

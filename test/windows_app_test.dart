@@ -61,6 +61,11 @@ class _Runner implements WindowBackend {
 
   @override
   Future<void> place(int id, WindowFrame frame) async {}
+
+  final hidden = <int>[];
+
+  @override
+  Future<void> hide(int id) async => hidden.add(id);
 }
 
 /// A host that is up the moment it is asked for, or, with [signIn], held at a
