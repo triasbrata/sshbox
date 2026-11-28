@@ -339,7 +339,7 @@ void main() {
       final follow = Timer.periodic(const Duration(milliseconds: 200), (_) {
         final wins = appLog.current
             .split('\n')
-            .where((l) => l.contains('win:'))
+            .where((l) => l.contains('win:') && !l.contains('multi-window:'))
             .toList();
         for (final line in wins.skip(seen)) {
           _trace('live app log: $line');

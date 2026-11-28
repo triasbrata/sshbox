@@ -229,9 +229,8 @@ mw_phases_windows() {
     # Application Error event carries the exception code (0xc0000005 is an
     # access violation); no event means the process left by itself.
     powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-8)} -ErrorAction SilentlyContinue | Where-Object { \$_.Message -match 'Jeansh' } | ForEach-Object { 'event: ' + \$_.ProviderName + ' ' + (\$_.Message -replace '\\s+',' ').Substring(0, [Math]::Min(300, (\$_.Message -replace '\\s+',' ').Length)) }" 2>&1 | head -10
-    echo "bad state tolerated in $phase: $(grep -c 'tolerated Bad state' "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null)"
-    echo "last lines of the phase trace: $(tail -n 12 "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' '|' | cut -c1-1500)"
-    : >"$data/jeansh-e2e-mw-trace.txt"
+    echo "bad state: $(grep "phase $phase .*bad state tolerated" "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tail -1)"
+    echo "trace tail: $(tail -n 14 "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' '|' | cut -c1-1800)"
     case "$phase" in
       last)
         if grep -q ready "$note" 2>/dev/null && ! grep -q asked "$note" &&
