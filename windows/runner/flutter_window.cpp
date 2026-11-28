@@ -255,6 +255,7 @@ void FlutterWindow::Park() {
   int closed = id_;
   if (view_ != nullptr) SetProp(view_, kClosingProp, HANDLE(1));
   if (GetHandle() != nullptr) {
+    KillTimer(GetHandle(), kSaveTimer);
     EnableWindow(GetHandle(), FALSE);
     ShowWindow(GetHandle(), SW_HIDE);
   }
@@ -516,7 +517,7 @@ void FlutterWindow::NotifyWindows(const char* method,
 // Tells the app where the window is, once it has held still.
 void FlutterWindow::NotifyMoved() {
   HWND hwnd = GetHandle();
-  if (hwnd == nullptr || IsRectEmpty(&normal_)) return;
+  if (hwnd == nullptr || IsRectEmpty(&normal_) || id_ < 0) return;
   NotifyWindows(
       "moved",
       flutter::EncodableValue(flutter::EncodableMap{

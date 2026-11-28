@@ -89,6 +89,10 @@ jobs:
       - name: Test the splitter
         run: python3 tools/test_e2e_shards.py
 
+      # A unit with no u_ function fails every shard after the emulator boots.
+      - name: Every unit has its function
+        run: bash tools/test_e2e_units.sh
+
       # flow()'s watch for a Maestro that hangs, against a fake maestro.
       - name: Test the hang watch
         timeout-minutes: 5
@@ -230,29 +234,7 @@ jobs:
           args: -y -qq openssh-server sshpass tmux
 
       - name: Start an sshd for the flows
-        run: |
-          password="$(openssl rand -hex 16)"
-          echo "::add-mask::$password"
-          sudo useradd -m -s /bin/bash e2e
-          echo "e2e:$password" | sudo chpasswd
-          # Loopback only: the emulator arrives there, and nothing else should.
-          # Cloud images switch password logins off in a drop-in of their own,
-          # so this one is named to sort last and win.
-          printf 'ListenAddress 127.0.0.1\nPasswordAuthentication yes\n' |
-            sudo tee /etc/ssh/sshd_config.d/99-e2e.conf >/dev/null
-          # Ubuntu 24.04 starts sshd from ssh.socket, which listens on every
-          # address whatever ListenAddress says. The service reads the config.
-          sudo systemctl disable --now ssh.socket 2>/dev/null || true
-          sudo systemctl restart ssh
-          # Through GITHUB_ENV, not a step output: GitHub drops any output
-          # holding a masked value, so the flows would get an empty password.
-          echo "SSH_PASSWORD=$password" >> "$GITHUB_ENV"
-          echo "SSH_USER=e2e" >> "$GITHUB_ENV"
-          # Prove it here, in seconds, rather than learn it from the emulator
-          # ten minutes later as a seed flow that could not sign in.
-          sshpass -p "$password" ssh -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null e2e@127.0.0.1 true
-          echo "sshd answers on 127.0.0.1:22 and the password works"
+        run: tools/e2e_sshd.sh --login-proof
 
       # The emulator needs hardware acceleration, which a GitHub runner has but
       # does not hand to an unprivileged user until this rule says so.
@@ -578,23 +560,7 @@ jobs:
           args: -y -qq openssh-server
 
       - name: Start an sshd for the drop test
-        run: |
-          password="$(openssl rand -hex 16)"
-          echo "::add-mask::$password"
-          sudo useradd -m -s /bin/bash e2e
-          echo "e2e:$password" | sudo chpasswd
-          printf 'ListenAddress 127.0.0.1\nPasswordAuthentication yes\n' |
-            sudo tee /etc/ssh/sshd_config.d/99-e2e.conf >/dev/null
-          sudo systemctl disable --now ssh.socket 2>/dev/null || true
-          sudo systemctl restart ssh
-          echo "SSH_PASSWORD=$password" >> "$GITHUB_ENV"
-          echo "SSH_USER=e2e" >> "$GITHUB_ENV"
-          for i in $(seq 20); do
-            (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null && break
-            sleep 1
-          done
-          (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null || { echo "::error::sshd did not start"; exit 1; }
-          echo "sshd answers on 127.0.0.1:22"
+        run: tools/e2e_sshd.sh
 
       - uses: ./.github/actions/flutter
         timeout-minutes: 15
