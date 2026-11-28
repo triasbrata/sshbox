@@ -89,6 +89,11 @@ jobs:
       - name: Test the splitter
         run: python3 tools/test_e2e_shards.py
 
+      # The rule that accepts a multi-window phase whose result flutter_tools
+      # lost: red with the marker check taken out.
+      - name: Test the lost-result rule
+        run: bash tools/test_e2e_desktop_lost.sh
+
       # A unit with no u_ function fails every shard after the emulator boots.
       - name: Every unit has its function
         run: bash tools/test_e2e_units.sh

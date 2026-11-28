@@ -100,6 +100,18 @@ window_phases() {
   return $rc
 }
 
+# lost_result OUT DONE_NOW DONE_BEFORE: whether a phase that exited non-zero
+# is only a result flutter_tools lost: its output holds the finalization error
+# for the listener dir and no failed test, and the test wrote a new "phase X
+# done" line (DONE_NOW above DONE_BEFORE) after its checks. tools/
+# test_e2e_desktop_lost.sh holds each of these to its word.
+lost_result() {
+  grep -q 'unhandled error during finalization of test' "$1" &&
+    grep -q 'PathNotFoundException.*flutter_test_listener' "$1" &&
+    ! grep -q '❌' "$1" && ! grep -q 'Some tests failed' "$1" &&
+    [ "$2" -gt "$3" ]
+}
+
 # integration_test/multi_window_phases_test.dart, several windows (#344): a
 # phase a fresh start of the app on a data folder of its own, under a window
 # manager. The last phase ends with the app quitting, since its last window
@@ -107,7 +119,7 @@ window_phases() {
 # is written to a file by the test and by a watcher that outlives it, and
 # read here.
 mw_phases() {
-  local rc=0 data note
+  local rc=0 lost=0 data note out done_before done_now
   data=$(mktemp -d)
   note="$data/jeansh-e2e-mw-last.txt"
   for phase in ${E2E_MW_PHASES:-t1 t2 t3 t4 save restore buttons churn drop last}; do
@@ -173,14 +185,33 @@ mw_phases() {
         t[1-4] | drop) home=$(mktemp -d) ;;
         *) home=$data ;;
       esac
-      JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
+      # flutter_tools sometimes loses the result of a test that ran: its own
+      # temp dir is deleted by its shutdown hook before the listener
+      # finalizer, which then fails ("unhandled error during finalization"),
+      # and flutter test exits 1 with "0 tests passed" although the test's
+      # checks all ran (the app was alive and quiet at its last close in the
+      # runner log of passing and failing phases alike). Exactly that, and
+      # only that, is accepted, and only when the test wrote its "phase X
+      # done" line after its checks, which it does after _runPhase returns:
+      # a failed check throws first and writes "failed" instead.
+      out=$data/$phase.log
+      done_before=$(grep -c "phase $phase done," "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null || true)
+      if ! JEANSH_E2E_MW_DIR=$data XDG_DATA_HOME=$home flutter test \
         integration_test/multi_window_phases_test.dart -d linux \
-        --dart-define=JEANSH_E2E_MWINDOW=$phase || {
+        --dart-define=JEANSH_E2E_MWINDOW=$phase 2>&1 | tee "$out"; then
+        done_now=$(grep -c "phase $phase done," "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null || true)
+        if lost_result "$out" "${done_now:-0}" "${done_before:-0}"; then
+          lost=$((lost + 1))
+          echo "⚠ phase $phase: result lost by flutter_tools, accepted on its finished marker"
+          echo "::warning::multi-window phase $phase: result lost by flutter_tools, accepted on its finished marker"
+        else
           rc=1
           echo "trace: $(cat "$data/jeansh-e2e-mw-trace.txt" 2>/dev/null | tr '\n' ' ')"
-        }
+        fi
+      fi
     fi
   done
+  [ "$lost" = 0 ] || echo "multi-window: $lost phase result(s) lost by flutter_tools in this job, accepted on their finished markers"
   rm -rf "$data"
   return $rc
 }
