@@ -544,8 +544,11 @@ void FlutterWindow::OnWindowsCall(
         PostMessage(GetHandle(), WM_CLOSE, 0, 0);
       }
     } else if (target != nullptr) {
-      target->force_close_ = true;
-      PostMessage(target->GetHandle(), WM_CLOSE, 0, 0);
+      // Destroyed directly, not by a WM_CLOSE: a WM_CLOSE goes through the
+      // engine's lifecycle, which turns the close of what it counts as the last
+      // window into a request to quit the app. The engine's rule should only
+      // ever see the user's own close of the final window.
+      if (target->GetHandle() != nullptr) DestroyWindow(target->GetHandle());
     }
     result->Success();
   } else if (method == "hide" && arguments != nullptr &&
