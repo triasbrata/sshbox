@@ -225,9 +225,9 @@ mw_phases_windows() {
       *) home=$data ;;
     esac
     # The runner's own log of what it does to each window and how the process
-    # ends (appended, one "---- start, pid N" a launch), in the real roaming
-    # profile whatever APPDATA says: emptied before a phase, shown after it.
-    runner_log="$(cygpath -u "$USERPROFILE")/AppData/Roaming/cloud.brata/Jeansh/runner.log"
+    # ends (appended, one "---- start, pid N" a launch), under the APPDATA the
+    # phase runs with: emptied before a phase, shown after it.
+    runner_log="$(cygpath -u "$home")/cloud.brata/Jeansh/runner.log"
     rm -f "$runner_log"
     JEANSH_E2E_MW_DIR=$(cygpath -m "$data") APPDATA=$(cygpath -w "$home") \
       timeout 400 flutter test integration_test/multi_window_phases_test.dart \
